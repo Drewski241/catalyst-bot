@@ -113,6 +113,9 @@ class DexieManager:
         posted = 0
         failed = 0
         skipped = 0
+        failed_items = []  # Items to re-queue on failure
+
+        _MAX_DEXIE_RETRIES = 3  # Max times an item can be re-queued
 
         def _process_one(item):
             """Post a single item — used by both sequential and parallel paths."""
@@ -120,6 +123,23 @@ class DexieManager:
             trade_id = item.get("trade_id")
             force = item.get("force", False)
             return self._post_single(offer_bech32, trade_id, force)
+
+        def _handle_result(result, item):
+            nonlocal posted, failed, skipped
+            if result.get("skipped"):
+                skipped += 1
+                self._total_skipped += 1
+            elif result.get("success"):
+                posted += 1
+                self._total_posted += 1
+            else:
+                failed += 1
+                self._total_failed += 1
+                # Re-queue for next cycle if under retry limit
+                retries = item.get("_dexie_retries", 0)
+                if retries < _MAX_DEXIE_RETRIES:
+                    item["_dexie_retries"] = retries + 1
+                    failed_items.append(item)
 
         # Parallel posting for large batches (startup repost)
         if len(batch) > 10:
@@ -130,37 +150,34 @@ class DexieManager:
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = {pool.submit(_process_one, item): item for item in batch}
                 for future in as_completed(futures):
+                    item = futures[future]
                     try:
                         result = future.result()
-                        if result.get("skipped"):
-                            skipped += 1
-                            self._total_skipped += 1
-                        elif result.get("success"):
-                            posted += 1
-                            self._total_posted += 1
-                        else:
-                            failed += 1
-                            self._total_failed += 1
+                        _handle_result(result, item)
                     except Exception as e:
                         log_event("warning", "dexie_parallel_error",
                                   f"Parallel Dexie post failed: {e}")
                         failed += 1
                         self._total_failed += 1
+                        retries = item.get("_dexie_retries", 0)
+                        if retries < _MAX_DEXIE_RETRIES:
+                            item["_dexie_retries"] = retries + 1
+                            failed_items.append(item)
         else:
             # Sequential for small batches (normal cycle)
             for item in batch:
                 result = _process_one(item)
-                if result.get("skipped"):
-                    skipped += 1
-                    self._total_skipped += 1
-                elif result.get("success"):
-                    posted += 1
-                    self._total_posted += 1
-                else:
-                    failed += 1
-                    self._total_failed += 1
+                _handle_result(result, item)
 
-        summary = {"posted": posted, "failed": failed, "skipped": skipped}
+        # Re-queue failed items for retry on the next cycle
+        if failed_items:
+            with self._lock:
+                self._queue.extend(failed_items)
+            log_event("info", "dexie_requeue",
+                      f"Re-queued {len(failed_items)} failed Dexie posts for next cycle")
+
+        summary = {"posted": posted, "failed": failed, "skipped": skipped,
+                    "requeued": len(failed_items)}
         if posted > 0:
             log_event("info", "dexie_flush",
                       f"Posted {posted} queued offers to Dexie ({skipped} skipped, {failed} failed)")

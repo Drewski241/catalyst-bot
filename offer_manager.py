@@ -1468,12 +1468,22 @@ class OfferManager:
             # Prefer the first verified coin_id (covers multi-coin offers);
             # fall back to locked_coin_id if verification list is empty.
             db_coin_id = verified_locked_coin_ids[0] if verified_locked_coin_ids else locked_coin_id
-            add_offer(
+            db_ok = add_offer(
                 trade_id=trade_id, side=side, price_xch=price,
                 size_xch=size_xch, size_cat=cat_amount,
                 cat_asset_id=asset_id, tier=tier,
                 expires_at=expires_at, coin_id=db_coin_id
             )
+            if not db_ok:
+                # DB insert failed — cancel on-chain offer to prevent wallet/DB
+                # divergence (offer exists in wallet but isn't tracked).
+                log_event("error", "ladder_db_cancel",
+                          f"DB insert failed for {trade_id[:16]}..., cancelling on-chain offer")
+                try:
+                    self.cancel_offers([trade_id], reason="db_insert_failed")
+                except Exception:
+                    pass
+                continue
 
             lock_targets = verified_locked_coin_ids or ([locked_coin_id] if locked_coin_id else [])
             for coin_id in lock_targets:

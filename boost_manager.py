@@ -27,7 +27,7 @@ from decimal import Decimal
 from typing import Optional, Dict, List
 
 from config import cfg
-from database import log_event, add_offer
+from database import log_event, add_offer, lock_coin
 from offer_manager import xch_to_mojos, cat_to_mojos, mojos_to_cat
 
 
@@ -601,6 +601,7 @@ class BoostManager:
         trade_record = res.get("trade_record") or {}
         trade_id = res.get("trade_id") or trade_record.get("trade_id") or ""
         offer_bech32 = res.get("offer", "")
+        locked_coin_id = res.get("locked_coin_id")
 
         if trade_id:
             # Track when this offer expires so prune_active_boosts won't mistake
@@ -625,6 +626,13 @@ class BoostManager:
                     self._offer_manager._bot_cancelled_ids.add(trade_id)
                     self._offer_manager.cancel_offers([trade_id], reason="boost_db_insert_failed")
                 return None
+            if locked_coin_id and self._offer_manager:
+                # Register in cycle exclusion set so ladder won't re-select this coin
+                self._offer_manager._cycle_used_coin_ids.add(locked_coin_id)
+                try:
+                    lock_coin(locked_coin_id, trade_id)
+                except Exception:
+                    pass
             if self._offer_manager:
                 self._offer_manager._offer_details_cache[trade_id] = {
                     "price": price,

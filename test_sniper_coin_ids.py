@@ -40,7 +40,7 @@ sys.modules["config"] = fake_config
 
 fake_database = types.ModuleType("database")
 fake_database.log_event = lambda *args, **kwargs: None
-fake_database.add_offer = lambda *args, **kwargs: None
+fake_database.add_offer = lambda *args, **kwargs: True
 fake_database.lock_coin = lambda *args, **kwargs: None
 sys.modules["database"] = fake_database
 
@@ -68,6 +68,7 @@ for _name, _mod in _ORIG_MODULES.items():
 class _FakeOfferManager:
     def __init__(self):
         self._offer_details_cache = {}
+        self._cycle_used_coin_ids = set()
         self.calls = []
 
     def create_offer_with_retry(self, offer_dict, expiry_secs=None, coin_ids_enabled=False,

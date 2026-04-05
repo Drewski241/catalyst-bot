@@ -384,7 +384,7 @@ class Sniper:
             _exp_dt = (datetime.datetime.now(datetime.timezone.utc) +
                        datetime.timedelta(seconds=_sniper_expiry)).isoformat()
         if trade_id:
-            add_offer(
+            db_ok = add_offer(
                 trade_id=trade_id,
                 side=side,
                 price_xch=price,
@@ -395,8 +395,19 @@ class Sniper:
                 expires_at=_exp_dt,
                 coin_id=locked_coin_id,
             )
+            if not db_ok:
+                # DB insert failed — cancel on-chain offer to prevent wallet/DB divergence
+                log_event("error", "sniper_db_cancel",
+                          f"DB insert failed for sniper {trade_id[:16]}..., cancelling on-chain offer")
+                try:
+                    self._offer_manager.cancel_offers([trade_id], reason="db_insert_failed")
+                except Exception:
+                    pass
+                return None
             if locked_coin_id:
                 lock_coin(locked_coin_id, trade_id)
+                # Register in cycle exclusion set so ladder won't re-select this coin
+                self._offer_manager._cycle_used_coin_ids.add(locked_coin_id)
             # Also cache details for fill_tracker's offer_details_cache
             if self._offer_manager:
                 self._offer_manager._offer_details_cache[trade_id] = {
