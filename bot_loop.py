@@ -653,7 +653,8 @@ class BotLoop:
         if self._circuit_breaker_offer_safed:
             return
 
-        self._circuit_breaker_offer_safed = True
+        # Don't set _safed until cancel actually succeeds — if it fails,
+        # the next cycle will retry the safety cancel.
         reason = (
             getattr(self.risk_manager, "_circuit_breaker_reason", "")
             or "circuit breaker active"
@@ -700,6 +701,10 @@ class BotLoop:
                 "circuit_breaker_cancel_done",
                 f"CB safety cancel complete — cancelled {cancelled}, failed {failed}",
             )
+            # Only mark safed once cancel actually succeeded (or partially succeeded).
+            # If all cancels failed, leave _safed=False so next cycle retries.
+            if cancelled > 0 or failed == 0:
+                self._circuit_breaker_offer_safed = True
             try:
                 self.coin_manager.snapshot_coins("circuit_breaker_cancel")
                 self._emit_coin_update("circuit_breaker_cancel")
@@ -707,10 +712,11 @@ class BotLoop:
                 log_event("warning", "circuit_breaker_coin_snapshot_failed",
                           f"Coin snapshot after circuit breaker cancel failed: {e}")
         except Exception as e:
+            # Cancel threw — don't mark as safed, retry on next cycle
             log_event(
                 "error",
                 "circuit_breaker_cancel_failed",
-                f"Circuit breaker could not cancel live offers: {e}",
+                f"Circuit breaker could not cancel live offers: {e} — will retry next cycle",
             )
 
     def _get_probe_anchored_mid(self, side: str, fallback_mid: Decimal) -> Decimal:

@@ -359,6 +359,12 @@ class PriceEngine:
         except requests.RequestException as e:
             log_event("warning", "dexie_error", f"Dexie price fetch failed: {e}")
             return None
+        except (ValueError, KeyError, TypeError) as e:
+            # Catches JSONDecodeError (subclass of ValueError), missing keys,
+            # or unexpected response shapes from schema changes.
+            log_event("warning", "dexie_parse_error",
+                      f"Dexie returned unparseable response: {e}")
+            return None
 
     # -------------------------------------------------------------------
     # TibetSwap price fetching
@@ -447,6 +453,9 @@ class PriceEngine:
 
         except requests.RequestException as e:
             log_event("warning", "tibet_error", f"TibetSwap fetch failed: {e}")
+        except (ValueError, KeyError, TypeError) as e:
+            log_event("warning", "tibet_parse_error",
+                      f"TibetSwap returned unparseable response: {e}")
 
         # Return stale cache only if within the maximum staleness bound
         max_stale_secs = int(getattr(cfg, "TIBET_MAX_STALE_SECS", 300))

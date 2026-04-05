@@ -2123,13 +2123,16 @@ def create_offer(offer_dict: dict, validate_only: bool = True, max_time: int = N
             print(f"  ⚠️  [Sage] make_offer succeeded but NO offer_id found!", flush=True)
             print(f"  ⚠️  [Sage] Response (first 500 chars): {str(result)[:500]}", flush=True)
 
-        # Ensure success flag is set
-        if "offer" in result and "success" not in result:
-            result["success"] = True
-
-        # Also set success if we have an offer_id (offer was clearly created)
-        if offer_id and "success" not in result:
-            result["success"] = True
+        # Ensure success flag is set — but only if no error field is present.
+        # A response like {"offer": "...", "error": "wallet locked"} should NOT
+        # be normalized to success=True.
+        has_error = bool(result.get("error"))
+        if not has_error:
+            if "offer" in result and "success" not in result:
+                result["success"] = True
+            # Also set success if we have an offer_id (offer was clearly created)
+            if offer_id and "success" not in result:
+                result["success"] = True
 
         return result
 

@@ -8613,6 +8613,18 @@ def api_coin_prep_trigger():
                 _coin_prep_state["error"] = str(e)
                 log_event("error", "coin_prep_exception", str(e))
             finally:
+                # Ensure the subprocess is terminated if it's still running.
+                # Without this, an exception in the monitor loop (e.g. log_event
+                # or state update throws) can orphan the child process.
+                try:
+                    if 'proc' in locals() and proc and proc.poll() is None:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=5)
+                        except Exception:
+                            proc.kill()
+                except Exception:
+                    pass
                 try:
                     if 'log_file' in locals() and log_file:
                         log_file.close()

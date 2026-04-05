@@ -1310,6 +1310,19 @@ def cancel_offers_batch(trade_ids: list, secure: bool = True, max_workers: int =
             timeout = 120 if len(trade_ids) > 10 else 60
             result = cancel_offer(tid, secure, timeout=timeout)
             results[tid] = result or {"success": False, "error": "RPC returned None"}
+
+            # Chia wallet doesn't special-case "offer already gone" like Sage.
+            # If the error indicates the offer no longer exists (filled, expired,
+            # already cancelled), treat it as success — the goal (offer is gone)
+            # is achieved. Without this, offer_manager queues infinite retries.
+            if result and not result.get("success"):
+                err_str = str(result.get("error", "")).lower()
+                if any(phrase in err_str for phrase in
+                       ("not found", "no offer", "unknown trade", "already",
+                        "cannot cancel", "not pending")):
+                    result["success"] = True
+                    result["already_gone"] = True
+
             if result and result.get("success"):
                 if len(trade_ids) > 10 and (i + 1) % 10 == 0:
                     print(f"   ✅ Cancelled {i+1}/{len(trade_ids)}")

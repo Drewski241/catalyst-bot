@@ -3142,10 +3142,17 @@ class CoinManager:
                             log_event("info", "topup_wait_sync",
                                       "Wallet not synced — waiting before topup scan...")
                         time.sleep(5)
-                except Exception:
-                    # get_wallet_sync_status may not exist — skip the check
-                    wallet_ready = True
-                    break
+                except Exception as e:
+                    # get_wallet_sync_status may not exist for some backends.
+                    # Only treat as ready if this is the first attempt — if we've
+                    # been waiting, repeated exceptions suggest a real problem.
+                    if sync_attempt == 0:
+                        wallet_ready = True
+                        break
+                    else:
+                        log_event("warning", "topup_sync_check_error",
+                                  f"Sync check threw on attempt {sync_attempt}: {e}")
+                        time.sleep(5)
 
             if not wallet_ready:
                 log_event("warning", "topup_wallet_unsynced",
@@ -3157,6 +3164,18 @@ class CoinManager:
             # ---- Fresh coin inventory ----
             xch_result = _get_free_coins_rpc(cfg.WALLET_ID_XCH)
             cat_result = _get_free_coins_rpc(cfg.CAT_WALLET_ID)
+
+            # Detect RPC errors: if the wallet returned an error (not just empty),
+            # don't treat it as "no coins" and enter backoff — short cooldown instead.
+            xch_is_error = (isinstance(xch_result, dict) and
+                            (xch_result.get("error") or xch_result.get("success") is False))
+            cat_is_error = (isinstance(cat_result, dict) and
+                            (cat_result.get("error") or cat_result.get("success") is False))
+            if xch_is_error or cat_is_error or xch_result is None or cat_result is None:
+                log_event("warning", "topup_rpc_error",
+                          "Wallet RPC returned error during topup — short cooldown, will retry next cycle")
+                self._last_topup_time = time.time()
+                return
 
             xch_records = _extract_coin_records(xch_result)
             cat_records = _extract_coin_records(cat_result)
