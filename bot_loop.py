@@ -6238,8 +6238,9 @@ class BotLoop:
         # Add Coinset stats (V3 — fast coin queries)
         state["coinset"] = self.coinset_client.get_stats()
         try:
-            state["recovery"] = dict(self._recovery_state)
-        except RuntimeError:
+            with self._state_lock:
+                state["recovery"] = dict(self._recovery_state)
+        except (RuntimeError, Exception):
             state["recovery"] = {}  # dict mutated during copy — skip this cycle
 
         # V3: Trading pace and reserve status for GUI

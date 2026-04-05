@@ -202,6 +202,21 @@ def _sanitize_config_dict(d: object) -> object:
     return d
 
 
+def _decimal_safe(obj):
+    """Recursively convert Decimal values to float for JSON serialization.
+
+    Decimal arithmetic is used for price calculations to avoid float rounding,
+    but JSON (and JS) only support float — convert at the serialization boundary.
+    """
+    if isinstance(obj, Decimal):
+        return float(obj)
+    if isinstance(obj, dict):
+        return {k: _decimal_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_decimal_safe(x) for x in obj]
+    return obj
+
+
 def _api_error(e: Exception, endpoint: str = "", status: int = 500):
     """Return a safe JSON error response that does NOT expose internal details.
 
@@ -459,7 +474,14 @@ def _get_live_requote_notice(changed_keys):
 
 def _is_loopback_addr(addr: str) -> bool:
     addr = str(addr or "").strip().lower()
-    return addr in {"127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"}
+    if addr in {"localhost"}:
+        return True
+    try:
+        import ipaddress
+        # Handles 127.0.0.0/8, ::1, ::ffff:127.x.x.x and all other loopback forms
+        return ipaddress.ip_address(addr).is_loopback
+    except (ValueError, AttributeError):
+        return False
 
 
 def _has_valid_local_token() -> bool:
@@ -1616,14 +1638,14 @@ def api_status():
                         for p in resp.json():
                             p_id = str(p.get("asset_id", "")).lower().strip().replace("0x", "")
                             if p_id == norm_id or p_id.rstrip("0") == norm_id.rstrip("0"):
-                                xr = float(p.get("xch_reserve", 0)) / 1e12
-                                tr = float(p.get("token_reserve", 0)) / (10 ** int(cat_dec))
+                                xr = Decimal(str(p.get("xch_reserve", 0))) / Decimal("1000000000000")
+                                tr = Decimal(str(p.get("token_reserve", 0))) / (Decimal(10) ** int(cat_dec))
                                 if tr > 0:
                                     mid = xr / tr
                                     pricing = {"bid": mid, "mid": mid, "ask": mid,
                                                "tibet_price": mid, "tibet_enabled": True,
                                                "source": "tibetswap",
-                                               "liquidity": {"xch_reserve": xr, "token_reserve": tr}}
+                                               "liquidity": {"xch_reserve": str(xr), "token_reserve": str(tr)}}
                                     print(f"[STATUS] TibetSwap price: {mid}", flush=True)
                                     log_event("success", "price_found", f"TibetSwap price: {mid:.8f} XCH")
                                 break
@@ -1650,7 +1672,7 @@ def api_status():
                                     for field in ["current_avg_price", "last_price", "price"]:
                                         val = tickers[0].get(field)
                                         if val and str(val) != "0":
-                                            mid = float(val)
+                                            mid = Decimal(str(val))
                                             pricing = {"bid": mid, "mid": mid, "ask": mid,
                                                        "dexie_price": mid, "tibet_enabled": False,
                                                        "source": "dexie"}
@@ -1666,7 +1688,7 @@ def api_status():
                             if resp.status_code == 200:
                                 offers = resp.json().get("offers", [])
                                 if offers:
-                                    best_ask = float(offers[0].get("price", 0))
+                                    best_ask = Decimal(str(offers[0].get("price", 0)))
                                     if best_ask > 0:
                                         mid = best_ask
                                         pricing = {"bid": mid, "mid": mid, "ask": mid,
@@ -1687,8 +1709,8 @@ def api_status():
 
             # Compute actual bid/ask from mid using configured spread
             if pricing.get("mid", 0) > 0 and pricing.get("bid") == pricing.get("mid"):
-                _spread_bps = float(getattr(cfg, "BASE_SPREAD_BPS", 0) or getattr(cfg, "SPREAD_BPS", 200) or 200)
-                _spread_frac = _spread_bps / 10000
+                _spread_bps = Decimal(str(getattr(cfg, "BASE_SPREAD_BPS", 0) or getattr(cfg, "SPREAD_BPS", 200) or 200))
+                _spread_frac = _spread_bps / Decimal("10000")
                 pricing["bid"] = pricing["mid"] * (1 - _spread_frac / 2)
                 pricing["ask"] = pricing["mid"] * (1 + _spread_frac / 2)
 
@@ -1718,11 +1740,11 @@ def api_status():
                         summary = o.get("summary") or {}
                         offered = summary.get("offered", {})
                         requested = summary.get("requested", {})
-                        xch_mojos = float(offered.get("xch", 0))
-                        cat_mojos = float(requested.get(asset_id_for_offers, 0))
-                        xch_amount = xch_mojos / 1e12
-                        cat_amount = cat_mojos / (10 ** cat_dec) if cat_mojos else 0
-                        price = xch_amount / cat_amount if cat_amount > 0 else 0
+                        xch_mojos = Decimal(str(offered.get("xch", 0)))
+                        cat_mojos = Decimal(str(requested.get(asset_id_for_offers, 0)))
+                        xch_amount = xch_mojos / Decimal("1000000000000")
+                        cat_amount = cat_mojos / (Decimal(10) ** cat_dec) if cat_mojos else Decimal(0)
+                        price = xch_amount / cat_amount if cat_amount > 0 else Decimal(0)
                         tid = o.get("trade_id", "")
                         db_offer = db_map.get(tid, {})
                         offers_buy_pre.append({
@@ -1742,11 +1764,11 @@ def api_status():
                         summary = o.get("summary") or {}
                         offered = summary.get("offered", {})
                         requested = summary.get("requested", {})
-                        cat_mojos = float(offered.get(asset_id_for_offers, 0))
-                        xch_mojos = float(requested.get("xch", 0))
-                        xch_amount = xch_mojos / 1e12
-                        cat_amount = cat_mojos / (10 ** cat_dec) if cat_mojos else 0
-                        price = xch_amount / cat_amount if cat_amount > 0 else 0
+                        cat_mojos = Decimal(str(offered.get(asset_id_for_offers, 0)))
+                        xch_mojos = Decimal(str(requested.get("xch", 0)))
+                        xch_amount = xch_mojos / Decimal("1000000000000")
+                        cat_amount = cat_mojos / (Decimal(10) ** cat_dec) if cat_mojos else Decimal(0)
+                        price = xch_amount / cat_amount if cat_amount > 0 else Decimal(0)
                         tid = o.get("trade_id", "")
                         db_offer = db_map.get(tid, {})
                         offers_sell_pre.append({
@@ -1801,7 +1823,7 @@ def api_status():
                 "stats": {"loop_count": 0, "uptime_seconds": 0, "last_loop_time": 0,
                            "total_fills": 0, "errors": 0},
                 "balances": {"xch": xch_bal, "cat": cat_bal},
-                "pricing": pricing,
+                "pricing": _decimal_safe(pricing),
                 "offers": {
                     "buy": offers_buy_pre,
                     "sell": offers_sell_pre,
@@ -3962,12 +3984,13 @@ def api_dashboard():
         active_asset_id = _active_cat.get("asset_id") or getattr(cfg, "CAT_ASSET_ID", "")
         active_ticker_id = _active_cat.get("ticker_id") or getattr(cfg, "CAT_TICKER_ID", "")
         active_decimals = int(_active_cat.get("decimals") or getattr(cfg, "CAT_DECIMALS", 3) or 3)
-        executable_mid = 0.0
+        executable_mid = Decimal("0")
         try:
             if bot and getattr(bot, "price_engine", None):
-                executable_mid = float(bot.price_engine.get_last_price() or 0)
+                _lp = bot.price_engine.get_last_price()
+                executable_mid = Decimal(str(_lp)) if _lp else Decimal("0")
         except Exception:
-            executable_mid = 0.0
+            executable_mid = Decimal("0")
 
         spacescan_context = _get_spacescan_market_context(
             asset_id=active_asset_id,
@@ -4035,15 +4058,16 @@ def api_dashboard():
             xr = get_wallet_balance(WALLET_ID_XCH)
             if xr and xr.get("success"):
                 wb = xr.get("wallet_balance") or {}
-                wallet["xch_total"] = _safe_float(wb.get("confirmed_wallet_balance", 0)) / 1e12
-                wallet["xch_spendable"] = _safe_float(wb.get("spendable_balance", 0)) / 1e12
+                wallet["xch_total"] = str(Decimal(str(wb.get("confirmed_wallet_balance", 0))) / Decimal("1000000000000"))
+                wallet["xch_spendable"] = str(Decimal(str(wb.get("spendable_balance", 0))) / Decimal("1000000000000"))
             cat_wid = _active_cat.get("wallet_id") or getattr(cfg, 'CAT_WALLET_ID', 2)
             cat_dec = _active_cat.get("decimals") or getattr(cfg, 'CAT_DECIMALS', 3)
             cr = get_wallet_balance(cat_wid)
             if cr and cr.get("success"):
                 wb = cr.get("wallet_balance") or {}
-                wallet["cat_total"] = _safe_float(wb.get("confirmed_wallet_balance", 0)) / (10 ** int(cat_dec))
-                wallet["cat_spendable"] = _safe_float(wb.get("spendable_balance", 0)) / (10 ** int(cat_dec))
+                _cat_divisor = Decimal(10) ** int(cat_dec)
+                wallet["cat_total"] = str(Decimal(str(wb.get("confirmed_wallet_balance", 0))) / _cat_divisor)
+                wallet["cat_spendable"] = str(Decimal(str(wb.get("spendable_balance", 0))) / _cat_divisor)
         except Exception as e:
             print(f"[DASHBOARD] Wallet balance fetch error: {e}", flush=True)
 
@@ -5342,11 +5366,11 @@ def _fetch_price_standalone(asset_id, decimals):
             if p_id.startswith("0x"):
                 p_id = p_id[2:]
             if p_id == normalized or p_id.rstrip("0") == normalized.rstrip("0"):
-                xch_reserve = float(p.get("xch_reserve", 0))
-                token_reserve = float(p.get("token_reserve", 0))
+                xch_reserve = Decimal(str(p.get("xch_reserve", 0)))
+                token_reserve = Decimal(str(p.get("token_reserve", 0)))
                 if token_reserve > 0 and xch_reserve > 0:
-                    xch_amount = xch_reserve / 1e12
-                    token_amount = token_reserve / (10 ** int(decimals))
+                    xch_amount = xch_reserve / Decimal("1000000000000")
+                    token_amount = token_reserve / (Decimal(10) ** int(decimals))
                     price = xch_amount / token_amount
                     source = "tibetswap"
                     print(f"[PRICE_STANDALONE] TibetSwap match! price={price}")
@@ -5375,8 +5399,8 @@ def _fetch_price_standalone(asset_id, decimals):
                     if tickers:
                         tk = tickers[0]
                         # Prefer bid/ask midpoint (real market) over last_price (can be outlier)
-                        tk_bid = float(tk.get("bid") or tk.get("best_bid") or 0)
-                        tk_ask = float(tk.get("ask") or tk.get("best_ask") or 0)
+                        tk_bid = Decimal(str(tk.get("bid") or tk.get("best_bid") or 0))
+                        tk_ask = Decimal(str(tk.get("ask") or tk.get("best_ask") or 0))
                         if tk_bid > 0 and tk_ask > 0:
                             price = (tk_bid + tk_ask) / 2
                             source = "dexie_bid_ask"
@@ -5386,7 +5410,7 @@ def _fetch_price_standalone(asset_id, decimals):
                             for field in ["current_avg_price", "last_price", "price"]:
                                 val = tk.get(field)
                                 if val and str(val) != "0":
-                                    price = float(val)
+                                    price = Decimal(str(val))
                                     source = "dexie_ticker"
                                     print(f"[PRICE_STANDALONE] Dexie ticker match! {field}={price}")
                                     break
@@ -5400,7 +5424,7 @@ def _fetch_price_standalone(asset_id, decimals):
                 if resp.status_code == 200:
                     offers = resp.json().get("offers", [])
                     if offers:
-                        best_ask = float(offers[0].get("price", 0))
+                        best_ask = Decimal(str(offers[0].get("price", 0)))
                         if best_ask > 0:
                             price = best_ask
                             source = "dexie_orderbook"
@@ -5411,7 +5435,7 @@ def _fetch_price_standalone(asset_id, decimals):
     if not price:
         return jsonify({"success": False, "error": "No price available from TibetSwap or Dexie"})
 
-    return jsonify({
+    return jsonify(_decimal_safe({
         "success": True,
         "mid": price,
         "tibet_price": price if source == "tibetswap" else None,
@@ -5419,7 +5443,7 @@ def _fetch_price_standalone(asset_id, decimals):
         "tibet_enabled": source == "tibetswap",
         "source": source,
         "liquidity": {},
-    })
+    }))
 
 
 # ---------------------------------------------------------------------------

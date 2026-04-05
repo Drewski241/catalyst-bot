@@ -333,6 +333,9 @@ def run_desktop_mode(dev_mode: bool = False):
         tray.on_quit = lambda: _quit_app(webview, tray)
 
         # Phase 3: Start / Stop from tray — call Flask API and show window
+        # Read the auth token from the environment (set by api_server at import time).
+        _tray_token = os.environ.get("BOT_LOCAL_WRITE_TOKEN", "")
+
         def _tray_start_bot():
             """Start bot from tray: call Flask, then bring window to front."""
             try:
@@ -341,12 +344,15 @@ def run_desktop_mode(dev_mode: bool = False):
                     f"http://{FLASK_HOST}:{FLASK_PORT}/api/bot/start",
                     data=b"{}",
                     method="POST",
-                    headers={"Content-Type": "application/json"}
+                    headers={
+                        "Content-Type": "application/json",
+                        "X-Bot-Local-Token": _tray_token,
+                    }
                 )
                 with urllib.request.urlopen(req, timeout=5) as resp:
                     _ = resp.read()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[TRAY] Start bot failed: {e}", flush=True)
             _show_window(webview)
 
         def _tray_stop_bot():
@@ -357,12 +363,15 @@ def run_desktop_mode(dev_mode: bool = False):
                     f"http://{FLASK_HOST}:{FLASK_PORT}/api/bot/stop",
                     data=b"{}",
                     method="POST",
-                    headers={"Content-Type": "application/json"}
+                    headers={
+                        "Content-Type": "application/json",
+                        "X-Bot-Local-Token": _tray_token,
+                    }
                 )
                 with urllib.request.urlopen(req, timeout=5) as resp:
                     _ = resp.read()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[TRAY] Stop bot failed: {e}", flush=True)
 
         tray.on_start_bot = _tray_start_bot
         tray.on_stop_bot = _tray_stop_bot

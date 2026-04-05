@@ -49,10 +49,14 @@ from decimal import Decimal
 
 
 class DecimalEncoder(json.JSONEncoder):
-    """JSON encoder that handles Decimal -> float for PyWebView serialization."""
+    """JSON encoder that handles Decimal -> str for lossless PyWebView serialization.
+
+    Using str instead of float avoids precision loss for large mojo integers
+    (float64 holds ~15.9 decimal digits; mojo values can exceed that).
+    """
     def default(self, obj):
         if isinstance(obj, Decimal):
-            return float(obj)
+            return str(obj)
         return super().default(obj)
 
 

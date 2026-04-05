@@ -10643,7 +10643,7 @@
                 const color = isPositive ? 'var(--status-success)' : 'var(--status-danger)';
                 const top = isPositive ? (mid - barH) : mid;
 
-                html += '<div style="position:absolute; left:' + (i * (barWidth + 1)) + 'px; top:' + top + 'px; width:' + barWidth + 'px; height:' + barH + 'px; background:' + color + '; opacity:0.6; border-radius:1px;" title="' + formatPnlXch(val) + ' XCH"></div>';
+                html += '<div style="position:absolute; left:' + (i * (barWidth + 1)) + 'px; top:' + top + 'px; width:' + barWidth + 'px; height:' + barH + 'px; background:' + color + '; opacity:0.6; border-radius:1px;" title="' + escapeHtml(formatPnlXch(val)) + ' XCH"></div>';
             });
 
             // Zero line
@@ -10719,14 +10719,14 @@
                 // Insert mid-price line when transitioning from sell to buy territory
                 if (!midInserted && pf <= bestBid && bestAsk < Infinity) {
                     const midPrice = ((bestBid + bestAsk) / 2).toFixed(6);
-                    rows += '<div class="v4-ob-mid-line"><span></span><span class="v4-ob-mid-label">MID ' + midPrice + '</span><span></span></div>';
+                    rows += '<div class="v4-ob-mid-line"><span></span><span class="v4-ob-mid-label">MID ' + escapeHtml(midPrice) + '</span><span></span></div>';
                     midInserted = true;
                 }
 
                 rows += '<div class="v4-ob-row">';
-                rows += '<div class="v4-ob-bar-buy" style="width: ' + buyPct + '%" title="' + buySize.toFixed(2) + ' XCH"></div>';
-                rows += '<div class="v4-ob-price">' + price + '</div>';
-                rows += '<div class="v4-ob-bar-sell" style="width: ' + sellPct + '%" title="' + sellSize.toFixed(2) + ' XCH"></div>';
+                rows += '<div class="v4-ob-bar-buy" style="width: ' + buyPct + '%" title="' + escapeHtml(buySize.toFixed(2)) + ' XCH"></div>';
+                rows += '<div class="v4-ob-price">' + escapeHtml(String(price)) + '</div>';
+                rows += '<div class="v4-ob-bar-sell" style="width: ' + sellPct + '%" title="' + escapeHtml(sellSize.toFixed(2)) + ' XCH"></div>';
                 rows += '</div>';
             });
 
