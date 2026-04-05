@@ -8394,7 +8394,7 @@
                                 <span id="xchReservePercent" style="min-width: 40px; text-align: right; font-weight: bold; color: #22c55e;">25%</span>
                             </div>
                             <div style="display: flex; gap: 10px; align-items: center; margin-top: 6px;">
-                                <input type="number" step="0.001" id="configXchReserve" value="" placeholder="XCH amount" min="0" max="10" oninput="updateReserveFromInput('xch'); updateCoinPrepPreview(); validateSettingsForm()" style="flex: 1;">
+                                <input type="number" step="0.001" id="configXchReserve" value="" placeholder="XCH amount" min="0" max="10" oninput="updateReserveFromInput('xch'); updateCoinPrepPreview(); validateSettingsForm(); checkRiskWarnings()" style="flex: 1;">
                                 <span style="font-size: 0.85em; opacity: 0.7;">XCH</span>
                             </div>
                             <div class="v4-settings-hint">Balance: <span id="xchReserveBalance" style="font-weight: bold;">--</span> XCH · Reserved: <span id="xchReserveAmount" style="font-weight: bold; color: #22c55e;">--</span> XCH</div>
@@ -8480,8 +8480,9 @@
                         <div class="v4-settings-section-title" style="color: #3b82f6;">Safety & Limits <span class="cc-help">?<span class="cc-tooltip">Emergency protection settings. These circuit breakers halt trading if something unexpected happens — price crashes, spikes, or moves outside your comfort zone.</span></span></div>
                         <div class="form-group" style="margin-bottom: 8px;">
                             <label style="font-size: 0.85em;">Max Price Move (%) <span class="cc-help">?<span class="cc-tooltip">If the mid-price changes by more than this percentage in a single loop, the bot pauses. Protects against flash crashes or price manipulation.</span></span></label>
-                            <input type="number" id="configMaxMidMove" value="5" min="1" max="20" step="0.5">
+                            <input type="number" id="configMaxMidMove" value="5" min="0" max="100" step="0.5" oninput="checkRiskWarnings()">
                             <div class="v4-settings-hint">Emergency brake — stop if price jumps more than this in one loop</div>
+                            <div id="maxMidMoveWarning" style="display: none; margin-top: 4px; padding: 4px 8px; border-radius: 4px; font-size: 0.82em;"></div>
                         </div>
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 8px;">
                             <div class="form-group" style="margin-bottom: 0;">
@@ -8532,7 +8533,7 @@
                             <div style="font-weight: bold; color: #06b6d4; margin-bottom: 10px;">Offer Sizing (XCH per offer)</div>
                             <div class="form-group" style="margin-bottom: 10px;">
                                 <label>Base Trade Size (XCH) <span class="cc-help">?<span class="cc-tooltip">Default XCH amount per offer. With tiered sizing enabled, this is the 'mid' tier — inner is 2x, outer is 0.5x, extreme is 0.2x.</span></span></label>
-                                <input type="number" step="0.001" id="configTradeXch" value="" placeholder="e.g. 0.5" oninput="updateTierSizesFromBase(); handleTierSizeInputChange(); validateSettingsForm()">
+                                <input type="number" step="0.001" id="configTradeXch" value="" placeholder="e.g. 0.5" oninput="updateTierSizesFromBase(); handleTierSizeInputChange(); validateSettingsForm(); checkRiskWarnings()">
                                 <div id="tradeSizeWarning" style="display: none; margin-top: 4px; padding: 4px 8px; border-radius: 4px; font-size: 0.82em;"></div>
                             </div>
 
@@ -8686,7 +8687,8 @@
                                 </div>
                                 <div class="form-group" style="margin-bottom: 0;">
                                     <label style="font-size: 0.85em;">Min Spread (%) <span class="cc-help">?<span class="cc-tooltip">Hard floor — the dynamic spread formula can never go below this value regardless of conditions.</span></span></label>
-                                    <input type="number" id="configMinSpreadBps" value="3.0" step="0.5" min="0.5" max="10">
+                                    <input type="number" id="configMinSpreadBps" value="3.0" step="0.5" min="0.5" max="10" oninput="checkRiskWarnings()">
+                                    <div id="minSpreadWarning" style="display: none; margin-top: 4px; padding: 4px 8px; border-radius: 4px; font-size: 0.82em;"></div>
                                 </div>
                                 <div class="form-group" style="margin-bottom: 0;">
                                     <label style="font-size: 0.85em;">Max Spread (%) <span class="cc-help">?<span class="cc-tooltip">Hard ceiling — the dynamic spread formula can never exceed this value regardless of conditions.</span></span></label>
@@ -8710,7 +8712,8 @@
                                 </div>
                                 <div class="form-group" style="margin-bottom: 0;">
                                     <label style="font-size: 0.85em;">Max Position (XCH) <span class="cc-help">?<span class="cc-tooltip">Risk limit for net position. Inventory skew and the circuit breaker both rely on this. If it is too low, the bot can clamp or stop taking risk very quickly.</span></span></label>
-                                    <input type="number" id="configMaxPositionXch" value="5.0" step="0.5" min="0" max="100">
+                                    <input type="number" id="configMaxPositionXch" value="5.0" step="0.5" min="0" max="100" oninput="checkRiskWarnings()">
+                                    <div id="maxPositionWarning" style="display: none; margin-top: 4px; padding: 4px 8px; border-radius: 4px; font-size: 0.82em;"></div>
                                 </div>
                             </div>
                         </div>
@@ -8721,7 +8724,7 @@
                             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
                                 <div class="form-group" style="margin-bottom: 0;">
                                     <label style="font-size: 0.85em;">Spread (%)</label>
-                                    <input type="number" id="configSpreadBps" value="7" step="0.1" min="0.1">
+                                    <input type="number" id="configSpreadBps" value="7" step="0.1" min="0.1" oninput="checkRiskWarnings()">
                                 </div>
                                 <div class="form-group" style="margin-bottom: 0;">
                                     <label style="font-size: 0.85em;">Loop Interval (sec)</label>
@@ -15511,6 +15514,9 @@
             
             // Check reserve warnings (updates warning display)
             checkReserveWarnings();
+
+            // Check risk warnings for dangerous settings
+            checkRiskWarnings();
             
             // Check if any critical warnings block save
             const xchCritical = document.getElementById('xchReserveWarning')?.dataset?.critical === 'true';
@@ -15784,15 +15790,99 @@
             }
         }
         
+        function checkRiskWarnings() {
+            // --- Helper to show/hide a warning div ---
+            function setWarning(elId, level, message) {
+                const el = document.getElementById(elId);
+                if (!el) return;
+                if (!message) {
+                    el.style.display = 'none';
+                    return;
+                }
+                el.style.display = 'block';
+                if (level === 'red') {
+                    el.style.background = 'rgba(239,68,68,0.15)';
+                    el.style.border = '1px solid rgba(239,68,68,0.4)';
+                    el.style.color = '#f87171';
+                } else {
+                    el.style.background = 'rgba(245,158,11,0.15)';
+                    el.style.border = '1px solid rgba(245,158,11,0.4)';
+                    el.style.color = '#fbbf24';
+                }
+                el.textContent = message;
+            }
+
+            // 1. XCH Reserve too low (< 2% of balance)
+            const xchReserve = parseFloat(document.getElementById('configXchReserve')?.value) || 0;
+            const xchBalance = getWalletBalance('xch');
+            const xchReserveLowEl = document.getElementById('xchReserveWarning');
+            // Only add this sub-warning when the main reserve warning is not already showing a critical/tight message
+            if (xchBalance > 0 && xchReserve > 0 && xchReserveLowEl && xchReserveLowEl.style.display === 'none') {
+                const reservePct = (xchReserve / xchBalance) * 100;
+                if (reservePct < 2) {
+                    xchReserveLowEl.style.display = 'block';
+                    xchReserveLowEl.style.background = 'rgba(245,158,11,0.15)';
+                    xchReserveLowEl.style.border = '1px solid rgba(245,158,11,0.4)';
+                    xchReserveLowEl.style.color = '#fbbf24';
+                    xchReserveLowEl.textContent = 'Very low reserve \u2014 transaction fees may prevent new offers. Minimum 3-5% recommended.';
+                    xchReserveLowEl.dataset.critical = 'false';
+                }
+            }
+
+            // 2. Max Price Move disabled or very high
+            const maxMidMove = parseFloat(document.getElementById('configMaxMidMove')?.value);
+            if (isNaN(maxMidMove) || maxMidMove === 0) {
+                setWarning('maxMidMoveWarning', 'red', 'Circuit breaker disabled \u2014 bot will trade through flash crashes and oracle failures.');
+            } else if (maxMidMove > 30) {
+                setWarning('maxMidMoveWarning', 'amber', 'Very high \u2014 bot will continue trading through large price swings. Recommended: 10-20%.');
+            } else {
+                setWarning('maxMidMoveWarning', null, null);
+            }
+
+            // 3. Max Position vs wallet balance
+            const maxPosition = parseFloat(document.getElementById('configMaxPositionXch')?.value) || 0;
+            if (xchBalance > 0 && maxPosition > 0 && maxPosition > xchBalance * 0.5) {
+                setWarning('maxPositionWarning', 'amber', 'Max position exceeds 50% of your XCH balance \u2014 limits flexibility for emergency exits.');
+            } else {
+                setWarning('maxPositionWarning', null, null);
+            }
+
+            // 4. Individual trade size warning (> 3 XCH)
+            const tradeSize = parseFloat(document.getElementById('configTradeXch')?.value) || 0;
+            const tradeSizeWarnEl = document.getElementById('tradeSizeWarning');
+            // Only show trade size risk warning when the element is not already used by other logic
+            if (tradeSizeWarnEl && tradeSizeWarnEl.style.display === 'none' && tradeSize > 3) {
+                tradeSizeWarnEl.style.display = 'block';
+                tradeSizeWarnEl.style.background = 'rgba(245,158,11,0.15)';
+                tradeSizeWarnEl.style.border = '1px solid rgba(245,158,11,0.4)';
+                tradeSizeWarnEl.style.color = '#fbbf24';
+                tradeSizeWarnEl.textContent = 'Large trade size \u2014 each offer risks significant capital. Consider smaller sizes for tighter risk control.';
+            } else if (tradeSizeWarnEl && tradeSize <= 3) {
+                // Only clear if we were the ones who set it (check for our specific text)
+                if (tradeSizeWarnEl.textContent.indexOf('Large trade size') !== -1) {
+                    tradeSizeWarnEl.style.display = 'none';
+                }
+            }
+
+            // 5. Min Spread >= Base Spread warning
+            const minSpread = parseFloat(document.getElementById('configMinSpreadBps')?.value) || 0;
+            const baseSpread = parseFloat(document.getElementById('configSpreadBps')?.value) || 0;
+            if (minSpread > 0 && baseSpread > 0 && minSpread >= baseSpread) {
+                setWarning('minSpreadWarning', 'amber', 'Min spread should be below base spread \u2014 otherwise dynamic spreads cannot tighten.');
+            } else {
+                setWarning('minSpreadWarning', null, null);
+            }
+        }
+
         function refreshReserveDisplays() {
             // Called when settings modal opens to populate balance info
             updateReserveDisplay('xch');
             updateReserveDisplay('cat');
-            
+
             // Sync sliders from existing input values
             updateReserveFromInput('xch');
             updateReserveFromInput('cat');
-            
+
             checkReserveWarnings();
         }
 
