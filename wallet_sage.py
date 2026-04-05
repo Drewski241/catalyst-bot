@@ -1138,6 +1138,8 @@ def get_spendable_coin_count(wallet_id: int) -> int:
     Sage API: get_spendable_coin_count { asset_id: Option<String> }
     Returns: { count: u32 }
     """
+    ensure_initialized()
+
     if _is_cat_wallet(wallet_id):
         asset_id = _resolve_asset_id(wallet_id)
         if not asset_id:
@@ -1149,7 +1151,7 @@ def get_spendable_coin_count(wallet_id: int) -> int:
         "asset_id": asset_id,
     }, timeout=10)
 
-    if result and isinstance(result, dict):
+    if _rpc_succeeded(result):
         count = result.get("count", 0)
         if isinstance(count, int):
             return count
@@ -1158,10 +1160,16 @@ def get_spendable_coin_count(wallet_id: int) -> int:
             return int(count)
         except (ValueError, TypeError):
             pass
-    return 0
+    # RPC failed or returned error — return -1 so callers can distinguish
+    # "zero coins" from "could not reach wallet"
+    error_detail = ""
+    if isinstance(result, dict):
+        error_detail = result.get("error", "")
+    print(f"  [Sage] get_spendable_coin_count failed for wallet {wallet_id}: {error_detail or 'no response'}")
+    return -1
 
 
-def get_pending_transactions() -> list:
+def get_pending_transactions() -> Optional[list]:
     """Get all pending (unconfirmed) transactions from Sage.
 
     Returns a list of PendingTransactionRecord dicts, each with:
@@ -1176,9 +1184,11 @@ def get_pending_transactions() -> list:
     Sage API: get_pending_transactions {}
     Returns: { pending_transactions: [...] }
     """
+    ensure_initialized()
+
     result = rpc("get_pending_transactions", {}, timeout=10)
 
-    if result and isinstance(result, dict):
+    if _rpc_succeeded(result):
         # Try multiple possible response keys
         pending = (result.get("pending_transactions")
                    or result.get("transactions")
@@ -1186,7 +1196,13 @@ def get_pending_transactions() -> list:
                    or [])
         if isinstance(pending, list):
             return pending
-    return []
+    # RPC failed or returned error — return None so callers can distinguish
+    # "no pending transactions" from "could not reach wallet"
+    error_detail = ""
+    if isinstance(result, dict):
+        error_detail = result.get("error", "")
+    print(f"  [Sage] get_pending_transactions failed: {error_detail or 'no response'}")
+    return None
 
 
 def _are_coins_spendable_rpc(coin_ids: list) -> Optional[bool]:
@@ -1742,16 +1758,22 @@ def get_wallets():
 
 def get_next_address(wallet_id: int = None, new_address: bool = True):
     """Get next receive address from Sage."""
+    ensure_initialized()
+
     if wallet_id is None:
         wallet_id = WALLET_ID_XCH
     # Sage doesn't have a dedicated get_address endpoint.
     # The receive_address comes from get_sync_status.
     result = rpc("get_sync_status", {}, timeout=5)
-    if result and isinstance(result, dict):
+    if _rpc_succeeded(result):
         address = result.get("receive_address", "")
         if address:
             return {"success": True, "address": address}
-    return None
+    error_detail = ""
+    if isinstance(result, dict):
+        error_detail = result.get("error", "")
+    print(f"  [Sage] get_next_address failed: {error_detail or 'no response'}")
+    return {"success": False, "error": f"RPC failed: {error_detail or 'no response'}"}
 
 
 def _get_active_address_prefix() -> Optional[str]:
@@ -2706,13 +2728,18 @@ def cancel_offers_batch(trade_ids: list, secure: bool = True, max_workers: int =
     except Exception:
         pass
 
-    def _total_spendable() -> int:
+    def _total_spendable():
+        """Return total spendable coins, or None if any wallet RPC failed."""
         total = 0
         for _wid in _confirm_wallet_ids:
             try:
-                total += get_spendable_coin_count(wallet_id=_wid)
+                count = get_spendable_coin_count(wallet_id=_wid)
+                if count < 0:
+                    # RPC failure — can't trust partial total
+                    return None
+                total += count
             except Exception:
-                pass
+                return None
         return total
 
     def _merged_owned_coins():
@@ -2731,16 +2758,24 @@ def cancel_offers_batch(trade_ids: list, secure: bool = True, max_workers: int =
     # --- Pre-cancel snapshots for verification ---
     # Use Sage's documented count and pending-tx endpoints rather than
     # approximating from coin list lengths.
-    pre_cancel_coin_count = 0
-    pre_pending_count = 0
+    # None = "unknown" (RPC failed); callers must not treat None as 0.
+    pre_cancel_coin_count = None
+    pre_pending_count = None
     try:
         pre_cancel_coin_count = _total_spendable()
-        print(f"   📸 [Sage] Pre-cancel snapshot: {pre_cancel_coin_count} spendable coins")
+        if pre_cancel_coin_count is not None:
+            print(f"   📸 [Sage] Pre-cancel snapshot: {pre_cancel_coin_count} spendable coins")
+        else:
+            print(f"   ⚠️ [Sage] Could not snapshot pre-cancel coins: RPC failed")
     except Exception as e:
         print(f"   ⚠️ [Sage] Could not snapshot pre-cancel coins: {e}")
     try:
-        pre_pending_count = len(get_pending_transactions() or [])
-        print(f"   📸 [Sage] Pre-cancel pending txs: {pre_pending_count}")
+        pending_list = get_pending_transactions()
+        if pending_list is not None:
+            pre_pending_count = len(pending_list)
+            print(f"   📸 [Sage] Pre-cancel pending txs: {pre_pending_count}")
+        else:
+            print(f"   ⚠️ [Sage] Could not snapshot pending txs: RPC failed")
     except Exception as e:
         print(f"   ⚠️ [Sage] Could not snapshot pending txs: {e}")
 
@@ -2874,18 +2909,21 @@ def cancel_offers_batch(trade_ids: list, secure: bool = True, max_workers: int =
                     # Other unknown statuses = in-progress, keep waiting
 
                 # Layer 2: Spendable coin count and exact offer-lock state
-                post_cancel_coin_count = 0
-                coin_delta = 0
-                pending_count = pre_pending_count
+                post_cancel_coin_count = None
+                coin_delta = None
+                pending_count = None
                 still_locked = set()
                 lock_state_known = False
                 try:
                     post_cancel_coin_count = _total_spendable()
-                    coin_delta = post_cancel_coin_count - pre_cancel_coin_count
+                    if post_cancel_coin_count is not None and pre_cancel_coin_count is not None:
+                        coin_delta = post_cancel_coin_count - pre_cancel_coin_count
                 except Exception:
                     pass
                 try:
-                    pending_count = len(get_pending_transactions() or [])
+                    pending_list = get_pending_transactions()
+                    if pending_list is not None:
+                        pending_count = len(pending_list)
                 except Exception:
                     pass
                 try:
@@ -2905,8 +2943,8 @@ def cancel_offers_batch(trade_ids: list, secure: bool = True, max_workers: int =
                       f"active={len(still_active)}, "
                       f"vanished={len(vanished)}, "
                       f"locked={'?' if not lock_state_known else len(still_locked)}, "
-                      f"pending={pending_count}, "
-                      f"coin_delta=+{coin_delta}")
+                      f"pending={'?' if pending_count is None else pending_count}, "
+                      f"coin_delta={'?' if coin_delta is None else f'+{coin_delta}'}")
 
                 # Success criteria: all offers either explicitly cancelled OR
                 # gone from list AND coins freed on-chain
@@ -2919,8 +2957,14 @@ def cancel_offers_batch(trade_ids: list, secure: bool = True, max_workers: int =
                         results[tid] = {"success": True, "method": "confirmed_by_status"}
                     break
 
+                # When pending_count or coin_delta are None (RPC failed),
+                # we can't use them for confirmation — only accept if lock
+                # state alone is definitive.
+                _pending_ok = (pending_count is not None and pre_pending_count is not None
+                               and pending_count <= pre_pending_count)
+                _coins_ok = (coin_delta is not None and coin_delta > 0)
                 if len(still_active) == 0 and not in_progress_cancel and lock_state_known and len(still_locked) == 0 and (
-                    pending_count <= pre_pending_count or coin_delta > 0
+                    _pending_ok or _coins_ok
                 ):
                     # Offers no longer active, no owned coins remain locked to
                     # those offer_ids, and either the pending queue is back to
@@ -2943,7 +2987,9 @@ def cancel_offers_batch(trade_ids: list, secure: bool = True, max_workers: int =
                         }
                     break
 
-                if len(still_active) == 0 and lock_state_known and len(still_locked) == 0 and pending_count > pre_pending_count:
+                if (len(still_active) == 0 and lock_state_known and len(still_locked) == 0
+                        and pending_count is not None and pre_pending_count is not None
+                        and pending_count > pre_pending_count):
                     print(f"   ⏳ [Sage] Offers are unlocked but {pending_count} pending "
                           f"txs remain (baseline {pre_pending_count}) — waiting...")
                 elif len(still_active) == 0 and lock_state_known and len(still_locked) > 0:

@@ -102,7 +102,7 @@ CREATE TABLE IF NOT EXISTS offers (
     price_xch       TEXT NOT NULL,
     size_xch        TEXT NOT NULL,
     size_cat        TEXT NOT NULL,
-    tier            TEXT DEFAULT 'mid' CHECK(tier IN ('inner', 'mid', 'outer', 'extreme', 'sniper')),
+    tier            TEXT DEFAULT 'mid' CHECK(tier IN ('inner', 'mid', 'outer', 'extreme', 'sniper', 'boost')),
     status          TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'filled', 'cancelled', 'expired')),
     dexie_id        TEXT,
     dexie_posted    INTEGER DEFAULT 0,
@@ -288,15 +288,15 @@ def init_database():
     conn = get_connection()
     conn.executescript(SCHEMA_SQL)
 
-    # Migration: add 'sniper' to tier CHECK constraint if the table was created
-    # with the old schema. SQLite doesn't support ALTER CHECK, so we recreate
+    # Migration: add 'boost' to tier CHECK constraint if the table was created
+    # with an older schema. SQLite doesn't support ALTER CHECK, so we recreate
     # the table if the constraint is outdated.
     try:
-        # Test if 'sniper' tier is allowed — if this fails, we need to migrate
+        # Test if 'boost' tier is allowed — if this fails, we need to migrate
         conn.execute(
             "INSERT INTO offers (trade_id, side, price_xch, size_xch, size_cat, "
             "tier, cat_asset_id, created_at) "
-            "VALUES ('__migration_test__', 'buy', '0', '0', '0', 'sniper', 'test', '')"
+            "VALUES ('__migration_test__', 'buy', '0', '0', '0', 'boost', 'test', '')"
         )
         conn.execute("DELETE FROM offers WHERE trade_id='__migration_test__'")
         conn.commit()
@@ -312,7 +312,7 @@ def init_database():
                 price_xch       TEXT NOT NULL,
                 size_xch        TEXT NOT NULL,
                 size_cat        TEXT NOT NULL,
-                tier            TEXT DEFAULT 'mid' CHECK(tier IN ('inner', 'mid', 'outer', 'extreme', 'sniper')),
+                tier            TEXT DEFAULT 'mid' CHECK(tier IN ('inner', 'mid', 'outer', 'extreme', 'sniper', 'boost')),
                 status          TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'filled', 'cancelled', 'expired')),
                 dexie_id        TEXT,
                 dexie_posted    INTEGER DEFAULT 0,
@@ -329,7 +329,7 @@ def init_database():
             conn.execute("CREATE INDEX IF NOT EXISTS idx_offers_side ON offers(side)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_offers_cat ON offers(cat_asset_id)")
             conn.commit()
-            log_event("info", "db_migration", "Migrated offers table: added 'sniper' tier")
+            log_event("info", "db_migration", "Migrated offers table: added 'boost' tier")
         except Exception as mig_err:
             try:
                 conn.rollback()
@@ -723,7 +723,7 @@ def add_offer(trade_id: str, side: str, price_xch: Decimal, size_xch: Decimal,
         size_xch: Offer size in XCH
         size_cat: Offer size in CAT tokens
         cat_asset_id: Which CAT pair this offer is for
-        tier: 'inner', 'mid', 'outer', or 'extreme'
+        tier: 'inner', 'mid', 'outer', 'extreme', 'sniper', or 'boost'
         expires_at: ISO timestamp when this offer expires
         coin_id: The specific coin locked by this offer (from before/after snapshot)
         fee_mojos_xch: Transaction fee in mojos attached to this offer at creation
@@ -742,10 +742,16 @@ def add_offer(trade_id: str, side: str, price_xch: Decimal, size_xch: Decimal,
         )
         conn.commit()
         return True
-    except sqlite3.IntegrityError:
-        # trade_id already exists — this is fine on restart/resume
-        print(f"  ⚠️ [DB] add_offer SKIPPED — trade_id {trade_id[:16]}... already exists", flush=True)
-        log_event("warning", "offer_duplicate", f"Offer {trade_id[:16]}... already in DB — skipped")
+    except sqlite3.IntegrityError as e:
+        err = str(e)
+        if "UNIQUE constraint failed" in err:
+            # trade_id already exists — this is fine on restart/resume
+            print(f"  ⚠️ [DB] add_offer SKIPPED — trade_id {trade_id[:16]}... already exists", flush=True)
+            log_event("warning", "offer_duplicate", f"Offer {trade_id[:16]}... already in DB — skipped")
+            return False
+        # Any other constraint failure (e.g. CHECK on tier/side/status) is a real error
+        print(f"  ❌ [DB] add_offer CONSTRAINT ERROR for {trade_id[:16]}...: {err}", flush=True)
+        log_event("error", "db_constraint_error", f"Failed to add offer {trade_id[:16]}...: {err}")
         return False
     except Exception as e:
         print(f"  ❌ [DB] add_offer FAILED for {trade_id[:16]}...: {e}", flush=True)

@@ -2803,6 +2803,15 @@ class BotLoop:
         self._recovery_state["cycle_probe_churn"] = False
         self._recovery_state["cycle_create_stalled"] = False
 
+        # ---- Step 0pre: Clear per-cycle coin exclusion set ----
+        # Coins from the previous cycle's pending offers may now be confirmed
+        # on-chain, so reset the exclusion set.  Within this new cycle,
+        # successfully used coins will be added back to prevent MEMPOOL_CONFLICT.
+        try:
+            self.offer_manager.clear_cycle_coins()
+        except Exception:
+            pass  # non-critical — _select_coin_for_offer still has used_coins guard
+
         # ---- Step 0: Expire stale reservations ----
         try:
             from reservation_manager import ReservationManager
@@ -3763,7 +3772,7 @@ class BotLoop:
                             f"mid {mid_price:.8f} -> {requote_mid:.8f}",
                         )
                     _live_ids = current_buy_ids if eq_side == "buy" else current_sell_ids
-                    new_offers = self.offer_manager.requote_side(
+                    requote_result = self.offer_manager.requote_side(
                         eq_side, requote_mid,
                         dexie_manager=self.dexie_manager,
                         risk_manager=self.risk_manager,
@@ -3772,7 +3781,20 @@ class BotLoop:
                         price_floor=price_floor,
                         live_offer_ids=_live_ids,
                     )
-                    self._last_quoted_price[eq_side] = requote_mid
+                    if isinstance(requote_result, dict):
+                        new_offers = requote_result.get("offers", [])
+                        if requote_result.get("fully_replaced"):
+                            self._last_quoted_price[eq_side] = requote_mid
+                        else:
+                            log_event("warning", "requote_incomplete",
+                                      f"Did not advance {eq_side} quote baseline: replaced "
+                                      f"{requote_result.get('replaced_count', 0)}/"
+                                      f"{requote_result.get('target_count', 0)} offers")
+                    else:
+                        # Legacy return format (list)
+                        new_offers = requote_result if isinstance(requote_result, list) else []
+                        if new_offers:
+                            self._last_quoted_price[eq_side] = requote_mid
                     buy_q = self._last_quoted_price.get("buy")
                     sell_q = self._last_quoted_price.get("sell")
                     self.amm_monitor.notify_quoted_price(buy_q, sell_q)
@@ -4245,10 +4267,18 @@ class BotLoop:
         return str(migration.get("phase") or "idle").lower()
 
     def _graceful_creation_blocked(self) -> bool:
-        """Only block fresh creation when migration is beyond safe batched cancels."""
+        """Block fresh offer creation during ALL active graceful migration phases.
+
+        Previously this only blocked during retrying/verifying (not cancelling),
+        which caused coin exhaustion — new offers consumed spare coins while
+        cancelled offers' coins hadn't been freed yet.  Now blocks during
+        cancelling, retrying, and verifying alike.
+        """
         if not getattr(self, "_graceful_in_progress", False):
             return False
-        return self._graceful_migration_phase() != "cancelling"
+        phase = self._graceful_migration_phase()
+        # Only allow creation when migration is idle or done
+        return phase not in ("idle", "done")
 
     def _maybe_finalize_graceful_migration(self, current_buy_ids: set = None,
                                            current_sell_ids: set = None):
@@ -4392,7 +4422,7 @@ class BotLoop:
                         f"-> {requote_mid:.8f}",
                     )
                 _live_ids_req = current_buy_ids if side == "buy" else current_sell_ids
-                new_offers = self.offer_manager.requote_side(
+                requote_result = self.offer_manager.requote_side(
                     side, requote_mid, dexie_manager=self.dexie_manager,
                     risk_manager=self.risk_manager,
                     spread_fraction=spread,
@@ -4400,7 +4430,20 @@ class BotLoop:
                     price_floor=price_floor,
                     live_offer_ids=_live_ids_req,
                 )
-                self._last_quoted_price[side] = requote_mid
+                if isinstance(requote_result, dict):
+                    new_offers = requote_result.get("offers", [])
+                    if requote_result.get("fully_replaced"):
+                        self._last_quoted_price[side] = requote_mid
+                    else:
+                        log_event("warning", "requote_incomplete",
+                                  f"Did not advance {side} quote baseline: replaced "
+                                  f"{requote_result.get('replaced_count', 0)}/"
+                                  f"{requote_result.get('target_count', 0)} offers")
+                else:
+                    # Legacy return format (list)
+                    new_offers = requote_result if isinstance(requote_result, list) else []
+                    if new_offers:
+                        self._last_quoted_price[side] = requote_mid
                 _buy_q = self._last_quoted_price.get("buy")
                 _sell_q = self._last_quoted_price.get("sell")
                 self.amm_monitor.notify_quoted_price(_buy_q, _sell_q)
@@ -4873,8 +4916,26 @@ class BotLoop:
                 tid = db_offer.get("trade_id", "")
                 if not tid or tid in wallet_open_ids or tid in recent_ids:
                     continue
-                if _hk_get_locked_coin_ids_for_trade(tid):
+                # Time-based override: if offer has been in DB for >120s and
+                # is NOT in the wallet, mark it stale regardless of coin lock
+                # status. This catches offers that failed on-chain
+                # (MEMPOOL_CONFLICT) but were recorded in the DB.
+                offer_age_s = 0
+                try:
+                    _ca = db_offer.get("created_at", "")
+                    if _ca:
+                        from datetime import datetime as _dt_cls
+                        _created_ts = _dt_cls.strptime(_ca, "%Y-%m-%d %H:%M:%S").timestamp()
+                        offer_age_s = now - _created_ts
+                except Exception:
+                    pass
+                has_locked = bool(_hk_get_locked_coin_ids_for_trade(tid))
+                if has_locked and offer_age_s <= 120:
                     continue
+                if has_locked and offer_age_s > 120:
+                    log_event("warning", "stale_offer_cleanup",
+                              f"Cleaned up stale DB offer {tid[:16]}... "
+                              f"(not in wallet after {int(offer_age_s)}s, had locked coins)")
                 stale_db_ids.append(tid)
 
             if stale_db_ids:

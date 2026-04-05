@@ -208,11 +208,12 @@ class AMMMonitor:
         if score < 0.9:  return "high"
         return "critical"
 
-    def check_amm_buffer(self, offer_price: Decimal, side: str) -> bool:
+    def check_amm_buffer(self, offer_price: Decimal, side: str):
         """Check whether an offer price is safe to post (not inside arb range).
 
-        Returns True  = safe to post (outside buffer or AMM data unavailable).
+        Returns True  = safe to post (outside buffer).
         Returns False = unsafe (TibetSwap will likely arb this immediately).
+        Returns None  = AMM data unavailable, cannot determine safety.
 
         Logic:
           BUY side:  if offer_price >= amm_price × (1 - buffer_bps/10000)
@@ -228,11 +229,11 @@ class AMMMonitor:
             state = self._state
 
         if not state or not state.get("available"):
-            return True  # No data — fail open
+            return None  # No data — fail closed
 
         amm_price = state.get("amm_price")
         if not amm_price or amm_price <= 0:
-            return True
+            return None
 
         try:
             base_bps = Decimal(str(getattr(cfg, "AMM_BUFFER_BPS", "30")))
@@ -266,7 +267,7 @@ class AMMMonitor:
             return True
 
         except (InvalidOperation, ZeroDivisionError):
-            return True  # Calculation error — fail open
+            return None  # Calculation error — fail closed
 
     def get_stats(self) -> Dict:
         """Return health/stats dict for monitoring."""

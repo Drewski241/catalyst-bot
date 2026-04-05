@@ -121,6 +121,15 @@ class OfferManager:
         # double-selecting the same coin in concurrent create paths.
         self._inflight_coin_ids: set = set()
 
+        # ----- Per-cycle used coin exclusion -----
+        # Coins successfully used by any offer creation within the current
+        # bot cycle.  Unlike _inflight_coin_ids (released after each RPC
+        # call) this set persists for the entire cycle so that a second
+        # create_ladder call (e.g. the sell side after the buy side) will
+        # not re-select a coin that is still pending on-chain confirmation.
+        # Cleared at the start of every cycle via clear_cycle_coins().
+        self._cycle_used_coin_ids: set = set()
+
         # ----- Wallet sync fail-closed cache -----
         # When Sage get_offers times out, we must not treat that as an empty
         # book. Keep the last successful classified view so callers can fail
@@ -139,6 +148,20 @@ class OfferManager:
             "last_failure_at": 0.0,
             "cache_size": 0,
         }
+
+    # -------------------------------------------------------------------
+    # Per-cycle coin exclusion
+    # -------------------------------------------------------------------
+
+    def clear_cycle_coins(self):
+        """Reset the per-cycle used-coin set.
+
+        Called by bot_loop at the start of every trading cycle so that
+        coins confirmed on-chain since the last cycle become available
+        again, while coins used earlier *within* the same cycle stay
+        excluded until the cycle boundary.
+        """
+        self._cycle_used_coin_ids.clear()
 
     # -------------------------------------------------------------------
     # Coin ID Extraction (for before/after snapshot)
@@ -256,6 +279,8 @@ class OfferManager:
                 spendable_amounts[coin_id] = coin_amount
 
                 if coin_id in used_coins or coin_amount < amount_mojos:
+                    continue
+                if coin_id in self._cycle_used_coin_ids:
                     continue
                 if exclude_coin_ids and coin_id in exclude_coin_ids:
                     continue
@@ -1126,10 +1151,17 @@ class OfferManager:
             # price will be swept immediately by the TibetSwap arb bot.
             if self.amm_monitor is not None:
                 try:
-                    if not self.amm_monitor.check_amm_buffer(price, side):
-                        continue  # Skip this slot — too close to AMM price
+                    buffer_ok = self.amm_monitor.check_amm_buffer(price, side)
+                    if buffer_ok is False:
+                        continue  # Inside AMM arb band
+                    if buffer_ok is None:
+                        log_event("warning", "amm_buffer_unknown",
+                                  f"Skipping {side} slot: AMM buffer data unavailable")
+                        continue  # Fail closed — no data
                 except Exception:
-                    pass  # Buffer check failure: fail open (proceed with offer)
+                    log_event("warning", "amm_buffer_error",
+                              f"AMM buffer check failed for {side} — skipping slot")
+                    continue  # Fail closed on errors too
 
             tier = self._classify_tier(slot, total_slots)
             if cfg.TIER_ENABLED and risk_manager:
@@ -1327,6 +1359,7 @@ class OfferManager:
                 if locked_coin_id:
                     with _used_coins_lock:
                         used_coin_ids.add(locked_coin_id)
+                        self._cycle_used_coin_ids.add(locked_coin_id)
             try:
                 delay_ms = int(getattr(cfg, "LADDER_CREATE_DELAY_MS", 0) or 0)
             except Exception:
@@ -1431,6 +1464,7 @@ class OfferManager:
             lock_targets = verified_locked_coin_ids or ([locked_coin_id] if locked_coin_id else [])
             for coin_id in lock_targets:
                 used_coin_ids.add(coin_id)
+                self._cycle_used_coin_ids.add(coin_id)
                 try:
                     lock_coin(coin_id, trade_id)
                 except Exception as e:
@@ -1640,12 +1674,18 @@ class OfferManager:
 
         if not open_offers:
             log_event("info", "requote_no_cancel", f"No DB offers to cancel for {side}")
-            return self.create_ladder(current_price, side,
-                                      risk_manager=risk_manager,
-                                      spread_fraction=spread_fraction,
-                                      coin_ids_enabled=cfg.COIN_IDS_ENABLED,
-                                      price_cap=price_cap,
-                                      price_floor=price_floor)
+            fresh = self.create_ladder(current_price, side,
+                                       risk_manager=risk_manager,
+                                       spread_fraction=spread_fraction,
+                                       coin_ids_enabled=cfg.COIN_IDS_ENABLED,
+                                       price_cap=price_cap,
+                                       price_floor=price_floor)
+            return {
+                "offers": fresh,
+                "fully_replaced": True,
+                "replaced_count": len(fresh),
+                "target_count": 0,
+            }
 
         # Check how many spare coins we have to bootstrap the first batch
         wallet_id = cfg.CAT_WALLET_ID if side == "sell" else cfg.WALLET_ID_XCH
@@ -1733,6 +1773,27 @@ class OfferManager:
                     price_cap=price_cap,
                     price_floor=price_floor,
                 )
+
+                # Atomicity guard: if we didn't create the full batch,
+                # roll back partial offers and keep old ones live.
+                if len(new_offers) < batch_count:
+                    log_event("error", "requote_undercreated",
+                              f"Requote {side} batch {batch_num}/{total_batches}: "
+                              f"only created {len(new_offers)}/{batch_count} offers — "
+                              f"rolling back partial creates, keeping old offers live")
+                    if new_offers:
+                        partial_ids = [o["trade_id"] for o in new_offers
+                                       if o.get("trade_id")]
+                        if partial_ids:
+                            self.cancel_offers(partial_ids,
+                                               reason="requote_rollback")
+                    return {
+                        "offers": all_new_offers,
+                        "fully_replaced": False,
+                        "replaced_count": len(all_new_offers),
+                        "target_count": total_to_replace,
+                    }
+
                 all_new_offers.extend(new_offers)
 
                 # Step 2: Post new offers to Dexie immediately
@@ -1875,7 +1936,12 @@ class OfferManager:
                   f"Requote {side} complete: "
                   f"replaced {total_to_replace} old → {len(all_new_offers)} new "
                   f"in {batches_done} batches ({mode})")
-        return all_new_offers
+        return {
+            "offers": all_new_offers,
+            "fully_replaced": len(all_new_offers) >= total_to_replace,
+            "replaced_count": len(all_new_offers),
+            "target_count": total_to_replace,
+        }
 
     # -------------------------------------------------------------------
     # Cancellation

@@ -16,7 +16,7 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import List
 from urllib.parse import urlparse
 
@@ -145,6 +145,28 @@ def validate_config(cfg) -> ValidationReport:
     if hard_min > Decimal("0") and hard_max > Decimal("0") and hard_min > hard_max:
         err("HARD_MIN_PRICE_XCH/HARD_MAX_PRICE_XCH",
             f"HARD_MIN ({hard_min}) > HARD_MAX ({hard_max})")
+
+    # ---- Price Strategy ----
+    try:
+        raw_strategy = getattr(cfg, "PRICE_STRATEGY", None)
+        strategy = str(raw_strategy).strip().lower() if raw_strategy and isinstance(raw_strategy, str) else ""
+        allowed_strategies = {"dexie_only", "tibet_only", "average", "weighted"}
+        if strategy and strategy not in allowed_strategies:
+            err("PRICE_STRATEGY",
+                f"PRICE_STRATEGY='{strategy}' is invalid; expected one of {sorted(allowed_strategies)}")
+    except Exception:
+        pass  # Attribute missing or not a string — use default
+
+    # ---- Tibet Weight ----
+    try:
+        raw_weight = getattr(cfg, "TIBET_WEIGHT", None)
+        if raw_weight is not None and isinstance(raw_weight, (int, float, str, Decimal)):
+            weight = Decimal(str(raw_weight))
+            if weight < Decimal("0") or weight > Decimal("1"):
+                err("TIBET_WEIGHT",
+                    f"TIBET_WEIGHT={weight} must be between 0 and 1 inclusive")
+    except (InvalidOperation, TypeError, ValueError):
+        err("TIBET_WEIGHT", "TIBET_WEIGHT is not a valid decimal number")
 
     # ---- Offer Management ----
     expiry = getattr(cfg, "OFFER_EXPIRY_SECS", 86400)

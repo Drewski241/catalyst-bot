@@ -97,7 +97,7 @@ class _DummyOfferManager:
 
     def requote_side(self, side, current_price, **kwargs):
         self.requote_calls.append((side, current_price, kwargs))
-        return []
+        return {"offers": [], "fully_replaced": True}
 
 
 class _DummyFillTracker:

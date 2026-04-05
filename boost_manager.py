@@ -606,15 +606,24 @@ class BoostManager:
             # natural expiry for an arb fill.
             self._boost_id_expiry[trade_id] = time.time() + offer_expiry
 
-            add_offer(
+            db_ok = add_offer(
                 trade_id=trade_id,
                 side=side,
                 price_xch=price,
                 size_xch=size_xch,
                 size_cat=cat_amount,
                 cat_asset_id=cfg.CAT_ASSET_ID,
-                tier="boost",  # Keep tier="boost" for DB compatibility
+                tier="boost",
             )
+            if not db_ok:
+                # DB insert failed — cancel the on-chain offer to prevent
+                # wallet/DB divergence (offer exists in wallet but not in DB).
+                log_event("error", "boost_db_cancel",
+                          f"DB insert failed for boost {trade_id[:16]}..., cancelling on-chain offer")
+                if self._offer_manager:
+                    self._offer_manager._bot_cancelled_ids.add(trade_id)
+                    self._offer_manager.cancel_offers([trade_id], reason="boost_db_insert_failed")
+                return None
             if self._offer_manager:
                 self._offer_manager._offer_details_cache[trade_id] = {
                     "price": price,

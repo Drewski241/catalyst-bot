@@ -2727,6 +2727,18 @@ def api_config_live():
 
     log_event("info", "config_live", f"Live control: {key} = {value}")
     response = {"success": True, "key": key}
+
+    # Warn when bot is in recovery mode — config changes may be deferred
+    if bot:
+        try:
+            bot_status = (bot.get_state() or {}).get("status", "")
+            if bot_status == "recovering":
+                response["recovery_warning"] = (
+                    "Bot is currently in recovery mode \u2014 config changes may not "
+                    "take effect until recovery completes."
+                )
+        except Exception:
+            pass
     event_payload = {"key": key, "value": value, "source": "live_controls"}
 
     if bot and bot.is_running() and key in _LIVE_REQUOTE_ONLY_KEYS:
