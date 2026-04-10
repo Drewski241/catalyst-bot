@@ -301,3 +301,4 @@ def install_all_hooks():
 
     slog("HOOKS", f"Total: {hooked} methods/functions hooked")
     return hooked
+
