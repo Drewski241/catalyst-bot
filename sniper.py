@@ -484,3 +484,4 @@ class Sniper:
             "last_snipe_time": self._last_snipe_time,
             "recent_snipes": recent,
         }
+
