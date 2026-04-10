@@ -22772,22 +22772,16 @@
                     /PARALLEL/i,
                     /^\s*={5,}/,
                     /^\s*-{5,}/,
-                    /\[Sage\] (XCH|CAT) balance:/,
-                    /\[Sage\] (get_offers|First offer|After normalization|Status distribution|Client-side)/,
-                    /\[Sage\] Splitting coin/,
+                    /\[Sage\]/,
                     /\[Wallet\] Using/,
                     /Intelligent Coin Preparation/,
                     /PARALLEL OPTIMIZATION/,
                     /^\s*#\d+:/,
                     /\.\.\. and \d+ more/,
                     /\[INITIAL\]/,
-                    /DB: (connected|post-consolidation|debug|reset|raw ID|fixed sample)/,
-                    /DB (xch|cat): (all|upsert|extreme=|reserve=)/,
-                    /DB VERIFY/,
+                    /DB[: ]/,
                     /designation_debug/,
                     /coin designations at birth/,
-                    /Pre-cancel snapshot/,
-                    /Pre-cancel pending/,
                     /mojos\)$/,
                     /selectable_balance=/,
                     /pool coin acknowledged/,
@@ -22797,14 +22791,26 @@
                     /TIER MODE ENABLED/,
                     /Total: \d+ XCH coins/,
                     /Saved prep settings/,
-                    /\[Sage\] (Pre-cancel|Post-cancel|Confirm|Bulk cancel|cancel_offers)/,
-                    /\[Sage\] (get_peer|Attempting bulk|Cancelling \d+ offers seq)/,
                     /multi_send.*response/i,
                     /submit_response/i,
                     /transaction_id/,
                     /^Running coin prep/,
                     /^Worker subprocess/,
                     /peer_count/,
+                    /Submitting consolidation/,
+                    /Consolidation (submitted|failed)/,
+                    /bulk cancel/i,
+                    /Retrying.*failed cancels/,
+                    /uncancellable offers/,
+                    /Proceeding anyway/,
+                    /VERIFYING CANCELLATIONS/,
+                    /Round \d+/,
+                    /stragglers/,
+                    /re-submitting cancels/,
+                    /All cancellable offers/,
+                    /offers are protected/,
+                    /Bulk cancel result/,
+                    /Cancellation error/,
                 ];
                 function _cpFilterLine(line) {
                     return !_cpSkip.some(rx => rx.test(line));
@@ -22812,30 +22818,43 @@
                 // Simplify verbose messages into plain English
                 function _cpSimplify(line) {
                     return line
-                        .replace(/📦 STEP 1a: Submit XCH multi_send/, '📦 Creating XCH pool coins')
-                        .replace(/📦 STEP 1b: Submit CAT multi_send/, '📦 Creating token pool coins')
-                        .replace(/✂️ STEP 3: Submit ALL splits.*/, '✂️ Splitting pools into trading coins')
-                        .replace(/🔍 STEP 4: Poll for ALL \d+ splits to confirm/, '🔍 Waiting for splits to confirm on-chain')
-                        .replace(/🔍 Polling for ALL pool coins.*/, 'Waiting for pool coins to confirm...')
-                        .replace(/🔍 Polling for ALL \d+ splits.*/, 'Waiting for all splits to confirm...')
+                        // Startup
+                        .replace(/Starting coin preparation.*/, 'Starting coin prep')
+                        .replace(/Cancelling open offers.*/, 'Cancelling open offers')
+                        .replace(/⚡ Using bulk cancel.*/, 'Cancelling open offers')
+                        .replace(/No offers were cancelled/, 'No offers to cancel')
+                        // Consolidation
+                        .replace(/🔄 Consolidating (\w+) wallet.*/, 'Consolidating $1 coins into 1')
+                        .replace(/Consolidating (\d+) (CAT|XCH) coins.*1 coin.*/, 'Consolidating $1 $2 coins into 1')
+                        .replace(/Consolidating: XCH=(\d+), CAT=(\d+).*/, 'Consolidating: XCH $1 coins, token $2 coins')
+                        .replace(/✅ Consolidation submitted/, 'Consolidation sent')
+                        // Pool creation
+                        .replace(/📦 STEP 1a: Submit XCH multi_send/, 'Step 1: Creating XCH pool coins')
+                        .replace(/📦 STEP 1b: Submit CAT multi_send/, 'Step 1: Creating token pool coins')
                         .replace(/XCH MULTI-SEND: (\d+) payments.*/, 'Sending $1 XCH pool transactions')
                         .replace(/CAT MULTI-SEND: (\d+) payments.*/, 'Sending $1 token pool transactions')
                         .replace(/Payment \d+: (\w+) = [\d,]+ mojos \((\d+) coins\)/, '  $1: $2 coins')
-                        .replace(/(\w+) split submitted \((\d+)\/(\d+)\)/, '$1: split submitted ($2/$3)')
+                        .replace(/(\w+) pools selectable after (\d+)s/, '$1 pool coins confirmed ($2s)')
+                        // Splitting
+                        .replace(/✂️ STEP 3: Submit ALL splits.*/, 'Step 3: Splitting pools into trading coins')
+                        .replace(/(\w+) split submitted \((\d+)\/(\d+)\)/, '$1 split sent ($2/$3)')
                         .replace(/(\w+) split submitted \((\d+) pieces\)/, '$1: splitting into $2 coins')
                         .replace(/Splitting (XCH|CAT) (\w+):.*into (\d+) pieces/, 'Splitting $2 tier into $3 coins')
-                        .replace(/(\w+) pools selectable after (\d+)s/, '$1 pool coins confirmed ($2s)')
                         .replace(/(\w+) split confirmed after (\d+)s/, '$1 split confirmed ($2s)')
-                        // Verifying / waiting lines — collapse the noisy repeated polls
-                        .replace(/Verifying: XCH (\d+)\/(\d+)[-\d]*, CAT (\d+)\/(\d+)\s*\((\d+m?\s*\d*s?)\).*/, 'Verifying: XCH $1/$2, token $3/$4 ($5)')
-                        .replace(/⏳ (\d+)s — XCH: (.), CAT: (.)/, 'Waiting... $1s (XCH: $2, token: $3)')
-                        .replace(/⏳ (\d+)s — (\d+)\/(\d+) confirmed.*/, 'Waiting... $1s ($2/$3 splits confirmed)')
-                        .replace(/Waiting for spendable balance/, 'Waiting for wallet balance to confirm')
-                        .replace(/Step (\d+)\/(\d+).*Waiting for XCH pool coins/, 'Step $1/$2: Waiting for XCH pool coins to confirm')
-                        .replace(/Step (\d+)\/(\d+).*Waiting for CAT pool coins/, 'Step $1/$2: Waiting for token pool coins to confirm')
+                        // Waiting / verifying — simplify repeated poll lines
+                        .replace(/🔍 STEP 4: Poll for ALL \d+ splits to confirm/, 'Step 4: Waiting for splits to confirm')
+                        .replace(/🔍 Polling for ALL pool coins.*/, 'Waiting for pool coins to confirm...')
+                        .replace(/🔍 Polling for ALL \d+ splits.*/, 'Waiting for all splits to confirm...')
+                        .replace(/Verifying: XCH (\d+)\/(\d+)[-\d]*, CAT (\d+)\/(\d+)\s*\((\d+m?\s*\d*s?)\).*/, 'Verifying consolidations ($5)')
+                        .replace(/⏳ (\d+)s — XCH: (.), CAT: (.)/, 'Waiting ($1s)')
+                        .replace(/⏳ (\d+)s — (\d+)\/(\d+) confirmed.*/, 'Waiting... $2/$3 confirmed ($1s)')
+                        .replace(/Waiting for spendable balance/, 'Waiting for wallet balance')
+                        // Step-based status messages
+                        .replace(/Step (\d+)\/(\d+).*Waiting for XCH pool coins/, 'Step $1/$2: Waiting for XCH pool coins')
+                        .replace(/Step (\d+)\/(\d+).*Waiting for CAT pool coins/, 'Step $1/$2: Waiting for token pool coins')
                         .replace(/Step (\d+)\/(\d+).*XCH (\w+) split submitted \((\d+)\/(\d+)\)/, 'Step $1/$2: XCH $3 split sent ($4/$5)')
                         .replace(/Step (\d+)\/(\d+).*CAT (\w+) split submitted \((\d+)\/(\d+)\)/, 'Step $1/$2: Token $3 split sent ($4/$5)')
-                        .replace(/Step (\d+)\/(\d+).*Waiting for (\d+) splits to confirm/, 'Step $1/$2: Waiting for $3 splits to confirm on-chain')
+                        .replace(/Step (\d+)\/(\d+).*Waiting for (\d+) splits to confirm/, 'Step $1/$2: Waiting for $3 splits to confirm')
                         .replace(/Step (\d+)\/(\d+).*waiting for (.+) \((\d+)\/(\d+)\)/, 'Step $1/$2: Waiting for confirmations ($4/$5)')
                         // Fee coin cleanup
                         .replace(/Consolidating (\d+) spare fee coins.*/, 'Tidying up $1 spare fee coins')
@@ -22843,7 +22862,7 @@
                         .replace(/fee.*consolidat/i, 'Tidying spare fee coins')
                         // Final messages
                         .replace(/🎉 All \d+ splits confirmed!/, '🎉 All splits confirmed!')
-                        .replace(/COIN PREPARATION COMPLETE!/, 'Coin preparation complete!')
+                        .replace(/COIN PREPARATION COMPLETE!/, '✅ Coin preparation complete!')
                         .replace(/🏗️ TIER MODE:/, 'Coin layout:')
                         .replace(/Post-consolidation balances:/, 'Wallet balances:')
                         .replace(/📊 INITIAL STATE/, 'Starting state:')
@@ -22852,12 +22871,29 @@
                         .replace(/outer: XCH=(\d+) × ([\d.]+) \/ CAT=(\d+) × ([\d,]+).*/, '  Outer: $1 XCH × $2 | $3 tokens')
                         .replace(/extreme: XCH=(\d+) × ([\d.]+) \/ CAT=(\d+) × ([\d,]+).*/, '  Extreme: $1 XCH × $2 | $3 tokens')
                         .replace(/sniper: XCH=(\d+) × ([\d.]+) \/ CAT=(\d+) × ([\d,]+).*/, '  Sniper: $1 XCH × $2 | $3 tokens')
-                        .replace(/fees: XCH=(\d+) × ([\d.]+).*/, '  Fees: $1 XCH × $2');
+                        .replace(/fees: XCH=(\d+) × ([\d.]+).*/, '  Fees: $1 XCH × $2')
+                        ;
+                }
+                // Collapse repeated "Verifying" lines — keep only the latest one
+                function _cpCollapseRepeats(lines) {
+                    const result = [];
+                    for (let i = 0; i < lines.length; i++) {
+                        const isVerify = /^Verifying consolidations/.test(lines[i]);
+                        const isWaiting = /^Waiting \(\d+s\)/.test(lines[i]);
+                        if ((isVerify || isWaiting) && i + 1 < lines.length) {
+                            // Check if next line is also a verify/waiting — skip this one
+                            const nextIsRepeat = /^Verifying consolidations/.test(lines[i+1])
+                                || /^Waiting \(\d+s\)/.test(lines[i+1]);
+                            if (nextIsRepeat) continue;
+                        }
+                        result.push(lines[i]);
+                    }
+                    return result;
                 }
                 if (data.log_lines && Array.isArray(data.log_lines) && data.log_lines.length) {
-                    lines = data.log_lines.filter(_cpFilterLine).map(_cpSimplify);
+                    lines = _cpCollapseRepeats(data.log_lines.filter(_cpFilterLine).map(_cpSimplify));
                 } else if (data.output) {
-                    lines = data.output.split('\n').filter(Boolean).filter(_cpFilterLine).map(_cpSimplify);
+                    lines = _cpCollapseRepeats(data.output.split('\n').filter(Boolean).filter(_cpFilterLine).map(_cpSimplify));
                 } else {
                     // Fallback: accumulate status messages as a rolling log.
                     // The worker's 'message' field has good detail (e.g.
