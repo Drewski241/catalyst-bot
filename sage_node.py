@@ -2263,4 +2263,3 @@ def _resolve_cat_name(raw_name: str, asset_id: str, wallet_id: int,
 
     # The wallet name looks reasonable — use it
     return clean
-
