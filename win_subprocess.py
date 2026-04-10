@@ -37,3 +37,4 @@ def hidden_subprocess_kwargs(*, detached: bool = False, new_process_group: bool 
         kwargs["startupinfo"] = startupinfo
 
     return kwargs
+
