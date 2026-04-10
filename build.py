@@ -20,7 +20,7 @@ import argparse
 # Paths
 # ---------------------------------------------------------------------------
 HERE = os.path.dirname(os.path.abspath(__file__))
-SPEC_FILE = os.path.join(HERE, 'build_windows.spec')
+SPEC_FILE = os.path.join(HERE, 'catalyst.spec')
 DIST_DIR = os.path.join(HERE, 'dist')
 BUILD_DIR = os.path.join(HERE, 'build')
 OUTPUT_DIR = os.path.join(DIST_DIR, 'ChiaMarketMaker')
@@ -90,26 +90,24 @@ def _post_build():
     else:
         print("  Warning: .env.example not found — users will need to create .env manually.")
 
-    # Sanity: confirm the exe exists
-    exe_path = os.path.join(OUTPUT_DIR, 'ChiaMarketMaker.exe')
+    # Sanity: confirm the executable exists (platform-specific name)
+    exe_name = 'ChiaMarketMaker.exe' if sys.platform == 'win32' else 'ChiaMarketMaker'
+    exe_path = os.path.join(OUTPUT_DIR, exe_name)
     if not os.path.isfile(exe_path):
         print(f"\n  ERROR: Executable not found at expected path: {exe_path}")
         sys.exit(1)
 
     # Confirm HTML files are bundled (quick sanity check)
-    missing_html = []
-    for html in ('bot_gui.html', 'bot_console.html'):
-        if not os.path.isfile(os.path.join(OUTPUT_DIR, html)):
-            missing_html.append(html)
-    if missing_html:
-        print(f"\n  WARNING: These HTML files were not found in the bundle: {missing_html}")
+    if not os.path.isfile(os.path.join(OUTPUT_DIR, 'bot_gui.html')):
+        print(f"\n  WARNING: bot_gui.html not found in the bundle.")
         print("  The app may fail to load the GUI. Check the .spec datas list.")
     else:
         print("  HTML assets verified in bundle.")
 
 
 def _print_success():
-    exe_path = os.path.join(OUTPUT_DIR, 'ChiaMarketMaker.exe')
+    exe_name = 'ChiaMarketMaker.exe' if sys.platform == 'win32' else 'ChiaMarketMaker'
+    exe_path = os.path.join(OUTPUT_DIR, exe_name)
     size_mb = os.path.getsize(exe_path) / (1024 * 1024)
     print(f"""
   =====================================================
@@ -118,16 +116,14 @@ def _print_success():
 
   Executable : {exe_path}
   Size       : {size_mb:.1f} MB
+  Platform   : {sys.platform}
 
   To run:
     1. Copy {OUTPUT_DIR}/ to your target machine
-    2. Place your .env file in the same folder as ChiaMarketMaker.exe
-       (use .env.example as a template)
-    3. Double-click ChiaMarketMaker.exe
+    2. Ensure Sage wallet is running with RPC enabled
+    3. Run {exe_name}
+    4. The app auto-creates .env on first launch
 
-  NOTE: The .env file is NOT included in the bundle.
-  It contains your wallet credentials and must be
-  created manually on each machine you deploy to.
   =====================================================
 """)
 
@@ -136,11 +132,11 @@ def _print_success():
 # Entry point
 # ---------------------------------------------------------------------------
 def main():
-    parser = argparse.ArgumentParser(description='Build CATalyst for Windows')
+    parser = argparse.ArgumentParser(description='Build CATalyst')
     parser.add_argument('--no-clean', action='store_true', help='Skip cleaning dist/ and build/ before building')
     args = parser.parse_args()
 
-    print(f"\n  CATalyst — Windows Build")
+    print(f"\n  CATalyst — Build ({sys.platform})")
     print(f"  {'=' * 40}")
     print(f"  Python     : {sys.executable}")
     print(f"  Spec file  : {SPEC_FILE}")
