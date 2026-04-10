@@ -662,3 +662,4 @@ def get_offer_detail(dexie_id: str, timeout: int = 8,
                   f"Could not fetch Dexie detail for {dexie_id[:16]}...: {e}")
 
     return None
+
