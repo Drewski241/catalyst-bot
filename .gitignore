@@ -104,7 +104,6 @@ splash.exe.bak
 tmp_greenfloor_review/
 
 # --- Dev-only files (stay local) ---
-installer.iss
 splash.html
 tools/
 website

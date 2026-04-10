@@ -1,6 +1,6 @@
 name: Build Release
 
-# Triggers when you push a version tag (e.g. v4.0.1, v4.1.0)
+# Triggers when you push a version tag (e.g. v1.0.0, v1.1.0)
 on:
   push:
     tags:
@@ -43,11 +43,27 @@ jobs:
       - name: Build with PyInstaller
         run: python build.py
 
-      - name: Package (Windows)
+      - name: Package (Windows zip)
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
           Compress-Archive -Path dist/ChiaMarketMaker/* -DestinationPath "${{ matrix.artifact }}-${{ github.ref_name }}${{ matrix.ext }}"
+
+      - name: Build Windows Installer
+        if: matrix.os == 'windows-latest'
+        run: |
+          # Install Inno Setup
+          choco install innosetup --yes --no-progress
+          # Update version in installer script to match tag
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          (Get-Content installer.iss) -replace 'MyAppVersion     ".*"', "MyAppVersion     `"$version`"" | Set-Content installer.iss
+          # Copy icon to root for Inno (SetupIconFile expects it in script dir)
+          Copy-Item assets/bot_icon_new.ico bot_icon_new.ico -ErrorAction SilentlyContinue
+          # Build installer
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+          # Rename output to match release naming
+          Move-Item "Output\ChiaMarketMaker-Setup-$version.exe" "Catalyst-Setup-${{ github.ref_name }}.exe"
+        shell: pwsh
 
       - name: Package (macOS)
         if: matrix.os == 'macos-latest'
@@ -59,9 +75,17 @@ jobs:
         run: |
           cd dist && tar -czf "../${{ matrix.artifact }}-${{ github.ref_name }}${{ matrix.ext }}" ChiaMarketMaker/
 
-      - name: Upload to Release
+      - name: Upload zip/tar to Release
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.artifact }}-${{ github.ref_name }}${{ matrix.ext }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Windows Installer to Release
+        if: matrix.os == 'windows-latest'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Catalyst-Setup-${{ github.ref_name }}.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
