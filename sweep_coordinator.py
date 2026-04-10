@@ -285,3 +285,4 @@ def _set_sweep_group(fill_id: int, group_id: str) -> None:
         conn.commit()
     except Exception:
         pass
+
