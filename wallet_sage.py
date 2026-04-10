@@ -4044,3 +4044,4 @@ def cat_to_mojos(amount: Decimal, decimals: int) -> int:
 def xch_to_mojos(amount: Decimal) -> int:
     """Convert XCH amount to mojos (1 XCH = 1e12 mojos)."""
     return int((amount * Decimal("1000000000000")).to_integral_value(ROUND_DOWN))
+
