@@ -2405,165 +2405,39 @@ class OfferManager:
         for tid in trade_ids:
             self._bot_cancelled_ids.add(tid)
 
-        # Cancel in controlled batches — tuned for live Sage cancel testing.
-        # The batch call already performs on-chain confirmation, so only keep
-        # a short breathing gap between batches.
-        BATCH_SIZE = 25
-        BASE_BATCH_DELAY = 5.0
+        # Send ALL offers in a single bulk cancel RPC to Sage, then
+        # wait for on-chain confirmation. Sage handles bulk cancels natively
+        # and batching just adds unnecessary delay.
         total = len(trade_ids)
-        total_batches = (total + BATCH_SIZE - 1) // BATCH_SIZE
         all_results = {}
 
-        log_event("info", "cancel_all_batched",
-                  f"Cancelling {total} offers in batches of {BATCH_SIZE}")
+        log_event("info", "cancel_all_bulk",
+                  f"Cancelling all {total} offers in one bulk request")
         emit_progress(
             running=True,
             complete=False,
-            phase="starting",
+            phase="cancelling",
             total=total,
-            batch_size=BATCH_SIZE,
-            total_batches=total_batches,
-            current_batch=0,
+            batch_size=total,
+            total_batches=1,
+            current_batch=1,
             cancelled=0,
             failed=0,
-            message=f"Starting cancel all for {total} offers in batches of {BATCH_SIZE}.",
+            message=f"Cancelling {total} offers...",
         )
 
-        for i in range(0, total, BATCH_SIZE):
-            batch = trade_ids[i:i + BATCH_SIZE]
-            batch_num = (i // BATCH_SIZE) + 1
-            next_batch_delay = BASE_BATCH_DELAY
-
-            try:
-                batch_results = cancel_offers_batch(batch, secure=True)
-                all_results.update(batch_results)
-                apply_batch_results(batch_results)
-
-                # F50 (2026-04-09): distinguish on-chain-confirmed cancels
-                # from still-in-flight cancels (cancel TX submitted to
-                # mempool but not yet confirmed). The old code counted
-                # both as "cancelled", which was misleading when the
-                # mempool was congested and half the cancels were
-                # actually pending or outright failing due to conflicts.
-                #
-                # Confirmed methods mean the offer is definitively gone
-                # from Sage's active list. Pending methods mean the
-                # cancel TX exists but the offer is still ACTIVE in
-                # Sage's status until the block confirms. Failed means
-                # the cancel didn't even reach the mempool or was
-                # rejected.
-                CONFIRMED_METHODS = {
-                    "confirmed_by_status",
-                    "confirmed_by_unlock",
-                    "bulk",  # bulk-cancel RPC reports its own confirmation
-                }
-                PENDING_METHODS = {
-                    "submitted_pending_confirm",
-                }
-
-                def _classify(r):
-                    if not isinstance(r, dict):
-                        return "failed"
-                    if not r.get("success"):
-                        return "failed"
-                    method = r.get("method", "")
-                    if method in CONFIRMED_METHODS:
-                        return "confirmed"
-                    if method in PENDING_METHODS:
-                        return "pending"
-                    return "confirmed"  # unknown success method — assume confirmed
-
-                batch_confirmed = sum(1 for r in batch_results.values() if _classify(r) == "confirmed")
-                batch_pending   = sum(1 for r in batch_results.values() if _classify(r) == "pending")
-                batch_failures  = sum(1 for r in batch_results.values() if _classify(r) == "failed")
-                # Legacy "batch_successes" for UI backwards compat = confirmed + pending
-                batch_successes = batch_confirmed + batch_pending
-
-                running_confirmed = sum(1 for r in all_results.values() if _classify(r) == "confirmed")
-                running_pending   = sum(1 for r in all_results.values() if _classify(r) == "pending")
-                running_failures  = sum(1 for r in all_results.values() if _classify(r) == "failed")
-                running_successes = running_confirmed + running_pending
-
-                if batch_pending > 0:
-                    log_event("info", "cancel_all_batch",
-                              f"Batch {batch_num}/{total_batches}: "
-                              f"{batch_confirmed}/{len(batch)} cancels confirmed on-chain, "
-                              f"{batch_pending} pending (cancel TX in mempool), "
-                              f"{batch_failures} failed")
-                else:
-                    log_event("info", "cancel_all_batch",
-                              f"Batch {batch_num}/{total_batches}: "
-                              f"{batch_confirmed}/{len(batch)} cancels confirmed on-chain "
-                              f"({batch_failures} failed)")
-                if batch_failures > 0 or batch_pending > 0:
-                    next_batch_delay = 10.0
-                emit_progress(
-                    running=True,
-                    complete=False,
-                    phase="running",
-                    total=total,
-                    batch_size=BATCH_SIZE,
-                    total_batches=total_batches,
-                    current_batch=batch_num,
-                    batch_cancelled=batch_successes,
-                    batch_confirmed=batch_confirmed,
-                    batch_pending=batch_pending,
-                    batch_failed=batch_failures,
-                    cancelled=running_successes,
-                    confirmed=running_confirmed,
-                    pending=running_pending,
-                    failed=running_failures,
-                    message=(
-                        f"Batch {batch_num}/{total_batches}: "
-                        f"{batch_confirmed} confirmed"
-                        + (f", {batch_pending} pending" if batch_pending else "")
-                        + (f", {batch_failures} failed" if batch_failures else "")
-                    ),
-                )
-            except Exception as e:
-                log_event("warning", "cancel_all_batch_error",
-                          f"Batch {batch_num} error: {e}")
-                for tid in batch:
+        try:
+            bulk_results = cancel_offers_batch(trade_ids, secure=True)
+            all_results.update(bulk_results)
+            apply_batch_results(bulk_results)
+        except Exception as e:
+            log_event("warning", "cancel_all_error",
+                      f"Bulk cancel error: {e}")
+            for tid in trade_ids:
+                if tid not in all_results:
                     all_results[tid] = {"success": False, "error": str(e)}
-                apply_batch_results({tid: all_results[tid] for tid in batch})
-                running_successes = sum(1 for r in all_results.values()
-                                        if r and r.get("success"))
-                running_failures = len(all_results) - running_successes
-                emit_progress(
-                    running=True,
-                    complete=False,
-                    phase="running",
-                    total=total,
-                    batch_size=BATCH_SIZE,
-                    total_batches=total_batches,
-                    current_batch=batch_num,
-                    batch_cancelled=0,
-                    batch_failed=len(batch),
-                    cancelled=running_successes,
-                    failed=running_failures,
-                    message=f"Batch {batch_num}/{total_batches} failed: {e}",
-                )
-
-            # Wait between batches (except after the last one)
-            if i + BATCH_SIZE < total:
-                emit_progress(
-                    running=True,
-                    complete=False,
-                    phase="waiting",
-                    total=total,
-                    batch_size=BATCH_SIZE,
-                    total_batches=total_batches,
-                    current_batch=batch_num,
-                    cancelled=sum(1 for r in all_results.values()
-                                  if r and r.get("success")),
-                    failed=sum(1 for r in all_results.values()
-                               if not (r and r.get("success"))),
-                    message=(
-                        f"Batch {batch_num}/{total_batches} sent. "
-                        f"Waiting {int(next_batch_delay)}s before the next batch."
-                    ),
-                )
-                time.sleep(next_batch_delay)
+            apply_batch_results({tid: all_results[tid] for tid in trade_ids
+                                 if not (all_results.get(tid, {}).get("success"))})
 
         # F50 (2026-04-09): summarise by confirmed vs pending vs failed.
         # Previously we lumped confirmed + pending together as "succeeded"
@@ -2632,9 +2506,9 @@ class OfferManager:
             complete=True,
             phase="complete",
             total=total,
-            batch_size=BATCH_SIZE,
-            total_batches=total_batches,
-            current_batch=total_batches,
+            batch_size=total,
+            total_batches=1,
+            current_batch=1,
             cancelled=successes,
             confirmed=confirmed_count,
             pending=pending_count,
