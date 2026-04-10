@@ -64,7 +64,11 @@ _splash_name = 'splash.exe' if sys.platform == 'win32' else 'splash'
 _splash_path = os.path.join(_HERE, _splash_name)
 _splash_files = [(_splash_path, '.')] if os.path.isfile(_splash_path) else []
 
-_datas = _html_files + _image_files + _splash_files
+# Coin prep worker — launched as a subprocess, needs the .py file in the bundle
+_worker_path = os.path.join(_HERE, 'coin_prep_worker.py')
+_worker_files = [(_worker_path, '.')] if os.path.isfile(_worker_path) else []
+
+_datas = _html_files + _image_files + _splash_files + _worker_files
 
 # ---------------------------------------------------------------------------
 # Hidden imports

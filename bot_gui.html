@@ -6132,6 +6132,8 @@
             padding: 18px;
             border: 1px solid var(--border-default);
             background: rgba(255,255,255,0.04);
+            overflow: hidden;
+            min-width: 0;
         }
 
         .coin-prep-side--buy {
@@ -6234,10 +6236,12 @@
 
         .coin-prep-breakdown-sub {
             color: var(--text-tertiary);
-            font-size: 0.78rem;
+            font-size: 0.75rem;
             line-height: 1.3;
-            flex-shrink: 0;
-            margin-left: auto;      /* Push the "live" metadata to the right */
+            flex-shrink: 1;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
         .coin-prep-breakdown-empty {
@@ -6250,12 +6254,12 @@
         }
 
         .coin-prep-breakdown--preview .coin-prep-breakdown-tier {
-            padding: 2px 7px;
-            font-size: 0.63rem;
+            padding: 2px 5px;
+            font-size: 0.58rem;
         }
 
         .coin-prep-breakdown--preview .coin-prep-breakdown-main {
-            font-size: 0.82rem;
+            font-size: 0.74rem;
         }
 
         .coin-prep-breakdown--preview .coin-prep-breakdown-sub {
@@ -9432,7 +9436,7 @@
                             </div>
                             <div class="form-group" style="margin-bottom: 8px;">
                                 <label style="display: flex; align-items: center; gap: 10px;">
-                                    <input type="checkbox" id="configBuyLadderReversed" style="width: auto; margin: 0;" checked onchange="if (_tierSpareMode === 'auto') autoFillTierSpareCountsFromRecommendation(true); updateCoinPrepPreview(); validateSettingsForm();">
+                                    <input type="checkbox" id="configBuyLadderReversed" style="width: auto; margin: 0;" checked onchange="handleReverseLadderToggle();">
                                     <span>Reverse Buy Ladder <span class="cc-help">?<span class="cc-tooltip">When on: buy side places the SMALLEST offers closest to price and the LARGEST offers furthest away. This limits your XCH exposure when sellers hit the top of the book — a large commitment only gets filled on a genuine support-level drop. Sell side is unaffected (large sells stay closest to price, where buyers find them). Requires Tiered Sizing to be enabled.</span></span></span>
                                 </label>
                                 <div class="v4-settings-hint" style="margin-top: 2px; margin-left: 26px; color: var(--slate-400);">Buy: small near price → large far. Sell: large near price → small far (unchanged).</div>
@@ -11429,7 +11433,9 @@
                         // F49 (2026-04-09): Topup pool fields (populated by
                         // Smart Settings; loaded here from .env so re-opening
                         // the settings page shows the last allocation).
-                        try {
+                        // Guarded by blankFreshTemplates — stale values from a
+                        // previous pair must not leak into a fresh start.
+                        if (!blankFreshTemplates) try {
                             const _tpXch = g('TOPUP_POOL_XCH');
                             const _tpCat = g('TOPUP_POOL_CAT');
                             const _tpPct = g('TOPUP_POOL_PCT');
@@ -14821,6 +14827,15 @@
                 'configTransactionFeeXch',
                 'configFeeCoinSizeXch',
                 'configFeePrepCount',
+                // F62: per-side buy tier sizes (capital-derived)
+                'configBuyInnerSizeXch',
+                'configBuyMidSizeXch',
+                'configBuyOuterSizeXch',
+                'configBuyExtremeSizeXch',
+                // F49: topup pool (market-derived allocation)
+                'configTopupPoolXch',
+                'configTopupPoolCat',
+                'configTopupPoolPct',
             ];
             blankFields.forEach((id) => {
                 const el = document.getElementById(id);
@@ -14840,6 +14855,10 @@
             if (feeEnabledEl) feeEnabledEl.checked = false;
             const competitorEl = document.getElementById('configCompetitorEnabled');
             if (competitorEl) competitorEl.checked = false;
+
+            // Reset topup pool status text
+            const _tpStatusReset = document.getElementById('topupPoolStatus');
+            if (_tpStatusReset) _tpStatusReset.textContent = 'Run Smart Settings to allocate the topup pool.';
 
             if (typeof updateFeeSettingsUi === 'function') updateFeeSettingsUi();
             if (typeof updateReserveFromInput === 'function') {
@@ -16068,23 +16087,13 @@
                 if (_sMc != null) document.getElementById('configMidTierCount').value = _sMc;
                 if (_sOc != null) document.getElementById('configOuterTierCount').value = _sOc;
                 if (_sEc != null) document.getElementById('configExtremeTierCount').value = _sEc;
-                // Buy row — under BUY_LADDER_REVERSED the inner POSITION uses
-                // the extreme SIZE, so swap inner↔extreme and mid↔outer when
-                // populating the position-indexed inputs from Smart Settings'
-                // size-indexed values.
-                let _bIc = _buyTC('inner_tier_count');
-                let _bMc = _buyTC('mid_tier_count');
-                let _bOc = _buyTC('outer_tier_count');
-                let _bEc = _buyTC('extreme_tier_count');
-                const _buyLadRevTC = document.getElementById('configBuyLadderReversed');
-                const _buyLadderRevTC = _buyLadRevTC ? _buyLadRevTC.checked : true;
-                if (_buyLadderRevTC) {
-                    const _oI = _bIc, _oM = _bMc, _oO = _bOc, _oE = _bEc;
-                    _bIc = _oE;
-                    _bMc = _oO;
-                    _bOc = _oM;
-                    _bEc = _oI;
-                }
+                // Buy row — the backend already reverses counts under
+                // BUY_LADDER_REVERSED so they are position-indexed.
+                // No swap needed here — just write them directly.
+                const _bIc = _buyTC('inner_tier_count');
+                const _bMc = _buyTC('mid_tier_count');
+                const _bOc = _buyTC('outer_tier_count');
+                const _bEc = _buyTC('extreme_tier_count');
                 if (_bIc != null) document.getElementById('configInnerTierCountXch').value = _bIc;
                 if (_bMc != null) document.getElementById('configMidTierCountXch').value = _bMc;
                 if (_bOc != null) document.getElementById('configOuterTierCountXch').value = _bOc;
@@ -16104,25 +16113,12 @@
                 if (_sMid   != null) document.getElementById('configMidTierSpareCount').value   = _sMid;
                 if (_sOuter != null) document.getElementById('configOuterTierSpareCount').value = _sOuter;
                 if (_sExt   != null) document.getElementById('configExtremeTierSpareCount').value = _sExt;
-                let _bInner = _spareBuy('inner_tier_spare_count');
-                let _bMid   = _spareBuy('mid_tier_spare_count');
-                let _bOuter = _spareBuy('outer_tier_spare_count');
-                let _bExt   = _spareBuy('extreme_tier_spare_count');
-                // Smart Settings backend seeds buy_* identically to sell_* (it
-                // sizes by SIZE column, not by POSITION). The XCH row in the GUI
-                // is indexed by POSITION, so under BUY_LADDER_REVERSED the inner
-                // position uses the extreme size — swap inner↔extreme and
-                // mid↔outer so the heaviest spare count lands on the position
-                // that actually consumes the largest coin.
-                const _buyLadderRevEl = document.getElementById('configBuyLadderReversed');
-                const _buyLadderRev = _buyLadderRevEl ? _buyLadderRevEl.checked : true;
-                if (_buyLadderRev) {
-                    const _origInner = _bInner, _origMid = _bMid, _origOuter = _bOuter, _origExt = _bExt;
-                    _bInner = _origExt;
-                    _bMid   = _origOuter;
-                    _bOuter = _origMid;
-                    _bExt   = _origInner;
-                }
+                const _bInner = _spareBuy('inner_tier_spare_count');
+                const _bMid   = _spareBuy('mid_tier_spare_count');
+                const _bOuter = _spareBuy('outer_tier_spare_count');
+                const _bExt   = _spareBuy('extreme_tier_spare_count');
+                // Backend already reverses spare counts under BUY_LADDER_REVERSED
+                // — no frontend swap needed. Values are position-indexed.
                 if (_bInner != null) document.getElementById('configInnerTierSpareCountXch').value = _bInner;
                 if (_bMid   != null) document.getElementById('configMidTierSpareCountXch').value   = _bMid;
                 if (_bOuter != null) document.getElementById('configOuterTierSpareCountXch').value = _bOuter;
@@ -16628,8 +16624,8 @@
                             : plan.offerTierSizesXch?.[tier];
                         rows.push(buildCoinPrepBreakdownRow(
                             getCoinPrepTierLabel(tier),
-                            `${count} x ${formatCoinPrepXch(plan.preparedTierSizesXch?.[tier])} prep`,
-                            `${formatCoinPrepXch(_liveXchBuy)} live`
+                            `${count} \u00d7 ${formatCoinPrepXch(plan.preparedTierSizesXch?.[tier])} prep`,
+                            variant === 'modal' ? `${formatCoinPrepXch(_liveXchBuy)} live` : ''
                         ));
                     } else if (asset === 'cat') {
                         const preparedSize = Number(plan.preparedTierSizesCat?.[tier] || 0);
@@ -17255,6 +17251,31 @@
         // stash is cleared whenever the user edits so downstream reads
         // the live inputs (preventing stale Smart Settings data from
         // masking manual tweaks).
+        function handleReverseLadderToggle() {
+            // When the reverse-buy toggle changes, swap the buy-side size
+            // and count inputs (inner↔extreme, mid↔outer) so the values
+            // stay correct for the new orientation. Every toggle is a swap
+            // — it doesn't matter whether we're going on→off or off→on.
+            const _swap = (idA, idB) => {
+                const a = document.getElementById(idA);
+                const b = document.getElementById(idB);
+                if (a && b) { const t = a.value; a.value = b.value; b.value = t; }
+            };
+            // Swap buy-side sizes
+            _swap('configBuyInnerSizeXch',   'configBuyExtremeSizeXch');
+            _swap('configBuyMidSizeXch',     'configBuyOuterSizeXch');
+            // Swap buy-side counts
+            _swap('configInnerTierCountXch', 'configExtremeTierCountXch');
+            _swap('configMidTierCountXch',   'configOuterTierCountXch');
+            // Swap buy-side spare counts
+            _swap('configInnerTierSpareCountXch', 'configExtremeTierSpareCountXch');
+            _swap('configMidTierSpareCountXch',   'configOuterTierSpareCountXch');
+            // Recalculate spares if in auto mode, refresh preview
+            if (_tierSpareMode === 'auto') autoFillTierSpareCountsFromRecommendation(true);
+            updateCoinPrepPreview();
+            validateSettingsForm();
+        }
+
         function handleBuyTierSizeInputChange() {
             window._smartBuySizes = null;
             if (_tierSpareMode === 'auto') {

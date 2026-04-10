@@ -1280,10 +1280,13 @@ def _reset_fresh_run_session(clear_coins: bool = False,
 @app.route("/favicon.ico")
 def favicon():
     gui_dir = os.path.dirname(os.path.abspath(__file__))
-    # Serve the current app icon only.
-    new_icon = os.path.join(gui_dir, "bot_icon_new.ico")
-    if os.path.exists(new_icon):
-        return send_from_directory(gui_dir, "bot_icon_new.ico")
+    assets_dir = os.path.join(gui_dir, "assets")
+    # Try assets/ first, then app root for backward compat
+    for d in (assets_dir, gui_dir):
+        if os.path.isfile(os.path.join(d, "favicon.ico")):
+            return send_from_directory(d, "favicon.ico")
+        if os.path.isfile(os.path.join(d, "bot_icon_new.ico")):
+            return send_from_directory(d, "bot_icon_new.ico")
     return Response(status=404)
 
 
@@ -7737,39 +7740,22 @@ def _calculate_smart_defaults(xch_reserve=0.0, cat_reserve=0.0, risk_profile="ba
     # Smart Settings computes _smart_n_*/_spare_* in SIZE-indexed semantics:
     # the largest count goes on the largest coin size (size_inner). That is
     # correct for the SELL side (slot inner = inner SIZE = most-active slot
-    # = should have the most offers). For the BUY side under BUY_LADDER_REVERSED
-    # the intent flips: slot inner uses the smallest coin (extreme SIZE) so the
-    # most-active slot also needs the most offers, which means the largest
-    # count should go on the SMALLEST coin size.
-    #
-    # The frontend then swaps inner↔extreme / mid↔outer when populating the
-    # BUY_*_TIER_COUNT inputs (line 15433 in bot_gui.html), and the launcher's
-    # _flip_tiers swaps them back when building the coin-size pool. Net effect:
-    # whatever goes into buy_inner_tier_count ends up at coin SIZE inner in the
-    # launcher's pool. To put the largest count on the SMALLEST coin we must
-    # emit buy_inner_tier_count = _smart_n_extreme (smallest), and so on.
-    #
-    # Without this reversal the launcher builds a pool where the largest count
-    # multiplies the largest coin size — exploding the XCH pool ~2× and causing
-    # the worker's emergency feasibility scaler to drop tiers mid-prep.
-    if _buy_ladder_reversed:
-        _buy_n_inner   = _smart_n_extreme
-        _buy_n_mid     = _smart_n_outer
-        _buy_n_outer   = _smart_n_mid
-        _buy_n_extreme = _smart_n_inner
-        _buy_spare_inner   = _spare_extreme
-        _buy_spare_mid     = _spare_outer
-        _buy_spare_outer   = _spare_mid
-        _buy_spare_extreme = _spare_inner
-    else:
-        _buy_n_inner   = _smart_n_inner
-        _buy_n_mid     = _smart_n_mid
-        _buy_n_outer   = _smart_n_outer
-        _buy_n_extreme = _smart_n_extreme
-        _buy_spare_inner   = _spare_inner
-        _buy_spare_mid     = _spare_mid
-        _buy_spare_outer   = _spare_outer
-        _buy_spare_extreme = _spare_extreme
+    # = should have the most offers). The buy side uses the SAME position-
+    # indexed count distribution as sell (inner=most, extreme=fewest)
+    # regardless of BUY_LADDER_REVERSED. The reversal is in the SIZES
+    # (inner position gets smallest size under reverse-buy), not the counts.
+    # The launcher's _flip_tiers handles the position→size mapping for
+    # coin prep, so putting the highest count at position inner (smallest
+    # size) gives the correct capital allocation: many small coins, few
+    # large coins.
+    _buy_n_inner   = _smart_n_inner
+    _buy_n_mid     = _smart_n_mid
+    _buy_n_outer   = _smart_n_outer
+    _buy_n_extreme = _smart_n_extreme
+    _buy_spare_inner   = _spare_inner
+    _buy_spare_mid     = _spare_mid
+    _buy_spare_outer   = _spare_outer
+    _buy_spare_extreme = _spare_extreme
 
     # ═══ HARD FEASIBILITY CHECK (mirror the launcher's pool formula) ═════
     # Compute the exact XCH pool the launcher will request, accounting for
@@ -7782,17 +7768,12 @@ def _calculate_smart_defaults(xch_reserve=0.0, cat_reserve=0.0, risk_profile="ba
     # collapses to: pool = sum_i((live[size_i] + spare[size_i]) × size_xch[i]) × headroom
     # where size_xch[i] = base_size × size_mults[i] = _smart_inner/_smart_mid/etc.
     if _smart_inner > 0:
-        # Position counts as the env will hold them (after frontend swap)
-        if _buy_ladder_reversed:
-            _env_buy_inner   = _buy_n_extreme + _buy_spare_extreme  # frontend swap puts buy_extreme→BUY_INNER
-            _env_buy_mid     = _buy_n_outer   + _buy_spare_outer
-            _env_buy_outer   = _buy_n_mid     + _buy_spare_mid
-            _env_buy_extreme = _buy_n_inner   + _buy_spare_inner
-        else:
-            _env_buy_inner   = _buy_n_inner   + _buy_spare_inner
-            _env_buy_mid     = _buy_n_mid     + _buy_spare_mid
-            _env_buy_outer   = _buy_n_outer   + _buy_spare_outer
-            _env_buy_extreme = _buy_n_extreme + _buy_spare_extreme
+        # Position counts as the env will hold them (no frontend swap —
+        # values go directly from API response → form inputs → .env).
+        _env_buy_inner   = _buy_n_inner   + _buy_spare_inner
+        _env_buy_mid     = _buy_n_mid     + _buy_spare_mid
+        _env_buy_outer   = _buy_n_outer   + _buy_spare_outer
+        _env_buy_extreme = _buy_n_extreme + _buy_spare_extreme
         # Launcher flip: position → coin SIZE
         if _buy_ladder_reversed:
             _size_inner_total   = _env_buy_extreme   # slot extreme uses inner size
