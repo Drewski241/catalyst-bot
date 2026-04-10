@@ -26939,11 +26939,16 @@ function closeCtgErrorModal() {
                         : status.cat_coins;
                 }
                 
-                // Check if complete — require phase === 'complete' explicitly,
-                // OR subprocess exited (not running) AND we actually made progress
-                // (progress >= 100 AND phase is not idle/starting — prevents stale reads)
-                const isComplete = status.phase === 'complete' ||
-                    (!status.running && progress >= 100 && status.phase !== 'idle');
+                // Check if complete — multiple detection paths to avoid stuck modal:
+                // 1. phase === 'complete' (explicit completion signal)
+                // 2. success === true (worker reported success)
+                // 3. subprocess exited + progress >= 100 + not idle
+                const isComplete = status.phase === 'complete'
+                    || status.success === true
+                    || (!status.running && progress >= 100 && status.phase !== 'idle');
+                if (isComplete) {
+                    console.log('[CoinPrep] Completion detected:', status.phase, status.success, status.running, progress);
+                }
                 if (isComplete) {
                     // Stop polling
                     if (coinPrepPollInterval) {
