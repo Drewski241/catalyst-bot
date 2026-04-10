@@ -196,3 +196,4 @@ def _apply_to_cfg(metadata: Dict, cfg_obj) -> None:
     else:
         log_event("debug", "cat_resolver_noop",
                   "CAT resolver: no metadata found or all fields already set")
+
