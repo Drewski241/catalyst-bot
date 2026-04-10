@@ -1133,3 +1133,4 @@ class RiskManager:
             "conditions": [{"level": lvl, "text": txt} for lvl, txt in conditions],
             "metrics": metrics,
         }
+
