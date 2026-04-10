@@ -10688,6 +10688,7 @@ def api_health():
             "wallet_sync_state": wallet_info.get("sync_state", "unknown"),
             "node_reachable": node_info.get("reachable", False),
             "node_synced": node_info.get("synced", False),
+            "peer_count": raw_health.get("peer_count", -1),
             "consecutive_failures": 0,
         }
     except Exception as e:

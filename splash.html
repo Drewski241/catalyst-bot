@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CATalyst</title>
+<style>
+    html, body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        width: 100%;
+        background: #0B0E14;
+        font-family: 'Segoe UI Variable Display', 'Segoe UI', 'Inter', Arial, sans-serif;
+        color: #F8FAFC;
+        overflow: hidden;
+        -webkit-user-select: none;
+        user-select: none;
+    }
+    .splash {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 26px;
+        animation: fadeIn 240ms ease-out;
+    }
+    .logo {
+        width: 220px;
+        height: 220px;
+        object-fit: cover;
+        border-radius: 40px;
+        box-shadow: 0 20px 56px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255,255,255,0.06);
+        animation: float 2.6s ease-in-out infinite;
+    }
+    .title {
+        font-size: 28px;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+        margin: 0;
+    }
+    .title .cat   { color: #3EC9A3; }
+    .title .alyst { color: #D4A84B; }
+    .credit {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 13px;
+        color: #94A3B8;
+        letter-spacing: 0.3px;
+    }
+    .credit .by {
+        opacity: 0.7;
+    }
+    .credit .mz {
+        font-weight: 800;
+        font-size: 15px;
+        color: #F8FAFC;
+        letter-spacing: 0.6px;
+    }
+    .credit .mz span {
+        color: #34D399;
+    }
+    .credit .dot {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background: #F59E0B;
+        opacity: 0.94;
+        margin-left: 2px;
+    }
+    .loader {
+        margin-top: 4px;
+        width: 140px;
+        height: 3px;
+        background: rgba(148, 163, 184, 0.15);
+        border-radius: 999px;
+        overflow: hidden;
+        position: relative;
+    }
+    .loader::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(90deg, transparent, #3EC9A3, #D4A84B, transparent);
+        animation: slide 1.4s ease-in-out infinite;
+    }
+    @keyframes fadeIn {
+        from { opacity: 0; }
+        to   { opacity: 1; }
+    }
+    @keyframes float {
+        0%, 100% { transform: translateY(0); }
+        50%      { transform: translateY(-6px); }
+    }
+    @keyframes slide {
+        0%   { transform: translateX(-100%); }
+        100% { transform: translateX(100%); }
+    }
+</style>
+</head>
+<body>
+    <div class="splash">
+        <img class="logo" src="assets/bot_icon_new.png" alt="CATalyst">
+        <h1 class="title"><span class="cat">CAT</span><span class="alyst">alyst</span></h1>
+        <div class="credit">
+            <span class="by">created by</span>
+            <span class="mz">Monkey<span>Zoo</span></span>
+            <span class="dot"></span>
+        </div>
+        <div class="loader"></div>
+    </div>
+    <script>
+        // Redirect to the Flask app once the splash has had a moment to render.
+        // Flask is already accepting connections by the time desktop_app.py
+        // creates this window, so a short delay (just long enough for the
+        // splash to be visible and not feel jarring) is all we need.
+        const FLASK_URL = "http://127.0.0.1:5000/";
+        const MIN_VISIBLE_MS = 3500;
+        const start = Date.now();
+        function go() {
+            const elapsed = Date.now() - start;
+            const wait = Math.max(0, MIN_VISIBLE_MS - elapsed);
+            setTimeout(() => { window.location.replace(FLASK_URL); }, wait);
+        }
+        if (document.readyState === "complete") go();
+        else window.addEventListener("load", go);
+    </script>
+</body>
+</html>

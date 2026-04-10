@@ -2928,7 +2928,28 @@ class CoinPrepWorker:
                     self.log(f"      ⏳ {elapsed}s — XCH: {sx}, CAT: {sc}")
                 time.sleep(5)
 
-            self.log(f"      ❌ Pool coins not all spendable after {timeout_s}s!")
+            # Check if Sage lost peer connectivity — the most common cause
+            # of transactions being accepted locally but never confirmed.
+            _peer_hint = ""
+            try:
+                from wallet_sage import get_peer_connections
+                _peers = get_peer_connections()
+                _pc = len(_peers) if isinstance(_peers, list) else -1
+                if _pc == 0:
+                    _peer_hint = (
+                        " Sage wallet has 0 peers — transactions cannot reach "
+                        "the network. Restart Sage to reconnect."
+                    )
+            except Exception:
+                pass
+            self.log(f"      ❌ Pool coins not all spendable after {timeout_s}s!{_peer_hint}")
+            if _peer_hint:
+                self.update_status(
+                    PrepPhase.ERROR, 0.0,
+                    "Sage has lost network connectivity (0 peers). "
+                    "Restart Sage wallet to reconnect, then retry coin prep.",
+                    error="no_peers",
+                )
             return False
 
         # ================================================================
@@ -3467,6 +3488,27 @@ class CoinPrepWorker:
         # rejects with MEMPOOL_CONFLICT. Waiting for XCH to confirm
         # creates change coins the CAT tx can reference safely.
         # ----------------------------------------------------------------
+
+        # Pre-flight: verify Sage has peer connections before submitting
+        # anything.  Without peers the transaction will be accepted locally
+        # but never broadcast, wasting 300 seconds on a doomed wait.
+        try:
+            from wallet_sage import get_peer_connections
+            _preflight_peers = get_peer_connections()
+            _preflight_pc = len(_preflight_peers) if isinstance(_preflight_peers, list) else -1
+            if _preflight_pc == 0:
+                self.log("\n   ❌ PRE-FLIGHT CHECK FAILED: Sage has 0 peers")
+                self.log("      Transactions cannot be broadcast without peer connections.")
+                self.log("      Restart Sage wallet to reconnect to the Chia network.")
+                self.update_status(
+                    PrepPhase.ERROR, 0.0,
+                    "Sage has no peer connections — restart Sage wallet to reconnect.",
+                    error="no_peers",
+                )
+                return False
+            self.log(f"\n   ✅ Pre-flight: Sage has {_preflight_pc} peers")
+        except Exception as _pf_err:
+            self.log(f"\n   ⚠️ Pre-flight peer check failed: {_pf_err} — continuing anyway")
 
         self.log(f"\n{'='*40}")
         self.log(f"📦 STEP 1a: Submit XCH multi_send")

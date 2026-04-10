@@ -5873,7 +5873,7 @@
         .coin-prep-modal {
             --coin-prep-section-gap: 18px;
             position: relative;
-            width: min(96vw, 1040px);
+            width: min(96vw, 1200px);
             max-height: min(92vh, 920px);
             overflow-y: auto;
             overflow-x: hidden;
@@ -11354,6 +11354,9 @@
                     try { v4RenderInventoryChart && v4RenderInventoryChart(); } catch (_) {}
                 });
             } else if (viewName === 'offers') {
+                // Scroll to top so the depth chart is visible on tab open
+                const offersView = document.getElementById('v4View-offers');
+                if (offersView) offersView.scrollTop = 0;
                 requestAnimationFrame(() => {
                     try {
                         if (window._v4LastOrderbookBuys || window._v4LastOrderbookSells) {
@@ -16930,39 +16933,19 @@
         }
 
         function getCoinPrepRecommendedTierSpareCounts(maxOffersPerSide, _coinPrepMultiplier, tierSizesXch = {}, requestedCounts = null, side = 'sell') {
-            // Two backup coins per live offer per tier (2:1). The live
-            // tier counts already encode fill likelihood, so a flat 2:1
-            // spare → live mapping inherits that weighting for free.
-            //
-            // `side` selects which side this recommendation is for:
-            //   'sell' / 'cat' — columns are by size and equal positions
-            //                    (no reversal applies to sells), so the
-            //                    distribution is used directly.
-            //   'buy'  / 'xch' — when BUY_LADDER_REVERSED is on, the inner
-            //                    POSITION uses the EXTREME size, so the
-            //                    extreme-size column needs the most spares.
-            //                    Flip inner↔extreme and mid↔outer.
+            // 1.6 backup coins per live offer per tier (~80% of 2:1).
+            // The live tier counts already encode fill likelihood —
+            // inner has the most live offers (fills most often) so it
+            // naturally gets the most spares. The 80% factor keeps
+            // capital cost reasonable, especially for the extreme tier
+            // where each spare coin is large.
             const dist = getCoinPrepTierDistribution(maxOffersPerSide, requestedCounts);
-            const doubled = {
-                inner:   (dist.inner   || 0) * 2,
-                mid:     (dist.mid     || 0) * 2,
-                outer:   (dist.outer   || 0) * 2,
-                extreme: (dist.extreme || 0) * 2,
+            return {
+                inner:   Math.floor((dist.inner   || 0) * 1.6),
+                mid:     Math.floor((dist.mid     || 0) * 1.6),
+                outer:   Math.floor((dist.outer   || 0) * 1.6),
+                extreme: Math.floor((dist.extreme || 0) * 1.6),
             };
-            const sideNorm = String(side || '').toLowerCase();
-            if (sideNorm === 'buy' || sideNorm === 'xch') {
-                const buyLadderReversedEl = document.getElementById('configBuyLadderReversed');
-                const buyLadderReversed = buyLadderReversedEl ? buyLadderReversedEl.checked : true;
-                if (buyLadderReversed) {
-                    return {
-                        inner:   doubled.extreme,
-                        mid:     doubled.outer,
-                        outer:   doubled.mid,
-                        extreme: doubled.inner,
-                    };
-                }
-            }
-            return doubled;
         }
 
         function getCoinPrepPreparedTierCounts(
@@ -22671,7 +22654,7 @@
 
         async function loadInitialSystemLogs() {
             try {
-                const response = await apiFetch(`${API_URL}/logs?limit=150`);
+                const response = await apiFetch(`${API_URL}/logs?limit=200`);
                 const data = await response.json();
                 const entries = Array.isArray(data.logs) ? data.logs : [];
                 if (!entries.length) return;
@@ -22894,7 +22877,17 @@
                     : 'offline');
             const wl = _walletLabel || 'Sage';
 
-            if (status === 'healthy' || status === 'wallet_sync_unknown') {
+            if (status === 'no_peers') {
+                indicator.classList.add('sync-unhealthy');
+                label.textContent = 'No Peers';
+                indicator.title = wl + ' wallet RPC is running but has 0 peer connections — transactions cannot be broadcast. Restart Sage to reconnect.';
+                // One-shot toast on first detection
+                if (!window._noPeersToastShown) {
+                    window._noPeersToastShown = true;
+                    showToast('Sage has no peer connections — transactions will not broadcast. Restart Sage wallet to reconnect.', 'warning', 10000);
+                }
+            } else if (status === 'healthy' || status === 'wallet_sync_unknown') {
+                window._noPeersToastShown = false;  // reset so it fires again if peers drop
                 indicator.classList.add('sync-healthy');
                 label.textContent = syncState === 'synced' ? 'Synced' : 'Ready';
                 if (syncState === 'unknown') {
@@ -22927,7 +22920,11 @@
             // Tie wallet type badge colour to sync state
             const walletBadge = document.getElementById('walletTypeBadge');
             if (walletBadge) {
-                if (status === 'healthy' || status === 'wallet_sync_unknown') {
+                if (status === 'no_peers') {
+                    walletBadge.style.background = 'rgba(239,68,68,0.15)';
+                    walletBadge.style.color = 'var(--sell-color)';
+                    walletBadge.style.borderColor = 'rgba(239,68,68,0.3)';
+                } else if (status === 'healthy' || status === 'wallet_sync_unknown') {
                     walletBadge.style.background = 'rgba(16,185,129,0.15)';
                     walletBadge.style.color = 'var(--success-400)';
                     walletBadge.style.borderColor = 'rgba(16,185,129,0.3)';

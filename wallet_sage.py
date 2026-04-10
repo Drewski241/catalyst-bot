@@ -720,8 +720,19 @@ def get_chia_health() -> dict:
     wallet = get_wallet_sync_status()
     node = get_full_node_sync_status()
 
+    # Peer count: Sage can respond to RPC but have zero working peer
+    # connections, which means transactions are accepted locally but
+    # never broadcast.  Detect this so the GUI can warn the user.
+    try:
+        _peers = get_peer_connections()
+        peer_count = len(_peers) if isinstance(_peers, list) else 0
+    except Exception:
+        peer_count = -1  # unknown
+
     if not wallet["reachable"]:
         status, healthy = "unreachable", False
+    elif wallet.get("reachable") and peer_count == 0:
+        status, healthy = "no_peers", False
     elif wallet.get("sync_state") == "synced":
         status, healthy = "healthy", True
     elif wallet.get("sync_state") == "not_synced":
@@ -736,6 +747,7 @@ def get_chia_health() -> dict:
         "wallet": wallet,
         "node": node,
         "healthy": healthy,
+        "peer_count": peer_count,
         "timestamp": time.time(),
         "wallet_type": "sage",
     }
