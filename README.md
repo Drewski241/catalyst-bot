@@ -4,6 +4,8 @@ Automated market maker for CAT tokens on the [Dexie](https://dexie.space) exchan
 
 **Status:** Beta — actively used in production. No warranty. Use at your own risk.
 
+### [⬇ Download for Windows](https://github.com/Lowestofttim/catalyst-bot/releases/latest)
+
 ---
 
 ## Features
