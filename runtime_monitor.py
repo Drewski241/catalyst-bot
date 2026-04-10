@@ -876,3 +876,4 @@ class RuntimeMonitor:
             title,
             " | ".join(lines),
         )
+
