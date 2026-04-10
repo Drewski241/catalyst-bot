@@ -86,3 +86,4 @@ def apply_to_config(cfg) -> None:
     key = get_secret("SPACESCAN_API_KEY")
     if key:
         cfg.SPACESCAN_API_KEY = key
+
