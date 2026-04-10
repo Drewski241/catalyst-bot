@@ -84,3 +84,4 @@ def should_extend_pending_consumed_split_grace(
 
     completion_ratio = owned_output_count / float(expected_count)
     return completion_ratio >= float(min_completion_ratio)
+
