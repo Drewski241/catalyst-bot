@@ -172,3 +172,4 @@ else:
 def get_wallet_type() -> str:
     """Return which wallet backend is active: 'chia' or 'sage'."""
     return WALLET_TYPE
+
