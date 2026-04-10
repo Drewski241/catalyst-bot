@@ -16603,8 +16603,7 @@
                         if (tier === 'topup') {
                             rows.push(buildCoinPrepBreakdownRow(
                                 getCoinPrepTierLabel(tier),
-                                `${count} x ${formatCoinPrepXch(plan.preparedTierSizesXch?.[tier])} XCH`,
-                                'topup buffer'
+                                `${count} \u00d7 ${formatCoinPrepXch(plan.preparedTierSizesXch?.[tier])} XCH`
                             ));
                             continue;
                         }
@@ -16612,8 +16611,7 @@
                         if (tier === 'reserve') {
                             rows.push(buildCoinPrepBreakdownRow(
                                 getCoinPrepTierLabel(tier),
-                                `${formatCoinPrepXch(plan.preparedTierSizesXch?.[tier])} XCH`,
-                                'untouched (your hard floor)'
+                                `${formatCoinPrepXch(plan.preparedTierSizesXch?.[tier])} XCH`
                             ));
                             continue;
                         }
@@ -16627,8 +16625,7 @@
                             : plan.offerTierSizesXch?.[tier];
                         rows.push(buildCoinPrepBreakdownRow(
                             getCoinPrepTierLabel(tier),
-                            `${count} \u00d7 ${formatCoinPrepXch(plan.preparedTierSizesXch?.[tier])} prep`,
-                            variant === 'modal' ? `${formatCoinPrepXch(_liveXchBuy)} live` : ''
+                            `${count} \u00d7 ${formatCoinPrepXch(plan.preparedTierSizesXch?.[tier])} prep`
                         ));
                     } else if (asset === 'cat') {
                         const preparedSize = Number(plan.preparedTierSizesCat?.[tier] || 0);
@@ -16636,16 +16633,14 @@
                         if (tier === 'topup') {
                             rows.push(buildCoinPrepBreakdownRow(
                                 getCoinPrepTierLabel(tier),
-                                `${count} x ${formatCoinPrepCat(preparedSize)} tokens`,
-                                'topup buffer'
+                                `${count} \u00d7 ${formatCoinPrepCat(preparedSize)} tokens`
                             ));
                             continue;
                         }
                         if (tier === 'reserve') {
                             rows.push(buildCoinPrepBreakdownRow(
                                 getCoinPrepTierLabel(tier),
-                                `${formatCoinPrepCat(preparedSize)} tokens`,
-                                'untouched (your hard floor)'
+                                `${formatCoinPrepCat(preparedSize)} tokens`
                             ));
                             continue;
                         }
@@ -16658,8 +16653,7 @@
             } else if (asset === 'xch') {
                 rows.push(buildCoinPrepBreakdownRow(
                     'Primary',
-                    `${formatCoinPrepXch(plan.preparedXchSize)} prep`,
-                    `${formatCoinPrepXch(plan.preparedXchSize / (plan.prepMult || 1))} live`
+                    `${formatCoinPrepXch(plan.preparedXchSize)} prep`
                 ));
             } else if (asset === 'cat' && Number(plan.preparedCatPerCoin || 0) > 0) {
                 rows.push(buildCoinPrepBreakdownRow(
@@ -22748,11 +22742,81 @@
                     (box.scrollHeight - box.scrollTop - box.clientHeight) < 24;
 
                 let lines = [];
+                // Filter out developer-level noise so the user sees
+                // plain-English progress, not coin IDs and mojos.
+                const _cpSkip = [
+                    /^\s*$/,
+                    /CLI Overrides:/,
+                    /\[INIT\]/,
+                    /initialize endpoint/,
+                    /fingerprint/i,
+                    /Run ID:/,
+                    /PARALLEL/i,
+                    /^\s*={5,}/,
+                    /^\s*-{5,}/,
+                    /\[Sage\] (XCH|CAT) balance:/,
+                    /\[Sage\] (get_offers|First offer|After normalization|Status distribution|Client-side)/,
+                    /\[Sage\] Splitting coin/,
+                    /\[Wallet\] Using/,
+                    /Intelligent Coin Preparation/,
+                    /PARALLEL OPTIMIZATION/,
+                    /^\s*#\d+:/,
+                    /\.\.\. and \d+ more/,
+                    /\[INITIAL\]/,
+                    /DB: (connected|post-consolidation|debug|reset|raw ID|fixed sample)/,
+                    /DB (xch|cat): (all|upsert|extreme=|reserve=)/,
+                    /DB VERIFY/,
+                    /designation_debug/,
+                    /coin designations at birth/,
+                    /Pre-cancel snapshot/,
+                    /Pre-cancel pending/,
+                    /mojos\)$/,
+                    /selectable_balance=/,
+                    /pool coin acknowledged/,
+                    /Using confirmed .* pool coin/,
+                    /outputs are owned.*waiting for selectable/,
+                    /Final Configuration:/,
+                    /TIER MODE ENABLED/,
+                    /Total: \d+ XCH coins/,
+                    /Saved prep settings/,
+                ];
+                function _cpFilterLine(line) {
+                    return !_cpSkip.some(rx => rx.test(line));
+                }
+                // Simplify verbose messages into plain English
+                function _cpSimplify(line) {
+                    return line
+                        .replace(/📦 STEP 1a: Submit XCH multi_send/, '📦 Creating XCH pool coins...')
+                        .replace(/📦 STEP 1b: Submit CAT multi_send/, '📦 Creating token pool coins...')
+                        .replace(/✂️ STEP 3: Submit ALL splits.*/, '✂️ Splitting pools into trading coins...')
+                        .replace(/🔍 STEP 4: Poll for ALL \d+ splits to confirm/, '🔍 Waiting for splits to confirm on-chain...')
+                        .replace(/🔍 Polling for ALL pool coins.*/, 'Waiting for pool coins to confirm...')
+                        .replace(/🔍 Polling for ALL \d+ splits.*/, 'Waiting for all splits to confirm...')
+                        .replace(/XCH MULTI-SEND: (\d+) payments.*/, 'Sending $1 XCH pool transactions...')
+                        .replace(/CAT MULTI-SEND: (\d+) payments.*/, 'Sending $1 token pool transactions...')
+                        .replace(/Payment \d+: (\w+) = [\d,]+ mojos \((\d+) coins\)/, '  $1: $2 coins')
+                        .replace(/(\w+) split submitted \((\d+) pieces\)/, '$1: splitting into $2 coins')
+                        .replace(/Splitting (XCH|CAT) (\w+):.*into (\d+) pieces/, 'Splitting $2 tier into $3 coins')
+                        .replace(/(\w+) pools selectable after (\d+)s/, '$1 pool coins confirmed ($2s)')
+                        .replace(/(\w+) split confirmed after (\d+)s/, '$1 split confirmed ($2s)')
+                        .replace(/⏳ (\d+)s — XCH: (.), CAT: (.)/, 'Waiting... $1s (XCH: $2, CAT: $3)')
+                        .replace(/⏳ (\d+)s — (\d+)\/(\d+) confirmed.*/, 'Waiting... $1s ($2/$3 splits confirmed)')
+                        .replace(/🎉 All \d+ splits confirmed!/, '🎉 All splits confirmed!')
+                        .replace(/COIN PREPARATION COMPLETE!/, 'Coin preparation complete!')
+                        .replace(/🏗️ TIER MODE:/, 'Coin layout:')
+                        .replace(/Post-consolidation balances:/, 'Wallet balances:')
+                        .replace(/📊 INITIAL STATE/, 'Starting state:')
+                        .replace(/inner: XCH=(\d+) × ([\d.]+) \/ CAT=(\d+) × ([\d,]+).*/, '  Inner: $1 XCH × $2 | $3 tokens')
+                        .replace(/mid: XCH=(\d+) × ([\d.]+) \/ CAT=(\d+) × ([\d,]+).*/, '  Mid: $1 XCH × $2 | $3 tokens')
+                        .replace(/outer: XCH=(\d+) × ([\d.]+) \/ CAT=(\d+) × ([\d,]+).*/, '  Outer: $1 XCH × $2 | $3 tokens')
+                        .replace(/extreme: XCH=(\d+) × ([\d.]+) \/ CAT=(\d+) × ([\d,]+).*/, '  Extreme: $1 XCH × $2 | $3 tokens')
+                        .replace(/sniper: XCH=(\d+) × ([\d.]+) \/ CAT=(\d+) × ([\d,]+).*/, '  Sniper: $1 XCH × $2 | $3 tokens')
+                        .replace(/fees: XCH=(\d+) × ([\d.]+).*/, '  Fees: $1 XCH × $2');
+                }
                 if (data.log_lines && Array.isArray(data.log_lines) && data.log_lines.length) {
-                    // DB-backed logs available — use them directly
-                    lines = data.log_lines;
+                    lines = data.log_lines.filter(_cpFilterLine).map(_cpSimplify);
                 } else if (data.output) {
-                    lines = data.output.split('\n').filter(Boolean);
+                    lines = data.output.split('\n').filter(Boolean).filter(_cpFilterLine).map(_cpSimplify);
                 } else {
                     // Fallback: accumulate status messages as a rolling log.
                     // The worker's 'message' field has good detail (e.g.
