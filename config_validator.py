@@ -297,3 +297,4 @@ def validate_config(cfg) -> ValidationReport:
                  "ENABLE_COIN_PREP=True but no target coin counts set and TIER_ENABLED=False")
 
     return report
+
