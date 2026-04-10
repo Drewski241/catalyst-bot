@@ -588,3 +588,4 @@ def _check_spacescan_setup() -> DoctorCheck:
             message=f"Spacescan check failed: {e}",
             severity="warning",
         )
+
