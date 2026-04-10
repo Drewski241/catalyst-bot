@@ -1,0 +1,99 @@
+name: Code Quality
+
+# Runs on every push to master and on pull requests
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  lint-and-syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install flask requests python-dotenv pywebview pystray plyer Pillow cryptography
+
+      - name: Syntax check (all Python files)
+        run: |
+          echo "Checking syntax on all .py files..."
+          errors=0
+          for f in *.py; do
+            python -c "import ast; ast.parse(open('$f', encoding='utf-8').read())" 2>&1 || {
+              echo "SYNTAX ERROR: $f"
+              errors=$((errors + 1))
+            }
+          done
+          if [ $errors -gt 0 ]; then
+            echo "FAILED: $errors files with syntax errors"
+            exit 1
+          fi
+          echo "All Python files pass syntax check"
+
+      - name: Import check (critical modules)
+        run: |
+          echo "Verifying critical modules can be imported..."
+          python -c "
+          import sys
+          failed = []
+          for mod in ['config', 'database', 'price_engine', 'offer_manager',
+                      'fill_tracker', 'risk_manager', 'coin_manager', 'wallet',
+                      'dexie_manager', 'sniper', 'bot_loop']:
+              try:
+                  __import__(mod)
+              except Exception as e:
+                  failed.append(f'{mod}: {e}')
+          if failed:
+              print('IMPORT FAILURES:')
+              for f in failed:
+                  print(f'  {f}')
+              sys.exit(1)
+          print('All critical modules import successfully')
+          "
+
+      - name: Dead code scan (vulture)
+        run: |
+          pip install vulture
+          python -m vulture *.py --min-confidence 90 || true
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for secrets in code
+        run: |
+          echo "Scanning for hardcoded secrets..."
+          found=0
+          for f in *.py; do
+            # Check for hardcoded private keys (64 hex chars in assignment)
+            if grep -Pn 'key\s*=\s*["\x27][a-f0-9]{64}["\x27]' "$f" 2>/dev/null; then
+              echo "POTENTIAL SECRET: $f"
+              found=$((found + 1))
+            fi
+          done
+          if [ $found -gt 0 ]; then
+            echo "WARNING: $found file(s) may contain hardcoded secrets"
+            exit 1
+          fi
+          echo "No hardcoded secrets detected"
+
+      - name: Check .gitignore covers sensitive files
+        run: |
+          python -c "
+          required = ['.env', '*.key', '*.pem', '*.crt', '*.db', 'sage_client_ssl/']
+          with open('.gitignore') as f:
+              gitignore = f.read()
+          missing = [r for r in required if r not in gitignore]
+          if missing:
+              print(f'MISSING from .gitignore: {missing}')
+              exit(1)
+          print('.gitignore covers all sensitive patterns')
+          "
