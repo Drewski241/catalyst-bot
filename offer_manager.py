@@ -1550,7 +1550,7 @@ class OfferManager:
             if coin_ids_enabled and not spec.get("coin_id"):
                 msg = (f"No unique pre-selected coin available for {side} "
                        f"slot {spec['slot']} — skipping to avoid overlap")
-                log_event("warning", "coin_select_skip", msg)
+                log_event("info", "coin_select_skip", msg)
                 # Fix F: track consecutive failures for this slot
                 self.record_slot_coin_failure(side, spec["slot"])
                 return spec["i"], {"success": False, "error": "no_unique_coin_preselected"}
@@ -2051,26 +2051,25 @@ class OfferManager:
                     price_floor=price_floor,
                 )
 
-                # Atomicity guard: if we didn't create the full batch,
-                # roll back partial offers and keep old ones live.
-                if len(new_offers) < batch_count:
-                    log_event("error", "requote_undercreated",
+                # Partial-success guard: keep what we created and cancel
+                # only a matching number of old offers.  Only stop if we
+                # created ZERO (no spare coins available at all).
+                if len(new_offers) == 0 and batch_count > 0:
+                    # Zero offers created — can't make progress, stop requoting
+                    log_event("info", "requote_no_coins",
                               f"Rolling wave {side} batch {batch_num}: "
-                              f"only created {len(new_offers)}/{batch_count} offers — "
-                              f"rolling back partial creates, keeping old offers live")
-                    if new_offers:
-                        partial_ids = [o["trade_id"] for o in new_offers
-                                       if o.get("trade_id")]
-                        if partial_ids:
-                            self.cancel_offers(partial_ids,
-                                               reason="requote_rollback",
-                                               skip_confirmation=True)
-                    return {
-                        "offers": all_new_offers,
-                        "fully_replaced": False,
-                        "replaced_count": len(all_new_offers),
-                        "target_count": total_to_replace,
-                    }
+                              f"no spare coins available for this tier — "
+                              f"skipping remaining batches, topup will replenish")
+                    break
+                elif len(new_offers) < batch_count:
+                    # Partial success — keep what we created, cancel matching old offers
+                    log_event("info", "requote_partial",
+                              f"Rolling wave {side} batch {batch_num}: "
+                              f"created {len(new_offers)}/{batch_count} offers "
+                              f"(limited by available coins)")
+                    batch_offers = batch_offers[:len(new_offers)]
+                    batch_count = len(new_offers)
+                    batch_trade_ids = [o["trade_id"] for o in batch_offers]
 
                 all_new_offers.extend(new_offers)
 
@@ -2185,9 +2184,9 @@ class OfferManager:
 
             batches_done += 1
 
-            # Brief wait for cancelled coins to recycle before next wave.
+            # Brief yield for cancelled coins to recycle before next wave.
             if offers_remaining:
-                time.sleep(3)
+                time.sleep(0.5)
 
         mode = ("rolling-wave create-first" if initial_had_spares
                 else "cancel-first → rolling-wave")

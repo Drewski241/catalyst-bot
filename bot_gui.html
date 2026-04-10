@@ -22267,6 +22267,7 @@
                                 (cs.mode || 'unknown')
                             )}</div>
                             <div style="color:var(--text-secondary);">API calls this session</div><div>${fmtN(cs.api_calls_total)}</div>
+                            ${cs.mempool_watcher_calls ? `<div style="color:var(--text-secondary);">Mempool watcher calls</div><div>${fmtN(cs.mempool_watcher_calls)}</div>` : ''}
                             ${cs.api_errors_total ? `<div style="color:var(--text-secondary);">API errors</div><div style="color:var(--status-danger);">${fmtN(cs.api_errors_total)}</div>` : ''}
                             <div style="color:var(--text-secondary);">Last call latency</div><div>${fmtN(cs.last_coinset_time_ms)}ms</div>
                             <div style="color:var(--text-secondary);">Consecutive failures</div><div>${fmtN(cs.consecutive_failures)}</div>

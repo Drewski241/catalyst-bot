@@ -103,6 +103,7 @@ class MempoolWatcher:
         coinset_url: str = "https://api.coinset.org",
         coinset_timeout: int = 5,
         tibet_url: str = "https://api.v2.tibetswap.io",
+        wake_callback=None,
     ):
         self._pair_id = pair_id
         self._asset_id = asset_id
@@ -110,10 +111,15 @@ class MempoolWatcher:
         self._coinset_url = coinset_url.rstrip("/")
         self._coinset_timeout = coinset_timeout
         self._tibet_url = tibet_url.rstrip("/")
+        self._wake_callback = wake_callback  # callable to wake bot loop immediately
 
         self._lock = threading.Lock()
         self._signals: List[Dict] = []
         self._stop_event = threading.Event()
+
+        # API call counters (session-scoped)
+        self._coinset_api_calls: int = 0
+        self._tibet_api_calls: int = 0
 
         # Known state of the Tibet pool
         self._pool_coin_id: Optional[str] = None   # last_coin_id_on_chain
@@ -145,6 +151,15 @@ class MempoolWatcher:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    def _wake_bot(self) -> None:
+        """Fire the wake callback to interrupt the bot loop sleep."""
+        cb = self._wake_callback
+        if cb:
+            try:
+                cb()
+            except Exception:
+                pass
 
     def start(self) -> None:
         """Start background polling threads."""
@@ -241,6 +256,7 @@ class MempoolWatcher:
     def _fetch_and_update_reserves(self, session, emit_signal: bool = True) -> None:
         """Fetch current reserves from Tibet API and emit a signal if changed."""
         try:
+            self._tibet_api_calls += 1
             resp = session.get(
                 f"{self._tibet_url}/pairs",
                 params={"skip": 0, "limit": 200},
@@ -321,6 +337,7 @@ class MempoolWatcher:
             }
             with self._lock:
                 self._signals.append(signal)
+            self._wake_bot()
 
             log_event("info", "mempool_price_move",
                       f"Pool reserve change: {direction} {abs(pct_change):.3f}% "
@@ -373,6 +390,7 @@ class MempoolWatcher:
             return
 
         try:
+            self._coinset_api_calls += 1
             resp = session.post(
                 f"{self._coinset_url}/get_all_mempool_items",
                 json={},
@@ -447,6 +465,7 @@ class MempoolWatcher:
             }
             with self._lock:
                 self._signals.append(signal)
+            self._wake_bot()
 
             log_event("info", "mempool_swap_detected",
                       f"PENDING swap detected in mempool for pool coin "
@@ -470,6 +489,7 @@ class MempoolWatcher:
                 }
                 with self._lock:
                     self._signals.append(signal)
+                self._wake_bot()
 
                 log_event("info", "mempool_fill_detected",
                           f"Offer coin {coin_id[:16]}... appears in mempool — "
@@ -488,6 +508,7 @@ def get_or_create_watcher(
     pair_id: str,
     asset_id: str,
     cat_decimals: int = 3,
+    wake_callback=None,
 ) -> MempoolWatcher:
     """Return the singleton MempoolWatcher, creating it if needed.
 
@@ -507,13 +528,19 @@ def get_or_create_watcher(
                 coinset_url=coinset_url,
                 coinset_timeout=coinset_timeout,
                 tibet_url=tibet_url,
+                wake_callback=wake_callback,
             )
+        elif wake_callback and not _watcher_instance._wake_callback:
+            # Attach callback if watcher already exists but had no callback
+            _watcher_instance._wake_callback = wake_callback
         return _watcher_instance
 
 
-def start_watcher(pair_id: str, asset_id: str, cat_decimals: int = 3) -> MempoolWatcher:
+def start_watcher(pair_id: str, asset_id: str, cat_decimals: int = 3,
+                  wake_callback=None) -> MempoolWatcher:
     """Convenience: get-or-create and start the watcher."""
-    w = get_or_create_watcher(pair_id, asset_id, cat_decimals)
+    w = get_or_create_watcher(pair_id, asset_id, cat_decimals,
+                              wake_callback=wake_callback)
     if not w.is_running():
         w.start()
     return w

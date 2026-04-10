@@ -3441,7 +3441,7 @@ class CoinManager:
                     )
 
             if needs_any:
-                log_event("warning", "low_coins_adaptive",
+                log_event("info", "low_coins_adaptive",
                           f"Per-tier trigger fired (pace={pace}, scale={pace_scale:.2f}x). "
                           f"Trips: {'; '.join(trigger_log) if trigger_log else 'n/a'}")
             return needs_any
@@ -3495,7 +3495,7 @@ class CoinManager:
             if time.time() - self._last_topup_time < cooldown:
                 if time.time() - self._last_low_coin_warning > 600:
                     remaining = int((cooldown - (time.time() - self._last_topup_time)) / 60)
-                    log_event("warning", "coin_health_cooldown",
+                    log_event("info", "coin_health_cooldown",
                               f"Low coins but topup on cooldown ({remaining}m remaining)")
                     self._last_low_coin_warning = time.time()
                 return False
@@ -4174,7 +4174,7 @@ class CoinManager:
                                       f"{name} topup complete: {num_to_create} new trading coins")
                             return True
                         else:
-                            log_event("warning", f"topup_{name.lower()}_split_fail",
+                            log_event("info", f"topup_{name.lower()}_split_fail",
                                       f"{name} two-step split failed — will retry next cycle")
                             # Fall through to strategy 2
 
@@ -4351,7 +4351,7 @@ class CoinManager:
                 projected = spent_mojos + pool_amount_mojos
                 if projected > budget_mojos:
                     log_event(
-                        "warning",
+                        "info",
                         f"topup_{name.lower()}_blocked_by_budget",
                         f"{name} split refused: topup pool budget exhausted "
                         f"({spent_mojos / 1e12:.4f} spent + {pool_amount_mojos / 1e12:.4f} "
@@ -4872,7 +4872,7 @@ class CoinManager:
                       f"({owned_output_count}/{num_to_create} owned, selectable lagging)")
             return True
 
-        log_event("warning", f"{tag}_split_timeout",
+        log_event("info", f"{tag}_split_timeout",
                   f"Split not confirmed after {split_max_wait}s "
                   f"(tx={'confirmed' if tx_state['confirmed'] else 'pending'}, "
                   f"{owned_output_count}/{num_to_create} owned, "

@@ -722,7 +722,7 @@ class RuntimeMonitor:
         if self._apply_condition(
             "coin_headroom_low",
             self._streaks["coin_headroom_low"] >= 3,
-            severity="warning",
+            severity="info",
             open_event="bot_health_coin_headroom_low",
             open_message=(
                 f"Coin headroom is low while book is live: free XCH={coins['xch_free']}, "
@@ -734,7 +734,7 @@ class RuntimeMonitor:
         ):
             active_conditions.append(self._condition_entry(
                 "coin_headroom_low",
-                "warning",
+                "info",
                 "Coin headroom is low",
                 detail=(
                     f"Free XCH={coins['xch_free']}, free CAT={coins['cat_free']}, "

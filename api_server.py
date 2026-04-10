@@ -2906,6 +2906,23 @@ def api_diagnostics_api_stats():
     except Exception as e:
         payload["coinset"]["error"] = str(e)
 
+    # Add mempool watcher's Coinset API call count (separate HTTP client)
+    try:
+        import mempool_watcher as _mw
+        _watcher = getattr(_mw, "_watcher_instance", None)
+        if _watcher:
+            _mw_coinset = getattr(_watcher, "_coinset_api_calls", 0)
+            _mw_tibet = getattr(_watcher, "_tibet_api_calls", 0)
+            # Add to coinset total
+            if payload["coinset"].get("available"):
+                payload["coinset"]["mempool_watcher_calls"] = _mw_coinset
+                payload["coinset"]["api_calls_total"] = (
+                    payload["coinset"].get("api_calls_total", 0) + _mw_coinset
+                )
+            # Add to tibetswap later (after tibetswap section is built)
+    except Exception:
+        pass
+
     # --- Dexie --------------------------------------------------------
     try:
         if bot is not None and getattr(bot, "dexie_manager", None):
@@ -2973,6 +2990,18 @@ def api_diagnostics_api_stats():
                 "pair_id": amm_stats.get("pair_id", ""),
                 "price_fetches": _pe_tibet_fetches,
             }
+            # Add mempool watcher's Tibet API calls
+            try:
+                import mempool_watcher as _mw2
+                _watcher2 = getattr(_mw2, "_watcher_instance", None)
+                if _watcher2:
+                    _mw_tibet2 = getattr(_watcher2, "_tibet_api_calls", 0)
+                    payload["tibetswap"]["mempool_watcher_calls"] = _mw_tibet2
+                    payload["tibetswap"]["price_fetches"] = (
+                        _pe_tibet_fetches + _mw_tibet2
+                    )
+            except Exception:
+                pass
             # Add Dexie read counters to the Dexie section
             if payload["dexie"].get("available"):
                 payload["dexie"]["price_fetches"] = _pe_dexie_fetches

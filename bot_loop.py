@@ -1657,6 +1657,7 @@ class BotLoop:
                         pair_id=pair_id,
                         asset_id=cfg.CAT_ASSET_ID,
                         cat_decimals=int(getattr(cfg, "CAT_DECIMALS", 3) or 3),
+                        wake_callback=self._watcher_event.set,
                     )
                     log_event("info", "mempool_watcher_init",
                               f"Mempool watcher started (pair {pair_id[:16]}...)")
@@ -3399,13 +3400,32 @@ class BotLoop:
                                       f"but within cooldown ({int(_now - _last_force)}s/"
                                       f"{int(_cooldown)}s) — not re-firing")
                         else:
-                            if not self._force_requote.get("buy") or not self._force_requote.get("sell"):
-                                log_event("info", "amm_drift_requote_triggered",
-                                          f"AMM drift {amm_drift_bps:.1f}bps ≥ {_drift_threshold}bps "
-                                          f"— forcing requote both sides",
-                                          data={"drift_bps": str(amm_drift_bps.quantize(Decimal("0.1")))})
-                            self._force_requote["buy"] = True
-                            self._force_requote["sell"] = True
+                            # Determine which side is vulnerable based on price direction
+                            try:
+                                _amm_state = self.amm_monitor._state or {}
+                                _amm_price = Decimal(str(_amm_state.get("amm_price", 0) or 0))
+                                if _amm_price > 0 and self._current_mid_price > 0:
+                                    if _amm_price < self._current_mid_price:
+                                        # Price dropped → buys are vulnerable (too expensive)
+                                        if not self._force_requote.get("buy"):
+                                            log_event("info", "amm_drift_requote_triggered",
+                                                      f"AMM drift {amm_drift_bps:.1f}bps (price DOWN) — forcing buy requote only",
+                                                      data={"drift_bps": str(amm_drift_bps.quantize(Decimal("0.1")))})
+                                        self._force_requote["buy"] = True
+                                    else:
+                                        # Price rose → sells are vulnerable (too cheap)
+                                        if not self._force_requote.get("sell"):
+                                            log_event("info", "amm_drift_requote_triggered",
+                                                      f"AMM drift {amm_drift_bps:.1f}bps (price UP) — forcing sell requote only",
+                                                      data={"drift_bps": str(amm_drift_bps.quantize(Decimal("0.1")))})
+                                        self._force_requote["sell"] = True
+                                else:
+                                    # Can't determine direction — force both (fallback)
+                                    self._force_requote["buy"] = True
+                                    self._force_requote["sell"] = True
+                            except Exception:
+                                self._force_requote["buy"] = True
+                                self._force_requote["sell"] = True
                             self._last_amm_drift_force_at = _now
         except Exception as _amm_drift_err:
             log_event("debug", "amm_drift_check_error",
@@ -6408,7 +6428,7 @@ class BotLoop:
 
         if abs(delta) > tolerance:
             log_event(
-                "warning",
+                "info",
                 "position_sanity_drift",
                 f"Position sanity check: bot estimate since baseline "
                 f"{net_position_since_baseline:+.2f} CAT (all-time "
