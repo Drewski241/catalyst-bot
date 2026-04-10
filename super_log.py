@@ -908,3 +908,4 @@ def close_super_log():
 def get_log_path() -> str:
     """Return the path to the current log file."""
     return _log_path
+
