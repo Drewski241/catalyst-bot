@@ -525,3 +525,4 @@ def stop_watcher() -> None:
     with _watcher_lock:
         if _watcher_instance:
             _watcher_instance.stop()
+
