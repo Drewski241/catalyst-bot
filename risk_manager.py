@@ -148,6 +148,38 @@ class RiskManager:
         log_event("info", "position_reset",
                   "Net position and startup baseline reset to zero")
 
+    def reset_session(self) -> None:
+        """Full session reset — clear ALL cached state for a clean start.
+
+        Called on every bot start and on CAT switch so stale inventory,
+        volatility, circuit-breaker, and market data from the previous
+        session/token don't leak into the new one.
+        """
+        with self._cb_lock:
+            # Position
+            self._net_position_cat = Decimal("0")
+            self._startup_position_xch = None
+            self._soft_position_warned = False
+            # Circuit breaker
+            self._circuit_breaker_active = False
+            self._circuit_breaker_reason = ""
+            self._circuit_breaker_time = 0
+            self._circuit_breaker_type = ""
+            self._circuit_breaker_blocked_side = ""
+            self._cb_clear_streak = 0
+        # Market data caches (outside lock — not read by sniper thread)
+        self._cached_volatility = Decimal("0")
+        self._volatility_updated = 0
+        self._arb_gap_bps = Decimal("0")
+        self._recent_fill_rate = Decimal("0")
+        self._last_snapshot_time = 0
+        self._pool_depth_ratio = Decimal("0")
+        self._pool_depth_updated = 0
+        self._competitor_adjustment_bps = Decimal("0")
+        self._competitor_updated = 0
+        log_event("info", "risk_session_reset",
+                  "Risk manager session state fully reset")
+
     def record_snapshot(self, xch_balance: Optional[Decimal] = None,
                         cat_balance: Optional[Decimal] = None,
                         mid_price: Decimal = Decimal("0")):

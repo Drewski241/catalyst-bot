@@ -8877,6 +8877,18 @@ def api_cat_select():
     if ticker_id:
         cfg.update("CAT_TICKER_ID", ticker_id)
 
+    # Reset risk manager so stale inventory/CB state from the previous CAT
+    # doesn't leak into the advisor or circuit breaker logic for the new one.
+    if bot is not None:
+        try:
+            if hasattr(bot, "risk_manager") and bot.risk_manager:
+                bot.risk_manager.reset_session()
+                log_event("info", "cat_switch_risk_reset",
+                          f"Risk manager reset for CAT change to {name}")
+        except Exception as e:
+            log_event("warning", "cat_switch_risk_reset_failed",
+                      f"Could not reset risk manager on CAT switch: {e}")
+
     # Auto-resolve TIBET_PAIR_ID for the newly selected CAT.
     # Runs in background so the select response returns immediately.
     # Clears the resolver cache first so we get fresh data for the new asset.

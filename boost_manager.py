@@ -31,7 +31,7 @@ from decimal import Decimal
 from typing import Optional, Dict, List
 
 from config import cfg
-from database import log_event, add_offer, lock_coin
+from database import log_event, add_offer, lock_coin, get_open_offers as db_get_open_offers
 from offer_manager import xch_to_mojos, cat_to_mojos, mojos_to_cat
 
 
@@ -362,7 +362,7 @@ class BoostManager:
 
             # --- Step 1: Find the furthest inner-tier offer to swap out ---
             try:
-                open_offers = om.get_open_offers(side=side)
+                open_offers = db_get_open_offers(side=side, cat_asset_id=cfg.CAT_ASSET_ID)
             except Exception:
                 open_offers = []
 

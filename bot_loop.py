@@ -186,6 +186,9 @@ class BotLoop:
         self.amm_monitor = AMMMonitor(price_engine=self.price_engine)
         # Wire amm_monitor into offer_manager so buffer guard has AMM data
         self.offer_manager.amm_monitor = self.amm_monitor
+        # Wire fee coin pool so each create/cancel gets a dedicated fee coin
+        # (prevents MEMPOOL_CONFLICT from concurrent Sage operations)
+        self.offer_manager._fee_pool = self.coin_manager.fee_pool
         # Wire boost_manager into risk_manager for spread convergence
         self.risk_manager._boost_manager = self.boost_manager
 
@@ -1492,6 +1495,16 @@ class BotLoop:
         self._consecutive_unhealthy = 0
         self._sweep_protection = {}
         self._last_pricing_success_ts = 0
+        # Reset position baselines so stale wallet comparisons from the
+        # previous CAT/session don't trigger false drift alarms.
+        self._position_baseline_cat = None
+        self._position_baseline_net_cat = None
+        self._position_baseline_at = 0
+        # Full risk-manager session reset — clears inventory, circuit
+        # breaker, volatility, and all market data caches so nothing from
+        # the previous CAT/session leaks into the new one.
+        if self.risk_manager:
+            self.risk_manager.reset_session()
         # Clear startup gate so background threads re-wait on next start
         self._startup_complete.clear()
         log_event("debug", "runtime_state_reset",
@@ -3095,7 +3108,8 @@ class BotLoop:
 
         # ---- Step 1b: Refresh market intelligence (NEW — ecosystem) ----
         print(f"   [1b] Market intel...", end="", flush=True)
-        log_event("debug", "step1b_intel", "Refreshing market intelligence...")
+        # Step-by-step debug logs removed — console print provides same info
+        # without cluttering the system log panel during price adjustments.
         try:
             intel_data = self.market_intel.refresh_orderbook()
             if intel_data:
@@ -3177,7 +3191,7 @@ class BotLoop:
 
         else:
             print(" OK", flush=True)
-            log_event("debug", "step2_breakers", "Circuit breakers OK")
+            pass  # Console print covers this — no system log needed
             self._set_state(status="running")
             self._clear_alert("circuit_breaker")
             self._circuit_breaker_offer_safed = False
@@ -3185,7 +3199,7 @@ class BotLoop:
         # ---- Step 3: Get current offers from wallet ----
         self._set_cycle_step("step3_wallet_sync")
         print(f"   [3] Syncing offers from wallet...", end="", flush=True)
-        log_event("debug", "step3_sync", "Syncing offers from wallet...")
+        # step3_sync log removed — console print covers this
         open_buys, open_sells, closed = self.offer_manager.sync_from_wallet()
         wallet_sync_meta = self.offer_manager.get_wallet_sync_meta()
         self._wallet_sync_stale_cycle = not bool(wallet_sync_meta.get("fresh", True))
@@ -3372,7 +3386,7 @@ class BotLoop:
 
         if not buy_fills and not sell_fills:
             print(" none", flush=True)
-            log_event("debug", "step4_fills", "No fills this cycle")
+            pass  # No fills — nothing to log
 
         # ---- AMM drift check — force requote if AMM price has moved ----
         # If AMMMonitor has data, check whether the current AMM price has
@@ -3395,10 +3409,7 @@ class BotLoop:
                         _cooldown = float(getattr(cfg, "REQUOTE_COOLDOWN_SECS", 60) or 60)
                         _last_force = float(getattr(self, "_last_amm_drift_force_at", 0) or 0)
                         if (_now - _last_force) < _cooldown:
-                            log_event("debug", "amm_drift_cooldown",
-                                      f"AMM drift {amm_drift_bps:.1f}bps ≥ {_drift_threshold}bps "
-                                      f"but within cooldown ({int(_now - _last_force)}s/"
-                                      f"{int(_cooldown)}s) — not re-firing")
+                            pass  # Cooldown active — skip silently
                         else:
                             # Determine which side is vulnerable based on price direction
                             try:
@@ -3455,8 +3466,7 @@ class BotLoop:
                     pace = 'normal'
                 active_count = len(current_buy_ids) + len(current_sell_ids)
                 record_trading_pace(fills_hour, pace, active_count)
-                log_event("debug", "trading_pace",
-                          f"Trading pace: {pace} ({fills_hour} fills/hr)")
+                # trading_pace log removed — pace shown in GUI + console
             except Exception as e:
                 log_event("debug", "pace_record_failed", f"Pace recording failed: {e}")
 
@@ -3476,7 +3486,7 @@ class BotLoop:
         inv = self.risk_manager.get_inventory_state()
         net_pos = inv.get("net_position_cat", "0")
         print(f" net position: {net_pos} CAT", flush=True)
-        log_event("debug", "step6_inventory", f"Inventory updated — net position: {net_pos} CAT")
+        # step6 inventory log removed — console print + GUI push covers this
 
         # ---- Step 7: Pre-emptive offer refresh ----
         # Detect offers approaching expiry and cancel them early so Step 10
@@ -3514,7 +3524,7 @@ class BotLoop:
                 current_buy_ids -= cancelled_set
                 current_sell_ids -= cancelled_set
         else:
-            log_event("debug", "step7_skipped", "Offer expiry disabled — no cleanup needed")
+            pass  # Expiry disabled — nothing to log
 
         # ---- Step 7b: Spacescan balance verification (periodic health check) ----
         # Every N loops, compare wallet balance vs on-chain truth.
@@ -3574,6 +3584,16 @@ class BotLoop:
             current_buy_ids=current_buy_ids,
             current_sell_ids=current_sell_ids,
         )
+
+        # ---- Step 7d: Refresh fee pool after all cancels ----
+        # Steps 7/7c may have consumed fee coins via Sage auto-pick.
+        # Re-query spendable fee coins so the pool only contains coins
+        # that are actually available — prevents creates (steps 8-10)
+        # from passing an already-spent coin to make_offer.
+        try:
+            self.coin_manager.refresh_fee_pool_from_wallet()
+        except Exception:
+            pass  # non-fatal — pool keeps its existing state
 
         # ---- Step 8: Sniper Probe — price discovery before main offers ----
         # FLOW:
@@ -4322,13 +4342,10 @@ class BotLoop:
         force_sell = self._force_requote.get("sell", False)
         force_tag = f" FORCED!" if (force_buy or force_sell) else ""
         print(f"   [9] Requote check...{force_tag}", end="", flush=True)
-        log_event("debug", "step9_requote",
-                  f"Checking requote: last_buy={self._last_quoted_price.get('buy', 0)}, "
-                  f"last_sell={self._last_quoted_price.get('sell', 0)}, mid={mid_price}, "
-                  f"force_buy={force_buy}, force_sell={force_sell}")
+        # step9 detail log removed — the actual requoting info log fires when needed
         self._handle_requoting(mid_price, current_buy_ids, current_sell_ids)
         print(" done", flush=True)
-        log_event("debug", "step9_done", "Requote check done")
+        # step9_done removed
 
         # ---- Step 9b: Reserve floor guard ----
         # Total confirmed wallet balance (including locked coins) must never
@@ -4436,9 +4453,7 @@ class BotLoop:
         self._set_cycle_step("step10_create_offers")
         print(f"   [10] Offers: buys {len(current_buy_ids)}/{cfg.MAX_ACTIVE_BUY_OFFERS}, "
               f"sells {len(current_sell_ids)}/{cfg.MAX_ACTIVE_SELL_OFFERS}", flush=True)
-        log_event("debug", "step10_create",
-                  f"Check create: buys={len(current_buy_ids)}/{cfg.MAX_ACTIVE_BUY_OFFERS}, "
-                  f"sells={len(current_sell_ids)}/{cfg.MAX_ACTIVE_SELL_OFFERS}")
+        # step10 count log removed — console print covers this
         if _reserve_skip_create:
             log_event("info", "step10_skipped_reserve",
                       "Skipping offer creation — reserve floor guard active")
@@ -4513,7 +4528,7 @@ class BotLoop:
         print(f"   [12] Coin health...", end="", flush=True)
         self._handle_coins(len(current_buy_ids), len(current_sell_ids))
         print(" done", flush=True)
-        log_event("debug", "step12_coins", "Coin health check done")
+        # step12 log removed
 
         # ---- Step 12a: Trim excess offers (Fix 3) ----
         # Belt-and-braces: if anything in steps 9-11 left the live book
@@ -4523,7 +4538,11 @@ class BotLoop:
         # place this should rarely fire — but when it does, it stops the
         # overshoot from accumulating across cycles.
         try:
-            trimmed = self.offer_manager.trim_excess_offers(mid_price)
+            trimmed = self.offer_manager.trim_excess_offers(
+                mid_price,
+                wallet_buys=open_buys,
+                wallet_sells=open_sells,
+            )
             if trimmed > 0:
                 log_event("info", "trim_excess_done",
                           f"Trim pass cancelled {trimmed} excess offer(s)")
@@ -4633,7 +4652,7 @@ class BotLoop:
             print(f"   [15] Dashboard emit error: {e}", flush=True)
 
         print(f" done [OK]", flush=True)
-        log_event("debug", "step15_gui", "Housekeeping + inventory + GUI push done")
+        # step15 log removed
 
         # Console cycle summary — one clean line showing the cycle result
         fill_count = len(buy_fills) + len(sell_fills)
@@ -4841,9 +4860,7 @@ class BotLoop:
                 break
 
             if side in probe_sides_blocked:
-                log_event("debug", "requote_skip",
-                          f"Sniper probe active on {side} — skipping {side} requote")
-                continue
+                continue  # Probe active — skip silently (logged once at probe start)
 
             # Circuit breaker side-enable check — without this, a position
             # CB on (e.g.) the buy side would still let _handle_requoting
@@ -4853,10 +4870,7 @@ class BotLoop:
             # same action and was missing the gate.
             try:
                 if not self.risk_manager.should_enable_side(side, mid_price):
-                    log_event("debug", "requote_skip_cb",
-                              f"{side} side disabled by risk manager (CB or "
-                              f"inventory limit) — skipping requote")
-                    continue
+                    continue  # CB-blocked — skip silently (CB state shown in GUI)
             except Exception as _e:
                 # Fail-safe: if the check itself errors, log and continue
                 # (don't lock the bot out of requoting due to a CB read bug)
@@ -4874,16 +4888,11 @@ class BotLoop:
             # Suppress normal requotes (not forced convergence) for the first
             # 3 loops to avoid immediate churn from minor price differences.
             if not forced and self._loop_count <= 3:
-                log_event("debug", "startup_grace",
-                          f"Startup grace period (loop {self._loop_count}/3) — "
-                          f"skipping {side} requote")
-                continue
+                continue  # Grace period — skip silently
 
             # Check fill protection (anti-churn) — but don't block forced convergence requotes
             if not forced and self.fill_tracker.should_protect_side(side):
-                log_event("debug", "fill_protect",
-                          f"Fill protection active for {side} side — skipping requote")
-                continue
+                continue  # Fill protection — skip silently
 
             # Check if requote needed — graduated severity check
             from reaction_strategy import (

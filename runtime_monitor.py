@@ -473,6 +473,17 @@ class RuntimeMonitor:
         coin_status = self._bot.coin_manager.get_status()
         free_counts = self._safe_free_coin_counts(wallet_buy, wallet_sell)
 
+        # Gap closer awareness — cancel+create operations take 60-90s on-chain
+        # and temporarily diverge DB/wallet counts and tier shapes.  Suppress
+        # the warnings that would fire during normal gap closer operation.
+        gap_closer_active = False
+        try:
+            gap_closer_active = bool(
+                self._bot.boost_manager and self._bot.boost_manager._boost_active
+            )
+        except Exception:
+            pass
+
         performance = {
             "latest_ms": {k: round(v, 1) for k, v in self._slow_last_ms.items()},
             "active_methods": [],
@@ -480,6 +491,7 @@ class RuntimeMonitor:
 
         return {
             "market": {
+                "gap_closer_active": gap_closer_active,
                 "wallet_buy": wallet_buy,
                 "wallet_sell": wallet_sell,
                 "db_buy": db_buy,
@@ -551,12 +563,17 @@ class RuntimeMonitor:
         performance = snapshot["performance"]
         active_conditions: List[Dict] = []
 
+        gap_closer_running = bool(market.get("gap_closer_active"))
         for method, cfg_row in self._slow_thresholds.items():
             bucket = self._slow_samples.get(method, deque())
             if len(bucket) >= int(cfg_row["hits"]):
                 self._slow_active.add(method)
             else:
                 self._slow_active.discard(method)
+        # Gap closer cancel+create operations take 60-90s on-chain — don't
+        # flag the overall cycle as slow while it's doing its job.
+        if gap_closer_running:
+            self._slow_active.discard("_run_one_cycle")
 
         performance["active_methods"] = [
             {
@@ -598,7 +615,8 @@ class RuntimeMonitor:
         gap_total = abs(int(market["wallet_buy"]) - int(market["db_buy"])) + abs(
             int(market["wallet_sell"]) - int(market["db_sell"])
         )
-        divergence_active = (not startup_grace) and wallet_fresh and gap_total >= 2
+        gap_closer_active = bool(market.get("gap_closer_active"))
+        divergence_active = (not startup_grace) and wallet_fresh and gap_total >= 2 and not gap_closer_active
         self._update_streak("db_wallet_divergence", divergence_active)
         if self._apply_condition(
             "db_wallet_divergence",
@@ -689,7 +707,7 @@ class RuntimeMonitor:
                 if mismatched:
                     ladder_shape_mismatches.append(f"{side} " + ", ".join(mismatched))
 
-        self._update_streak("ladder_shape_drift", bool(ladder_shape_mismatches))
+        self._update_streak("ladder_shape_drift", bool(ladder_shape_mismatches) and not gap_closer_active)
         if self._apply_condition(
             "ladder_shape_drift",
             self._streaks["ladder_shape_drift"] >= 2,

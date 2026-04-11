@@ -87,6 +87,11 @@ class PriceEngine:
         # Thread safety — multiple threads read price state; main loop writes it
         self._price_lock = threading.Lock()
 
+        # --- Warning rate-limiters (suppress spammy Dexie warnings) ---
+        self._last_crossed_warn: float = 0
+        self._last_empty_warn: float = 0
+        self._warn_cooldown_secs: int = 120  # max once per 2 min
+
     # -------------------------------------------------------------------
     # Public API
     # -------------------------------------------------------------------
@@ -347,9 +352,14 @@ class PriceEngine:
                 if bid_d > 0 and ask_d > 0 and bid_d <= ask_d:
                     return (bid_d + ask_d) / 2
                 elif bid_d > ask_d and ask_d > 0:
-                    log_event("warning", "dexie_crossed_market",
-                              f"Dexie returned crossed bid/ask (bid={bid_d}, ask={ask_d}) "
-                              f"— bid/ask midpoint skipped, falling back to current_avg_price")
+                    _now = time.time()
+                    if _now - self._last_crossed_warn >= self._warn_cooldown_secs:
+                        log_event("warning", "dexie_crossed_market",
+                                  f"Dexie returned crossed bid/ask (bid={bid_d}, ask={ask_d}) "
+                                  f"— bid/ask midpoint skipped, falling back to "
+                                  f"current_avg_price (warning suppressed for "
+                                  f"{self._warn_cooldown_secs}s)")
+                        self._last_crossed_warn = _now
             except InvalidOperation:
                 pass
 
@@ -381,10 +391,14 @@ class PriceEngine:
                     try:
                         fallback_price = Decimal(str(val))
                         if fallback_price > 0:
-                            log_event("warning", "dexie_orderbook_empty",
-                                      f"Dexie orderbook empty (no valid bids or asks). "
-                                      f"Using historical fallback field '{field}': "
-                                      f"{fallback_price}. Spread may be inaccurate.")
+                            _now = time.time()
+                            if _now - self._last_empty_warn >= self._warn_cooldown_secs:
+                                log_event("warning", "dexie_orderbook_empty",
+                                          f"Dexie orderbook empty (no valid bids or asks). "
+                                          f"Using historical fallback field '{field}': "
+                                          f"{fallback_price}. Spread may be inaccurate. "
+                                          f"(suppressed for {self._warn_cooldown_secs}s)")
+                                self._last_empty_warn = _now
                             return fallback_price
                     except InvalidOperation:
                         continue

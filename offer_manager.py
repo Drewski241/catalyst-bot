@@ -113,6 +113,12 @@ class OfferManager:
         # so we never post inside TibetSwap's arb zone.
         self.amm_monitor = None
 
+        # ----- Fee coin pool reference -----
+        # Injected by bot_loop: self.offer_manager._fee_pool = self.coin_manager.fee_pool
+        # Each create/cancel reserves a dedicated fee coin from this pool
+        # so concurrent operations don't fight over the same fee coin.
+        self._fee_pool = None
+
         # ----- Shared in-flight coin tracking -----
         # Coins currently selected for offer creation (not yet confirmed).
         # Checked by both main loop and sniper under _lock to prevent
@@ -956,16 +962,26 @@ class OfferManager:
                 log_event("warning", "coin_snapshot_before_fail",
                           f"Could not snapshot coins before offer: {e}")
 
+        # ---- Reserve a dedicated fee coin for this create ----
+        # Prevents MEMPOOL_CONFLICT when multiple creates run concurrently:
+        # each gets its own fee coin instead of Sage auto-picking (and
+        # potentially re-using) the same one.
+        _fee_coin_id = None
+        if hasattr(self, '_fee_pool') and self._fee_pool is not None:
+            _fee_coin_id = self._fee_pool.reserve()
+
         try:
             for attempt in range(max_retries + 1):
                 # Pass coin_ids to wallet if we pre-selected a coin
                 if use_coin_ids_mode and selected_coin_id:
                     res = create_offer(offer_dict, validate_only=False, max_time=offer_max_time,
                                        min_coin_amount=min_coin_hint, max_coin_amount=max_coin_hint,
-                                       coin_ids=[selected_coin_id])
+                                       coin_ids=[selected_coin_id],
+                                       fee_coin_id=_fee_coin_id)
                 else:
                     res = create_offer(offer_dict, validate_only=False, max_time=offer_max_time,
-                                       min_coin_amount=min_coin_hint, max_coin_amount=max_coin_hint)
+                                       min_coin_amount=min_coin_hint, max_coin_amount=max_coin_hint,
+                                       fee_coin_id=_fee_coin_id)
 
                 if res and res.get("success"):
                     # Include expiry info so caller can record it in DB
@@ -1540,7 +1556,16 @@ class OfferManager:
         from concurrent.futures import ThreadPoolExecutor, as_completed
         import threading as _threading
 
-        max_parallel = self._get_ladder_parallelism(coin_ids_enabled)
+        # During requote batches (small num_offers from rolling wave), use
+        # serial creation.  Parallel creation with Sage can cause
+        # BAD_AGGREGATE_SIGNATURE when multiple concurrent make_offer RPCs
+        # contend for the same fee coin.  Full ladder creates (startup/cold)
+        # still benefit from parallelism since they run before any cancels.
+        _is_requote_batch = (num is not None and num < total_slots)
+        if _is_requote_batch:
+            max_parallel = 1
+        else:
+            max_parallel = self._get_ladder_parallelism(coin_ids_enabled)
         _results_lock = _threading.Lock()
         _used_coins_lock = _threading.Lock()
         _results_map = {}  # {i: res}
@@ -1550,7 +1575,7 @@ class OfferManager:
             if coin_ids_enabled and not spec.get("coin_id"):
                 msg = (f"No unique pre-selected coin available for {side} "
                        f"slot {spec['slot']} — skipping to avoid overlap")
-                log_event("info", "coin_select_skip", msg)
+                log_event("debug", "coin_select_skip", msg)
                 # Fix F: track consecutive failures for this slot
                 self.record_slot_coin_failure(side, spec["slot"])
                 return spec["i"], {"success": False, "error": "no_unique_coin_preselected"}
@@ -2118,12 +2143,19 @@ class OfferManager:
                 # only a matching number of old offers.  Only stop if we
                 # created ZERO (no spare coins available at all).
                 if len(new_offers) == 0 and batch_count > 0:
-                    # Zero offers created — can't make progress, stop requoting
-                    log_event("info", "requote_no_coins",
-                              f"Rolling wave {side} batch {batch_num}: "
-                              f"no spare coins available for this tier — "
-                              f"skipping remaining batches, topup will replenish")
-                    break
+                    # Zero offers created — no spare coins for this tier.
+                    # SKIP this wave entirely: keep old offers in place (stale
+                    # offers are better than gaps in the book) and advance to
+                    # the next wave.  Topup / coin prep will create fresh coins;
+                    # the next requote cycle will replace these stale offers then.
+                    log_event("info", "requote_tier_skip",
+                              f"Rolling wave {side} batch {batch_num} (slots "
+                              f"{slot_start_idx}-{slot_start_idx + batch_count - 1}): "
+                              f"no coins available — keeping existing offers, "
+                              f"will retry after topup")
+                    offers_remaining = offers_remaining[batch_count:]
+                    batches_done += 1
+                    continue
                 elif len(new_offers) < batch_count:
                     # Partial success — keep what we created, cancel matching old offers
                     log_event("info", "requote_partial",
@@ -2247,9 +2279,13 @@ class OfferManager:
 
             batches_done += 1
 
-            # Brief yield for cancelled coins to recycle before next wave.
+            # Yield between waves so cancelled coins have time to free.
+            # The old 0.5s was too short — a Chia block is ~18s and Sage
+            # needs at least a few seconds to process the cancel and
+            # update its coin set.  Spending a just-freed coin before it's
+            # confirmed causes BAD_AGGREGATE_SIGNATURE in Sage.
             if offers_remaining:
-                time.sleep(0.5)
+                time.sleep(3)
 
         mode = ("rolling-wave create-first" if initial_had_spares
                 else "cancel-first → rolling-wave")
@@ -2325,7 +2361,10 @@ class OfferManager:
             except Exception:
                 pass  # lifecycle update is additive — never block cancel
 
-        # Sequential cancel (NEVER parallel — breaks the Chia wallet)
+        # NOTE: Sage's cancel endpoints don't accept coin_ids — fee coin
+        # is always auto-selected.  Bulk cancel (≥3 offers) uses a single
+        # transaction so only 1 fee coin is consumed.  Creates DO get
+        # dedicated fee coins via make_offer's coin_ids to prevent overlap.
         results = cancel_offers_batch(trade_ids, secure=True,
                                       skip_confirmation=skip_confirmation)
 
@@ -2742,7 +2781,9 @@ class OfferManager:
     # Trim excess offers (Fix 3: belt-and-braces overshoot guard)
     # -------------------------------------------------------------------
 
-    def trim_excess_offers(self, mid_price: Decimal) -> int:
+    def trim_excess_offers(self, mid_price: Decimal,
+                           wallet_buys: list = None,
+                           wallet_sells: list = None) -> int:
         """Cancel any offers above the configured per-side cap.
 
         Belt-and-braces guard against the requote overshoot the bot got
@@ -2750,6 +2791,13 @@ class OfferManager:
         create-first requote rounds left the live book at 29 sells against
         a 24 cap. The over-allocation guard only blocked NEW creation; it
         never trimmed the excess. This method does the trim.
+
+        When ``wallet_buys`` / ``wallet_sells`` are provided (from the
+        wallet sync step), they are used as the ground-truth open-offer
+        count instead of the DB.  This closes the gap where the DB has
+        already marked a cancel-pending offer as "cancelled" but the
+        wallet still holds it open — the DB would show 12 (under cap)
+        while the wallet shows 20 (8 excess).
 
         Strategy: pick the offers furthest from `mid_price` on each side
         (least useful market-making) and cancel them until count == cap.
@@ -2794,14 +2842,23 @@ class OfferManager:
 
         total_trimmed = 0
 
+        _wallet_map = {"buy": wallet_buys, "sell": wallet_sells}
+
         for side, cap in (("buy", max_buy), ("sell", max_sell)):
-            try:
-                open_offers_all = get_open_offers(side=side,
-                                                  cat_asset_id=cfg.CAT_ASSET_ID) or []
-            except Exception as e:
-                log_event("warning", "trim_excess_query_failed",
-                          f"trim_excess_offers: could not query open {side} offers: {e}")
-                continue
+            # Prefer wallet ground truth over DB — the wallet shows what
+            # is ACTUALLY open on-chain, while the DB might have already
+            # marked cancel-pending offers as "cancelled".
+            _w_offers = _wallet_map.get(side)
+            if _w_offers is not None:
+                open_offers_all = list(_w_offers)
+            else:
+                try:
+                    open_offers_all = get_open_offers(side=side,
+                                                      cat_asset_id=cfg.CAT_ASSET_ID) or []
+                except Exception as e:
+                    log_event("warning", "trim_excess_query_failed",
+                              f"trim_excess_offers: could not query open {side} offers: {e}")
+                    continue
 
             # Exclude sniper-tier offers from the ladder cap check — snipers
             # are a separate pool and must not cause ladder offers to be
@@ -2814,6 +2871,11 @@ class OfferManager:
             excess = len(open_offers) - cap
             if excess <= 0:
                 continue
+
+            # Fee coin dedication (via FeeCoinPool) eliminates the
+            # MEMPOOL_CONFLICT risk that previously required a per-cycle cap.
+            # Each cancel batch now reserves its own fee coin, so we can
+            # trim all excess in one shot instead of spreading across cycles.
 
             def _distance_from_mid(o):
                 try:

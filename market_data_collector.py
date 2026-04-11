@@ -680,6 +680,12 @@ def _spacescan_smart_get(base_url: str, endpoint: str, *,
                 if isinstance(data, dict) and data.get("status") not in (None, "success"):
                     last_error = f"status={data.get('status')}"
                 else:
+                    # Count this call in the central Spacescan stats
+                    try:
+                        import spacescan as _ss
+                        _ss.record_external_call()
+                    except Exception:
+                        pass
                     return data, None
 
         except requests.exceptions.Timeout:

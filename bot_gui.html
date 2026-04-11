@@ -13297,7 +13297,7 @@
                         icon: '📐',
                         title: 'Switching to fixed spread',
                         message: `Turning Dynamic Spreads OFF means the bot will use the <strong>fixed ` +
-                                 `SPREAD_BPS</strong> from your settings (not the BASE_SPREAD_BPS slider above). ` +
+                                 `Spread</strong> value from your settings (not the Base Spread slider above). ` +
                                  `<br><br>Volatility scaling, fill-rate scaling, and pool-depth scaling will ` +
                                  `<strong>all stop</strong>. Existing offers stay live; new requotes will use ` +
                                  `the fixed spread. ` +
@@ -13667,8 +13667,10 @@
                     return 'Enable inventory protection';
                 case 'applySpread':
                     return 'Adjust live spread';
+                case 'activateGapCloser':
+                    return 'Probe for arb floor';
                 case 'openLiveControls':
-                    return 'Consider Close the Gap';
+                    return 'Open Live Controls';
                 case 'openSettings':
                     return 'Fix price rail in Settings';
                 default:
@@ -14001,18 +14003,36 @@
                     });
                 }
 
-                // Gap-closer suggestion: calm arb gap, spread has meaningful room to tighten,
-                // and the gap-closer isn't already running.
-                if (!_gapCloserActive && arbGapBps < 80 && baseBps > 400 && baseBps > arbGapBps * 4) {
+                const _spreadCooldownActive = Date.now() < _saSpreadActionCooldownUntil;
+
+                // Smart action: adapts to market conditions.
+                //  • Arb gap present (≥50 bps) → "Close the Gap" (probe for arb floor)
+                //  • Arb gap calm, spread wide, no fills → "Tighten Spread" (adjust real book)
+                if (!_gapCloserActive && baseBps > 400 && !_spreadCooldownActive) {
                     const safeRoom = baseBps - Math.max(arbGapBps + 20, 80);
-                    if (safeRoom > 150) {
+                    if (arbGapBps >= 50 && safeRoom > 150) {
+                        // Active arb gap — probe approach makes sense
                         pushSuggestion({
-                            type: 'info',
+                            type: 'warning',
                             icon: '📈',
-                            msg: 'Arb is calm (' + fmtPct(arbGapBps) + ') and your spread (' + fmtPct(baseBps) + ') has room to tighten safely. "Close the Gap" can probe whether the market supports a tighter book — it starts at 75% of your spread and steps down 10% every 60s, stopping at the arb floor. When it finds the floor it plants an inner-tier offer at the proven price. The bot does not do this automatically; it requires your go-ahead.',
-                            action: 'Open Live Controls',
-                            actionType: 'openLiveControls'
+                            msg: 'Arb gap is ' + fmtPct(arbGapBps) + ' between Dexie and TibetSwap while your spread is ' + fmtPct(baseBps) + '. Close the Gap will probe for the arb floor with small offers, stepping tighter every 60s. When it finds the floor it plants an inner-tier offer at the proven safe price.',
+                            action: 'Close the Gap',
+                            actionType: 'activateGapCloser'
                         });
+                    } else if (arbGapBps < 50 && fillsHr === 0 && safeRoom > 100) {
+                        // No arb gap, but spread is wide with zero fills — tighten the real book
+                        const rawTargetBps = Math.max(minBps, Math.round(baseBps * 0.85));
+                        const targetBps = Math.round(rawTargetBps / 25) * 25;
+                        if (targetBps > 0 && targetBps < baseBps) {
+                            pushSuggestion({
+                                type: 'info',
+                                icon: '📐',
+                                msg: 'No arb risk (' + fmtPct(arbGapBps) + ') and your spread (' + fmtPct(baseBps) + ') is wide with zero fills. Tightening your actual book is more effective than probing with small offers in a quiet market.',
+                                action: 'Tighten to ' + fmtPct(targetBps),
+                                actionType: 'applySpread',
+                                actionValue: String(targetBps)
+                            });
+                        }
                     }
                 }
 
@@ -14085,7 +14105,6 @@
                 // and saying "competitors are tighter at 0.0%" is internally
                 // contradictory. Gate the entire branch on competitorBps > 0.
                 const spreadGapBps = baseBps - competitorBps;
-                const _spreadCooldownActive = Date.now() < _saSpreadActionCooldownUntil;
                 if (fillsHr === 0 && competitorCount > 0 && competitorBps > 0 && arbGapBps < 60 && !bothSidesAtEdge && !_spreadCooldownActive) {
                     if (tokenQuiet || tokenThin) {
                         const parts = [];
@@ -14270,6 +14289,14 @@
                                 || Array.from(document.querySelectorAll('h3,h4')).find(el => el.textContent.includes('Safety'));
                             if (safetyEl) safetyEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
                         }, 300);
+                    }
+                    return;
+                }
+                case 'activateGapCloser': {
+                    // Directly open the gap closer confirmation modal
+                    const boostBtn = document.getElementById('boostBtn');
+                    if (boostBtn && !_gapCloserActive) {
+                        boostBtn.click();
                     }
                     return;
                 }
@@ -21782,7 +21809,15 @@
                         heroMid.classList.remove('data-pending');
                     }
                     const heroSpread = document.getElementById('heroSpread');
-                    if (heroSpread) heroSpread.classList.remove('data-pending');
+                    if (heroSpread) {
+                        const ccSpread = document.getElementById('ccYourSpread');
+                        if (ccSpread && ccSpread.textContent && ccSpread.textContent !== 'pending') {
+                            const newLabel = 'inner spread ' + ccSpread.textContent;
+                            v4FlashIfChanged('heroSpread', newLabel);
+                            heroSpread.textContent = newLabel;
+                        }
+                        heroSpread.classList.remove('data-pending');
+                    }
                 }
                 // Update hero offer counts from SSE push
                 if (data.open_buys !== undefined && data.open_sells !== undefined) {
@@ -22257,7 +22292,8 @@
             'enableInventory',
             'applySpread',
             'openSettings',
-            'openLiveControls'
+            'openLiveControls',
+            'activateGapCloser'
         ]);
         const ACTIONABLE_ALERT_IDS = new Set([
             'bot_recovery',

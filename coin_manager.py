@@ -82,6 +82,76 @@ class _TopupWalletDegraded(Exception):
 
 
 # -----------------------------------------------------------------------
+# Fee Coin Pool — thread-safe reservation for concurrent operations
+# -----------------------------------------------------------------------
+
+class FeeCoinPool:
+    """Thread-safe pool for reserving dedicated fee coins.
+
+    Problem: when the bot fires multiple operations (creates + cancels)
+    in the same cycle, Sage auto-picks fee coins for each one.  If the
+    operations overlap, Sage may grab the *same* fee coin for two
+    different transactions → MEMPOOL_CONFLICT / BAD_AGGREGATE_SIGNATURE.
+
+    Solution: each operation reserves a specific fee coin from this pool
+    *before* calling Sage, and passes it via the ``coin_ids`` parameter.
+    Sage then uses the provided coin for the fee instead of auto-picking.
+
+    Lifecycle:
+      • ``refresh()`` is called once at the start of every bot cycle
+        with the current fee-coin inventory.  This resets all prior
+        reservations (coins that were successfully spent are gone from
+        the inventory; coins that weren't are re-added automatically).
+      • ``reserve()`` hands out one coin ID per call.
+      • No explicit ``release()`` needed — the next ``refresh()`` resets.
+    """
+
+    def __init__(self):
+        self._available: list = []   # [(coin_id, amount_mojos), ...]
+        self._reserved: set = set()  # coin IDs handed out this cycle
+        self._lock = threading.Lock()
+
+    # ---- pool management ----
+
+    def refresh(self, fee_coin_records: list):
+        """Repopulate from inventory.  Resets all reservations."""
+        with self._lock:
+            self._available = []
+            self._reserved = set()
+            for rec in fee_coin_records:
+                cid = _coin_id_from_record(rec)
+                if cid:
+                    amt = _coin_amount(rec)
+                    self._available.append((cid.lower(), amt))
+
+    def reserve(self) -> str | None:
+        """Reserve one fee coin.  Returns coin_id or None if pool empty."""
+        with self._lock:
+            for cid, _amt in self._available:
+                if cid not in self._reserved:
+                    self._reserved.add(cid)
+                    return cid
+        return None
+
+    # ---- introspection ----
+
+    @property
+    def available_count(self) -> int:
+        with self._lock:
+            return sum(1 for cid, _ in self._available if cid not in self._reserved)
+
+    @property
+    def total_count(self) -> int:
+        with self._lock:
+            return len(self._available)
+
+    @property
+    def reserved_count(self) -> int:
+        with self._lock:
+            return len(self._reserved)
+
+
+# -----------------------------------------------------------------------
 # Coin record helpers
 # -----------------------------------------------------------------------
 
@@ -852,6 +922,40 @@ class CoinManager:
         self._trading_pace: str = "normal"    # Current pace: slow/normal/busy
         self._last_pace_calc: float = 0       # Timestamp of last pace calculation
         self._reconcile_counter: int = 0      # Counts loops between reconciliations
+
+        # ---- Fee Coin Pool (concurrent operation support) ----
+        # Each operation (create / cancel) reserves a dedicated fee coin
+        # from this pool so Sage doesn't auto-pick the same one for two
+        # concurrent transactions.  Refreshed at start of each cycle.
+        self.fee_pool = FeeCoinPool()
+
+    def refresh_fee_pool_from_wallet(self):
+        """Quick-refresh fee pool from current wallet state.
+
+        Call this after cancel operations complete but before creates start.
+        Ensures the pool only contains coins Sage hasn't already claimed
+        for pending cancel transactions.
+
+        Much lighter than a full update_coin_counts() — one RPC call,
+        filtered to fee-sized coins only.
+        """
+        try:
+            fee_size = get_fee_coin_size_mojos()
+            if fee_size <= 0:
+                return
+            result = get_exact_spendable_coins_rpc(WALLET_ID_XCH)
+            if not result or not result.get("success"):
+                return  # can't refresh — keep existing pool
+            records = _extract_coin_records(result)
+            low = int(fee_size * 0.8)
+            high = int(fee_size * 1.2)
+            fee_records = [
+                r for r in records
+                if low <= int((r.get("coin") or {}).get("amount", 0)) <= high
+            ]
+            self.fee_pool.refresh(fee_records)
+        except Exception:
+            pass  # non-fatal — keep existing pool
 
     def _sniper_pool_enabled(self) -> bool:
         """Whether the dedicated sniper pool should be prepared and maintained."""
@@ -2559,6 +2663,10 @@ class CoinManager:
             # Get ALL coins (free + locked) and subtract spendable to find locked
             self._update_locked_coins(xch_records, cat_records)
 
+            # ---- Refresh fee coin pool for this cycle ----
+            # Must happen AFTER classification so _xch_inventory["fees"] is current.
+            self.fee_pool.refresh(self._xch_inventory.get("fees", []))
+
         except Exception as e:
             log_event("warning", "coin_count_failed", f"Failed to count coins: {e}")
 
@@ -3160,41 +3268,33 @@ class CoinManager:
                 if coin_id:
                     current_cat_ids.add(coin_id)
 
-        # Compare to previous snapshot
+        # Compare to previous snapshot — consolidated into a single log line
+        # to avoid noisy per-coin logging that clutters the system log
+        # during price adjustments (multiple snapshot_coins calls per cycle).
+        _changes = []
         if hasattr(self, '_prev_xch_coin_ids') and self._prev_xch_coin_ids is not None:
             new_xch = current_xch_ids - self._prev_xch_coin_ids
             gone_xch = self._prev_xch_coin_ids - current_xch_ids
-
             if new_xch or gone_xch:
-                log_event("info", "coin_state_change",
-                          f"[{reason.upper()}] XCH coins: "
-                          f"+{len(new_xch)} new, -{len(gone_xch)} removed "
-                          f"(was {len(self._prev_xch_coin_ids)}, now {len(current_xch_ids)})")
-
-                # Log individual new coins (up to 5)
-                for i, cid in enumerate(list(new_xch)[:5]):
-                    log_event("debug", "coin_created",
-                              f"  NEW XCH coin: {cid[:20]}...")
-                if len(new_xch) > 5:
-                    log_event("debug", "coin_created",
-                              f"  ... and {len(new_xch) - 5} more new XCH coins")
+                _changes.append(
+                    f"XCH +{len(new_xch)}/-{len(gone_xch)} "
+                    f"({len(self._prev_xch_coin_ids)}→{len(current_xch_ids)})"
+                )
 
         if hasattr(self, '_prev_cat_coin_ids') and self._prev_cat_coin_ids is not None:
             new_cat = current_cat_ids - self._prev_cat_coin_ids
             gone_cat = self._prev_cat_coin_ids - current_cat_ids
-
             if new_cat or gone_cat:
-                log_event("info", "coin_state_change",
-                          f"[{reason.upper()}] CAT coins: "
-                          f"+{len(new_cat)} new, -{len(gone_cat)} removed "
-                          f"(was {len(self._prev_cat_coin_ids)}, now {len(current_cat_ids)})")
+                _changes.append(
+                    f"CAT +{len(new_cat)}/-{len(gone_cat)} "
+                    f"({len(self._prev_cat_coin_ids)}→{len(current_cat_ids)})"
+                )
 
-                for i, cid in enumerate(list(new_cat)[:5]):
-                    log_event("debug", "coin_created",
-                              f"  NEW CAT coin: {cid[:20]}...")
-                if len(new_cat) > 5:
-                    log_event("debug", "coin_created",
-                              f"  ... and {len(new_cat) - 5} more new CAT coins")
+        if _changes:
+            # Use debug for routine requote snapshots, info for fills/startup
+            _level = "info" if reason in ("startup", "offer_filled", "coin_prep") else "debug"
+            log_event(_level, "coin_state_change",
+                      f"[{reason.upper()}] {' | '.join(_changes)}")
 
         # Save for next comparison
         self._prev_xch_coin_ids = current_xch_ids

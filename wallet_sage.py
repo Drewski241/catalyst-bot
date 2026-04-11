@@ -2031,7 +2031,8 @@ def send_cat_multi(payments: list, fee_mojos: int = 0):
 def create_offer(offer_dict: dict, validate_only: bool = True, max_time: int = None,
                   _reuse_puzhash: bool = True,
                   min_coin_amount: int = None, max_coin_amount: int = None,
-                  coin_ids: list = None, fee_mojos: int = 0):
+                  coin_ids: list = None, fee_mojos: int = 0,
+                  fee_coin_id: str = None):
     """Create an offer via Sage's make_offer endpoint.
 
     Sage's make_offer uses offered_assets / requested_assets arrays:
@@ -2128,8 +2129,15 @@ def create_offer(offer_dict: dict, validate_only: bool = True, max_time: int = N
 
     # Pass specific coin IDs if provided (requires Sage PR #761 / coin_ids feature)
     # IMPORTANT: Strip 0x prefix — Sage expects bare hex (like split/combine endpoints)
-    if coin_ids is not None and len(coin_ids) > 0:
-        bare_ids = [cid.replace("0x", "") for cid in coin_ids]
+    # When fee_coin_id is provided, append it to coin_ids so Sage uses it for the
+    # tx fee instead of auto-picking (prevents MEMPOOL_CONFLICT on concurrent ops).
+    _all_coin_ids = list(coin_ids) if coin_ids else []
+    if fee_coin_id:
+        bare_fee = fee_coin_id.replace("0x", "").lower()
+        if bare_fee not in {cid.replace("0x", "").lower() for cid in _all_coin_ids}:
+            _all_coin_ids.append(fee_coin_id)
+    if _all_coin_ids:
+        bare_ids = [cid.replace("0x", "") for cid in _all_coin_ids]
         payload["coin_ids"] = bare_ids
         if WALLET_DEBUG:
             print(f"  [Sage] Using specific coin_ids: {bare_ids}")
@@ -2206,6 +2214,12 @@ def cancel_offer(trade_id: str, secure: bool = True, timeout: int = 60,
 
     Sage's cancel_offer takes offer_id and optional fee.
     The 'secure' flag maps to whether we pay a fee for on-chain cancel.
+
+    NOTE: Sage's CancelOffer struct does NOT accept coin_ids — fee coin
+    is always auto-selected.  Fee contention between cancels is handled
+    by using bulk cancel (single tx) and sequencing cancels before creates
+    in the bot loop.  Creates DO get dedicated fee coins via make_offer's
+    coin_ids parameter.
 
     Returns dict with 'success' key, or error dict on failure.
     """
@@ -2863,6 +2877,9 @@ def cancel_offers_batch(trade_ids: list, secure: bool = True, max_workers: int =
         print(f"📋 [Sage] Attempting bulk cancel of {len(trade_ids)} offers...")
         try:
             # Use _sage_post directly to see actual HTTP status on error
+            # NOTE: Sage's CancelOffers struct does NOT accept coin_ids.
+            # Fee coin is auto-selected.  Bulk cancel is a single transaction
+            # so only 1 fee coin is consumed regardless of offer count.
             bulk_result = _sage_post("cancel_offers", {
                 "offer_ids": trade_ids,
                 "fee": str(int(resolved_fee)),
@@ -2891,13 +2908,9 @@ def cancel_offers_batch(trade_ids: list, secure: bool = True, max_workers: int =
         except Exception as e:
             print(f"   ⚠️ [Sage] Bulk cancel error: {e} — falling back to sequential")
 
-    # --- Sequential cancel (used for small batches, or fallback for large) ---
-    # Small inter-cancel delay (0.3s) avoids hammering Sage but stays well
-    # under the previous 1.0s. Different offers spend different coins so
-    # MEMPOOL_CONFLICT is not a concern between them. Per-call timeout
-    # dropped from 60s to 15s — Sage responds in <2s normally; 60s only
-    # mattered when Sage was deeply backlogged, which we no longer want
-    # to silently tolerate.
+    # --- Sequential cancel (used for <3 offers, or fallback when bulk fails) ---
+    # 0.3s inter-cancel delay lets Sage update its internal coin tracking
+    # so it picks different fee coins for each sequential transaction.
     if not cancel_succeeded:
         delay = 0.3
         print(f"📋 [Sage] Cancelling {len(trade_ids)} offers sequentially "

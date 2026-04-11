@@ -437,6 +437,19 @@ def get_token_balance(address: str, asset_id: str = None) -> Optional[Decimal]:
         return None
 
 
+def record_external_call(count: int = 1) -> None:
+    """Increment session/daily call counters from external modules.
+
+    market_data_collector makes Spacescan HTTP requests through its own
+    helper (_spacescan_smart_get) rather than through _spacescan_get in
+    this module.  This function lets it report those calls so the
+    diagnostics panel shows accurate totals.
+    """
+    global _calls_this_session, _calls_today
+    _calls_this_session += count
+    _calls_today += count
+
+
 def get_api_stats() -> Dict:
     """Return current API usage stats for monitoring/GUI display."""
     import datetime
