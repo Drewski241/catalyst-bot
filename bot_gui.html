@@ -19053,7 +19053,7 @@
                     gapEl.style.color = g > 500 ? 'var(--status-danger)' : g > 200 ? 'var(--status-warning)' : 'var(--status-success)';
                     // Update Close the Gap display
                     const lcGapVal = document.getElementById('lcGapValue');
-                    if (lcGapVal) lcGapVal.textContent = g > 0 ? (g < 50 ? '< 0.5%' : (g / 100).toFixed(1) + '%') : '—';
+                    if (lcGapVal) lcGapVal.textContent = g > 0 ? (g / 100).toFixed(2) + '%' : '—';
                 }
                 if (gapSub) {
                     const g = parseFloat(d.arb_gap_bps) || 0;
