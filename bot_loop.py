@@ -4249,6 +4249,15 @@ class BotLoop:
             else:
                 stepped = self.boost_manager.step_tighter(arb_gap)
 
+            # 2b. If probe was arbed, check if inner-tier offers are exposed
+            if self.boost_manager.consume_inner_vulnerability_flag():
+                log_event("warning", "inner_vulnerability_check",
+                          "Gap closer probe arbed — checking inner-tier offers for exposure")
+                print(f"   [8d] ⚠️ Probe arbed — triggering EMERGENCY inner check", flush=True)
+                # Force an emergency requote of inner tiers on the next step 9
+                self._force_requote["buy"] = True
+                self._force_requote["sell"] = True
+
             # 3. Let main book follow proven safe levels
             converged = self.boost_manager.update_convergence()
 

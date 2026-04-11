@@ -8,10 +8,13 @@ floor — we never go tighter than where arbitrage would be profitable.
 
 How it works:
   1. Start at 75% of current main book spread
-  2. Every 5 min, if offers survived → tighten by 10%
-  3. If arbed → widen by 20%, wait 5 min, probe again
+  2. Every 60s, if offers survived → tighten by 10%
+  3. If arbed → widen by 20%, wait, probe again
   4. Never go tighter than arb_gap + safety buffer
   5. Main book follows via convergence_factor in risk_manager
+  6. At floor: plants inner-tier offers at proven price, swaps out
+     the furthest inner offers, then lets the incremental reaction
+     strategy adjust the rest of the ladder naturally
 
 Usage:
     from boost_manager import BoostManager
@@ -102,6 +105,11 @@ class BoostManager:
         self._convergence_factor: Decimal = Decimal("1.0")  # 1.0 = no change
         self._convergence_min: Decimal = Decimal("0.15")     # Floor: 15% of original
         self._last_convergence_time: float = 0
+
+        # ---- Vulnerability flag ----
+        # Set when a probe gets arbed — signals the bot loop to check
+        # whether inner-tier main-book offers are also exposed.
+        self._inner_vulnerability_flag: bool = False
 
     # -------------------------------------------------------------------
     # Activate / Deactivate
@@ -215,7 +223,7 @@ class BoostManager:
         """Return offer size — custom override, then SNIPER_SIZE_XCH (same pool)."""
         if self._custom_size_xch is not None:
             return self._custom_size_xch
-        return Decimal(str(getattr(cfg, "SNIPER_SIZE_XCH", "0.2")))
+        return Decimal(str(getattr(cfg, "SNIPER_SIZE_XCH", "0.001")))
 
     def _cb_blocks_boost(self) -> bool:
         """Return True if the circuit breaker should block boost activity.
@@ -240,8 +248,17 @@ class BoostManager:
             return False
         return False
 
-    def deactivate(self) -> Dict:
-        """Turn gap-closer OFF — cancel all offers, reset spread to normal."""
+    def deactivate(self, preserve_convergence: bool = False) -> Dict:
+        """Turn gap-closer OFF — cancel boost offers and reset state.
+
+        Args:
+            preserve_convergence: If True (auto-stop at floor), keep the
+                convergence factor so the main book stays at the proven
+                tighter spread.  The incremental reaction strategy will
+                adjust the remaining ladder naturally.
+                If False (manual stop / error), reset to 1.0 so the main
+                book returns to its original spread immediately.
+        """
         with self._lock:
             if not self._boost_active and not self._active_boost_ids:
                 return {"success": True, "message": "Close the Gap already inactive"}
@@ -278,25 +295,164 @@ class BoostManager:
             self._start_spread_bps = 0
             self._arb_floor_bps = 0
             self._custom_size_xch = None
-            # Reset convergence — main book spread back to normal
-            self._convergence_factor = Decimal("1.0")
+            if preserve_convergence:
+                # Keep convergence factor — ladder will catch up via
+                # incremental reaction strategy over the next cycles.
+                log_event("info", "gap_closer_convergence_preserved",
+                          f"📈 Convergence factor preserved at "
+                          f"{self._convergence_factor:.2f} after floor handoff")
+            else:
+                # Manual stop — reset to original spread immediately
+                self._convergence_factor = Decimal("1.0")
             self._stable_since = 0
             self._cascade_done_at_spread = -1
             steps_taken = self._steps_taken
             arb_count = self._arb_count
 
+        mode = "floor handoff — convergence preserved" if preserve_convergence \
+               else "spread reset to normal"
         log_event("info", "gap_closer_deactivated",
-                  f"📈 Close the Gap OFF — cancelled {cancelled} offers, "
-                  f"spread reset to normal")
+                  f"📈 Close the Gap OFF — cancelled {cancelled} offers, {mode}")
         print(f"📈 Close the Gap OFF: cancelled {cancelled} offers "
               f"({steps_taken} steps taken, "
-              f"{arb_count} times arbed)", flush=True)
+              f"{arb_count} times arbed) — {mode}", flush=True)
 
         return {
             "success": True,
             "cancelled": cancelled,
             "failed": failed,
         }
+
+    # -------------------------------------------------------------------
+    # Floor handoff — plant inner-tier offers at the proven safe price
+    # -------------------------------------------------------------------
+
+    def _handoff_to_inner_tier(self):
+        """When the gap-closer finds the floor, create real inner-tier
+        offers at the proven safe price and cancel the furthest inner-tier
+        offers to maintain the ladder's offer count.
+
+        The incremental reaction strategy will then naturally adjust
+        the remaining ladder over the following cycles.
+        """
+        om = self._offer_manager
+        if not om or not self._risk_manager:
+            log_event("warning", "gap_closer_handoff_skip",
+                      "📈 Handoff skipped — missing offer_manager or risk_manager")
+            return
+
+        mid_price = self._boost_mid_price
+        if mid_price <= 0:
+            return
+
+        proven_spread_bps = self._arb_floor_bps
+        half_spread = Decimal(str(proven_spread_bps)) / Decimal("20000")
+        buy_price = mid_price * (Decimal("1") - half_spread)
+        sell_price = mid_price * (Decimal("1") + half_spread)
+
+        handoff_count = 0
+
+        for side in ("buy", "sell"):
+            if side == "buy" and not cfg.ENABLE_BUY:
+                continue
+            if side == "sell" and not cfg.ENABLE_SELL:
+                continue
+
+            target_price = buy_price if side == "buy" else sell_price
+
+            # --- Step 1: Find the furthest inner-tier offer to swap out ---
+            try:
+                open_offers = om.get_open_offers(side=side)
+            except Exception:
+                open_offers = []
+
+            # Filter to main-book inner-tier offers only (exclude boost/sniper)
+            inner_offers = [
+                o for o in open_offers
+                if str(o.get("tier", "mid")).lower() == "inner"
+                   and o.get("trade_id") not in set(self._active_boost_ids)
+            ]
+
+            if not inner_offers:
+                # No inner offers to swap — just create a new one
+                pass
+
+            # Sort inner offers by distance from mid (furthest first)
+            for o in inner_offers:
+                p = None
+                tid = o.get("trade_id", "")
+                if tid:
+                    cached = om._offer_details_cache.get(tid, {})
+                    p = cached.get("price")
+                if p is not None:
+                    try:
+                        o["_distance"] = abs(Decimal(str(p)) - mid_price)
+                    except Exception:
+                        o["_distance"] = Decimal("0")
+                else:
+                    o["_distance"] = Decimal("0")
+            inner_offers.sort(key=lambda o: o.get("_distance", 0), reverse=True)
+
+            # --- Step 2: Create the new inner offer at the proven price ---
+            try:
+                # Use normal ladder create for a single inner-tier offer
+                new_offers = om.create_ladder(
+                    mid_price, side,
+                    num_offers=1,
+                    spread_fraction=Decimal(str(proven_spread_bps)) / Decimal("10000"),
+                    risk_manager=self._risk_manager,
+                    coin_ids_enabled=cfg.COIN_IDS_ENABLED
+                )
+                created = len(new_offers) if new_offers else 0
+            except Exception as e:
+                log_event("warning", "gap_closer_handoff_create_fail",
+                          f"📈 Handoff {side} create failed: {e}")
+                created = 0
+
+            if created == 0:
+                log_event("info", "gap_closer_handoff_no_coins",
+                          f"📈 Handoff {side}: no spare coins — "
+                          f"ladder will catch up via reaction strategy")
+                continue
+
+            # Post new offer to Dexie
+            if new_offers and self._dexie_manager and cfg.DEXIE_AUTO_POST:
+                for offer in new_offers:
+                    bech32 = offer.get("offer_bech32", offer.get("offer", ""))
+                    trade_id = offer.get("trade_id", "")
+                    if bech32 and trade_id:
+                        self._dexie_manager.queue_post(bech32, trade_id)
+
+            handoff_count += created
+
+            # --- Step 3: Cancel the furthest inner offer to maintain count ---
+            if inner_offers:
+                furthest = inner_offers[0]
+                cancel_tid = furthest.get("trade_id")
+                if cancel_tid:
+                    om._bot_cancelled_ids.add(cancel_tid)
+                    om.cancel_offers([cancel_tid], reason="gap_closer_handoff_swap")
+                    log_event("info", "gap_closer_handoff_swap",
+                              f"📈 Handoff {side}: planted inner offer at "
+                              f"{_bps_to_pct(proven_spread_bps)}, "
+                              f"cancelled furthest inner {cancel_tid[:16]}…")
+                    print(f"📈 Handoff {side}: swapped furthest inner for "
+                          f"new offer at {_bps_to_pct(proven_spread_bps)}",
+                          flush=True)
+            else:
+                log_event("info", "gap_closer_handoff_new",
+                          f"📈 Handoff {side}: planted new inner offer at "
+                          f"{_bps_to_pct(proven_spread_bps)} (no existing inner to swap)")
+                print(f"📈 Handoff {side}: new inner offer at "
+                      f"{_bps_to_pct(proven_spread_bps)}", flush=True)
+
+        if handoff_count > 0:
+            log_event("info", "gap_closer_handoff_complete",
+                      f"📈 Floor handoff complete: {handoff_count} inner-tier "
+                      f"offer(s) planted at {_bps_to_pct(proven_spread_bps)}. "
+                      f"Ladder will adjust via incremental reaction strategy.",
+                      data={"proven_spread_bps": proven_spread_bps,
+                            "handoff_count": handoff_count})
 
     # -------------------------------------------------------------------
     # Adaptive step — gradually probe tighter
@@ -347,20 +503,28 @@ class BoostManager:
         # Already at or below the arb floor?
         # If we've also passed both cooldown guards to get here, that means
         # offers have been sitting at the floor for a full cooldown with no arb.
-        # Job done — auto-deactivate so the user doesn't need to press Stop.
+        # Job done — hand off the proven price to the inner tier, then stop.
         if self._gap_spread_bps <= self._arb_floor_bps:
             stable_secs = int(now - self._stable_since)
             log_event("info", "gap_closer_auto_stop",
                       f"📈 Close the Gap complete — held floor at "
                       f"{_bps_to_pct(self._arb_floor_bps)} for {stable_secs}s "
-                      f"with no arb after {self._steps_taken} step(s). Auto-stopping.",
+                      f"with no arb after {self._steps_taken} step(s). "
+                      f"Handing off to inner tier.",
                       data={"spread_bps": self._gap_spread_bps,
                             "arb_floor_bps": self._arb_floor_bps,
                             "steps_taken": self._steps_taken,
                             "stable_secs": stable_secs})
             print(f"📈 Close the Gap complete — floor held for {stable_secs}s, "
-                  f"auto-stopping.", flush=True)
-            self.deactivate()
+                  f"handing off to inner tier.", flush=True)
+
+            # --- Floor handoff: plant inner-tier offers at proven price ---
+            self._handoff_to_inner_tier()
+
+            # Deactivate but PRESERVE convergence factor — let the
+            # incremental reaction strategy adjust the rest of the ladder
+            # naturally over the following cycles.
+            self.deactivate(preserve_convergence=True)
             return False
 
         # ---- Calculate new spread (tighten by STEP_PCT) ----
@@ -644,11 +808,10 @@ class BoostManager:
                       f"📈 [DRY RUN] Would create {side} at {price:.8f}")
             return None
 
-        # Expiry = cooldown + 60s buffer so the offer survives its full proof
-        # period without expiring mid-proof (which caused duplicate offers and
-        # stability timer resets when refresh recreated before step fired).
-        cooldown = getattr(cfg, "GAP_CLOSE_STEP_COOLDOWN_SECS", 300)
-        offer_expiry = int(cooldown) + 60
+        # Use sniper expiry so probes survive long enough between steps.
+        # Previously used cooldown+60 (120s) which was too fragile — offers
+        # could expire mid-proof if the bot loop was busy with other work.
+        offer_expiry = getattr(cfg, "SNIPER_EXPIRY_SECS", 600)
         res = self._offer_manager.create_offer_with_retry(
             offer_dict,
             coin_ids_enabled=cfg.COIN_IDS_ENABLED,
@@ -767,6 +930,25 @@ class BoostManager:
         print(f"⚠️ Gap closer arbed! Backing off: "
               f"{_bps_to_pct(old_spread)} → {_bps_to_pct(new_spread)} "
               f"(arb floor: {_bps_to_pct(self._arb_floor_bps)})", flush=True)
+
+        # Flag for the bot loop: if our probe got arbed, any inner-tier
+        # offers at a similar or tighter spread could also be vulnerable.
+        # The bot loop checks this flag and triggers an emergency check
+        # on inner offers during the next cycle.
+        self._inner_vulnerability_flag = True
+
+    def consume_inner_vulnerability_flag(self) -> bool:
+        """Check and clear the inner-vulnerability flag.
+
+        Returns True if the flag was set (probe was arbed and inner-tier
+        offers should be checked for exposure).  Clears the flag after
+        reading so it only fires once.
+        """
+        with self._lock:
+            if self._inner_vulnerability_flag:
+                self._inner_vulnerability_flag = False
+                return True
+            return False
 
     # -------------------------------------------------------------------
     # Main book convergence — follows gap-closer's proven levels

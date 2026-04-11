@@ -537,9 +537,8 @@ class Config:
         self.SNIPER_REARM_GAP_MOVE_BPS = _decimal("SNIPER_REARM_GAP_MOVE_BPS", "100")  # Or after ~1% arb-gap shift
 
         # ----- Close the Gap (Dexie ranking improvement) -----
-        # Offer settings
-        self.BOOST_SIZE_XCH = _decimal("BOOST_SIZE_XCH", "0.2")  # Small offers to minimise arb risk
-        self.BOOST_EXPIRY_SECS = _int("BOOST_EXPIRY_SECS", 1800)  # 30 min — auto-cleanup
+        # Probe size uses SNIPER_SIZE_XCH (same coin pool).
+        # Probe expiry uses SNIPER_EXPIRY_SECS (same lifecycle).
         self.BOOST_SPREAD_BPS = _int("BOOST_SPREAD_BPS", 200)  # Fallback spread if no main book
         # Adaptive gap-closing strategy
         self.GAP_CLOSE_START_PCT = _int("GAP_CLOSE_START_PCT", 75)  # Start at 75% of main spread

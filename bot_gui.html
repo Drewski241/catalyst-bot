@@ -10201,7 +10201,7 @@
                         </div>
                         <div class="v4-modal-field">
                             <label for="gapSizeInput">Sniper probe size (XCH each) <span class="cc-help">?<span class="cc-tooltip">Uses your sniper pool coins. Size comes from SNIPER_SIZE_XCH in Settings.</span></span></label>
-                            <input type="number" id="gapSizeInput" step="0.01" min="0.01" max="5" value="0.2">
+                            <input type="number" id="gapSizeInput" step="0.001" min="0.001" max="5" value="0.001">
                         </div>
                     </div>
                     <div id="gapSettingsInfo" class="v4-modal-stat-sub" style="margin-top: 12px;"></div>
@@ -10215,10 +10215,11 @@
                     <summary style="cursor: pointer; color: var(--success-200); font-size: 0.88rem; font-weight: 600;">How this mode behaves</summary>
                     <ol class="v4-modal-list">
                         <li>Starts with two small offers away from the main book.</li>
-                        <li>If they survive, tightens by 10% every 5 minutes.</li>
+                        <li>If they survive, tightens by 10% every 60 seconds.</li>
                         <li>If arb bots snap them, widens and waits before probing again.</li>
                         <li>Never tightens below the TibetSwap arb gap plus the configured safety buffer.</li>
-                        <li>The main ladder can then anchor itself to the proven probe edge.</li>
+                        <li>At the floor, plants an inner-tier offer at the proven price and swaps out the furthest inner offer.</li>
+                        <li>The main ladder then adjusts naturally via the incremental reaction strategy.</li>
                     </ol>
                 </details>
 
@@ -10798,15 +10799,17 @@
                     <p>This feature gradually tightens your spread to find the best price you can safely offer — like slowly turning up a dial to see how far you can go.</p>
                     <h3 style="color: var(--accent-primary-hover);">How it works</h3>
                     <ol style="padding-left: 20px;">
-                        <li>Creates a small pair of "boost" offers (buy + sell) starting at a wide spread</li>
-                        <li>Every few minutes, it tightens the spread by 10%</li>
+                        <li>Creates a small pair of "probe" offers (buy + sell) starting at a wide spread</li>
+                        <li>Every 60 seconds, it tightens the spread by 10%</li>
                         <li>If someone arbs the offers (fills both sides quickly), it backs off — the spread was too tight</li>
                         <li>The tightest safe spread becomes the "floor" — it won't go below the arb gap plus a safety buffer</li>
+                        <li>When it reaches the floor, it plants a real inner-tier offer at the proven price and swaps out the furthest inner offer</li>
+                        <li>The rest of the ladder catches up naturally via the incremental reaction strategy</li>
                     </ol>
                     <h3 style="color: var(--accent-primary-hover);">The arb floor</h3>
                     <p>The gap closer uses the current arb gap between Dexie and TibetSwap as an intelligent floor. It will never tighten your spread below the arb gap + a safety buffer (default 0.2%), because that would let arbitrageurs pick you off.</p>
-                    <h3 style="color: var(--accent-primary-hover);">Main book convergence</h3>
-                    <p>As the boost offers prove a tighter spread is safe, the main order book gradually converges toward it — your full stack of offers tightens over time, not just the boost pair.</p>
+                    <h3 style="color: var(--accent-primary-hover);">Floor handoff</h3>
+                    <p>When the floor is found and proven stable, the gap closer creates a real inner-tier offer at that price and cancels the furthest existing inner offer — swapping old for new. The main book then converges naturally over time.</p>
                     <h3 style="color: var(--accent-primary-hover);">Using it</h3>
                     <p>Open <strong>Live Controls</strong> on the dashboard and use the <strong>"Close the Gap"</strong> control there. You can set the aggression level (how wide to start). The control shows the current gap-closer spread while active. Stop it any time by clicking again.</p>
                 </div>
@@ -14002,7 +14005,7 @@
                         pushSuggestion({
                             type: 'info',
                             icon: '📈',
-                            msg: 'Arb is calm (' + fmtPct(arbGapBps) + ') and your spread (' + fmtPct(baseBps) + ') has room to tighten safely. "Close the Gap" can probe whether the market supports a tighter book — it starts at 75% of your spread and steps down 10% every 5 min, stopping at the arb floor. The bot does not do this automatically; it requires your go-ahead.',
+                            msg: 'Arb is calm (' + fmtPct(arbGapBps) + ') and your spread (' + fmtPct(baseBps) + ') has room to tighten safely. "Close the Gap" can probe whether the market supports a tighter book — it starts at 75% of your spread and steps down 10% every 60s, stopping at the arb floor. When it finds the floor it plants an inner-tier offer at the proven price. The bot does not do this automatically; it requires your go-ahead.',
                             action: 'Open Live Controls',
                             actionType: 'openLiveControls'
                         });
@@ -24769,7 +24772,7 @@
             const midNum = parseFloat(midPrice);
 
             // Pre-fill sniper probe size from SNIPER_SIZE_XCH (same pool, same setting)
-            const sniperSize = parseFloat(bot_state?.sniper?.size_xch || '0.2');
+            const sniperSize = parseFloat(bot_state?.sniper?.size_xch || '0.001');
             const sizeInput = document.getElementById('gapSizeInput');
             if (sizeInput) sizeInput.value = sniperSize;
 
@@ -24808,7 +24811,7 @@
                 const floorBps = Math.max(1, Math.ceil(arbNum) + 20);
                 const effectiveStart = Math.max(startBps, floorBps);  // Can't start below floor
                 const stepsNeeded = effectiveStart > floorBps ? Math.ceil(Math.log(floorBps / effectiveStart) / Math.log(0.9)) : 0;
-                const estTime = stepsNeeded * 5;
+                const estTime = stepsNeeded * 1;  // 1 min per step (60s cooldown)
 
                 previewEl.innerHTML =
                     `<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px 15px;">` +
@@ -24829,7 +24832,7 @@
                 const effectiveStart = Math.max(startBps, floorBps);
                 if (infoEl) {
                     infoEl.innerHTML = `Will start at <strong>${bps2pct(effectiveStart)}</strong> ` +
-                        `and tighten 10% every 5 min.`;
+                        `and tighten 10% every 60s.`;
                 }
             };
             if (selectEl) selectEl.onchange = updateInfo;
@@ -24860,7 +24863,7 @@
             const selectEl = document.getElementById('gapStartPctInput');
             const sizeInput = document.getElementById('gapSizeInput');
             const startPct = selectEl ? parseInt(selectEl.value) : 75;
-            const sizeXch = sizeInput ? parseFloat(sizeInput.value) : 0.2;
+            const sizeXch = sizeInput ? parseFloat(sizeInput.value) : 0.001;
 
             closeGapCloserConfirm();
             const btn = document.getElementById('boostBtn');

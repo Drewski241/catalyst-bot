@@ -480,7 +480,7 @@ class Sniper:
             "active_snipes": active_count,
             "max_active_snipes": self._max_active_snipes,
             "cooldown_secs": cfg.SNIPER_COOLDOWN_SECS,
-            "size_xch": str(getattr(cfg, "SNIPER_SIZE_XCH", "0.2")),
+            "size_xch": str(getattr(cfg, "SNIPER_SIZE_XCH", "0.001")),
             "last_snipe_time": self._last_snipe_time,
             "recent_snipes": recent,
         }
