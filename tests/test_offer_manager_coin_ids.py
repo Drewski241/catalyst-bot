@@ -151,7 +151,9 @@ class OfferManagerCoinIdTests(unittest.TestCase):
         cancelled_msgs = [msg for _, event_type, msg in events if event_type == "offers_cancelled"]
         self.assertEqual(cancelled_msgs, ["Cancelled 1 offers (reason: test)"])
 
-    def test_requote_side_cancels_canonical_slots_not_newest_db_rows(self):
+    def test_requote_side_cancels_most_at_risk_first(self):
+        """Single-pass requote creates using spare coins and cancels the
+        most-at-risk old offers (closest to mid) in one shot."""
         manager = offer_manager.OfferManager()
         cancel_batches = []
         open_offers = [
@@ -189,18 +191,23 @@ class OfferManagerCoinIdTests(unittest.TestCase):
             cancel_batches.append(list(trade_ids))
             return {tid: {"success": True} for tid in trade_ids}
 
-        with patch.object(offer_manager.cfg, "REQUOTE_BATCH_SIZE", 2, create=True), \
-                patch.object(offer_manager, "get_open_offers", return_value=open_offers), \
+        with patch.object(offer_manager, "get_open_offers", return_value=open_offers), \
                 patch.object(offer_manager, "get_exact_spendable_coins_rpc",
                              return_value={"coin_records": [{}, {}]}), \
                 patch.object(manager, "create_ladder", side_effect=fake_create_ladder), \
                 patch.object(manager, "cancel_offers", side_effect=fake_cancel_offers), \
                 patch.object(offer_manager, "log_event"):
-            created = manager.requote_side("buy", Decimal("0.1200"))
+            result = manager.requote_side("buy", Decimal("0.1200"))
 
-        self.assertEqual(len(created), 4)
+        # Single pass: 2 spares → create 2, cancel 2 most-at-risk
+        self.assertEqual(result["replaced_count"], 2)
+        self.assertEqual(result["target_count"], 4)
+        self.assertFalse(result["fully_replaced"])
+        self.assertEqual(len(result["offers"]), 2)
+        # Only one cancel batch (single pass, no rolling waves)
+        self.assertEqual(len(cancel_batches), 1)
+        # Most-at-risk first: inner (closest to mid), then mid
         self.assertEqual(cancel_batches[0], ["inner-trade", "mid-trade"])
-        self.assertEqual(cancel_batches[1], ["outer-trade", "extreme-trade"])
 
     def test_retry_failed_cancels_exhaustion_does_not_mark_cancelled(self):
         manager = offer_manager.OfferManager()
@@ -227,7 +234,7 @@ class OfferManagerCoinIdTests(unittest.TestCase):
 
         def fake_create_offer(offer_dict, validate_only=False, max_time=None,
                               min_coin_amount=None, max_coin_amount=None,
-                              coin_ids=None):
+                              coin_ids=None, fee_coin_id=None):
             seen["coin_ids"] = coin_ids
             return {
                 "success": True,

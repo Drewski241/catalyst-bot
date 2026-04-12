@@ -486,7 +486,7 @@ class Config:
         self.FEE_PREP_COUNT = _int("FEE_PREP_COUNT", 20)
         self.FEE_COIN_SIZE_XCH = _decimal("FEE_COIN_SIZE_XCH", "0.0001")
         self.LADDER_CREATE_PARALLELISM = _int("LADDER_CREATE_PARALLELISM", 5)
-        self.LADDER_CREATE_DELAY_MS = _int("LADDER_CREATE_DELAY_MS", 0)
+        self.LADDER_CREATE_DELAY_MS = _int("LADDER_CREATE_DELAY_MS", 200)
         self.LADDER_CREATE_GLOBAL_SERIAL = _bool("LADDER_CREATE_GLOBAL_SERIAL", False)
 
         # ----- Adaptive Coin Management (V3 — designation-based pools) -----

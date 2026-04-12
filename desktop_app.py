@@ -144,6 +144,110 @@ def _save_window_state(window) -> None:
         print(f"[WINDOW] Could not save window state: {e}", flush=True)
 
 
+def _apply_window_icon_win32(ico_path: str) -> None:
+    """Set the CATalyst .ico as the Win32 window icon (taskbar + Alt+Tab).
+
+    PyWebView does not expose a window icon API, and in dev mode
+    (python desktop_app.py) the OS defaults to Python's snake icon.
+    This function fixes that by sending WM_SETICON directly to the
+    HWND via ctypes — works in both dev mode and the built .exe.
+
+    Runs in a background thread because the window may not exist yet
+    when the bot is starting.  Polls for up to 15 seconds.
+    """
+    if sys.platform != "win32":
+        return
+    if not os.path.isfile(ico_path):
+        return
+
+    import ctypes
+    import ctypes.wintypes
+
+    WM_SETICON   = 0x0080
+    ICON_SMALL   = 0        # 16 × 16 — title bar
+    ICON_BIG     = 1        # 32 × 32 — taskbar / Alt+Tab
+    IMAGE_ICON   = 1
+    LR_LOADFROMFILE   = 0x0010
+    LR_DEFAULTSIZE    = 0x0040
+
+    pid = os.getpid()
+
+    # --- Helper: enumerate visible top-level windows owned by our PID ---
+    def _find_hwnd() -> int:
+        found = []
+
+        @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+        def _cb(hwnd, _):
+            if not ctypes.windll.user32.IsWindowVisible(hwnd):
+                return True
+            pid_buf = ctypes.wintypes.DWORD()
+            ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid_buf))
+            if pid_buf.value == pid:
+                found.append(hwnd)
+            return True
+
+        ctypes.windll.user32.EnumWindows(_cb, 0)
+        # Prefer a window whose title matches APP_NAME
+        for h in found:
+            buf = ctypes.create_unicode_buffer(256)
+            ctypes.windll.user32.GetWindowTextW(h, buf, 256)
+            if APP_NAME.lower() in buf.value.lower():
+                return h
+        return found[0] if found else 0
+
+    deadline = time.time() + 15.0
+    hwnd = 0
+    while not hwnd and time.time() < deadline:
+        time.sleep(0.25)
+        hwnd = _find_hwnd()
+
+    if not hwnd:
+        print("  [ICON] Warning: window HWND not found — taskbar icon unchanged.", flush=True)
+        return
+
+    small_ico = ctypes.windll.user32.LoadImageW(
+        None, ico_path, IMAGE_ICON, 16, 16, LR_LOADFROMFILE
+    )
+    big_ico = ctypes.windll.user32.LoadImageW(
+        None, ico_path, IMAGE_ICON, 32, 32, LR_LOADFROMFILE
+    )
+    # Fallback: let Windows pick the best size from the .ico file
+    if not small_ico:
+        small_ico = ctypes.windll.user32.LoadImageW(
+            None, ico_path, IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE
+        )
+    if not big_ico:
+        big_ico = small_ico
+
+    if small_ico:
+        ctypes.windll.user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, small_ico)
+    if big_ico:
+        ctypes.windll.user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, big_ico)
+
+    print(f"  [ICON] Taskbar icon set from {os.path.basename(ico_path)}", flush=True)
+
+
+def _set_windows_app_user_model_id() -> None:
+    """Set the Windows App User Model ID (AUMID) so the taskbar groups all
+    CATalyst windows together under the same identity regardless of whether the
+    app is launched from the built .exe, pythonw, or python.
+
+    Without an explicit AUMID, Windows falls back to the executable path, which
+    means python.exe / pythonw.exe / ChiaMarketMaker.exe each get their own
+    taskbar bucket.  Setting a stable AUMID unifies them and also makes
+    jump-lists and Start-Menu pinning work correctly.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "com.monkeyzoo.catalyst"
+        )
+    except Exception:
+        pass
+
+
 def _hide_windows_console() -> bool:
     """Hide the parent console window in normal desktop mode.
 
@@ -289,6 +393,10 @@ def start_flask_server():
     # after the user accepts the disclaimer and chooses how to connect to Sage.
     # Do NOT call sage_node.start_preload() here — it would auto-launch Sage
     # before the user reaches the "Connect to Sage" screen.
+
+    # Record session start time — dashboard/logs only show events from THIS session
+    from datetime import datetime, timezone
+    api_server._session_start_time = datetime.now(timezone.utc).isoformat()
 
     # Restore log clear-point from database
     try:
@@ -501,6 +609,22 @@ def run_desktop_mode(dev_mode: bool = False):
         _create_window_kwargs["y"] = _win_y
 
     window = webview.create_window(**_create_window_kwargs)
+
+    # Apply CATalyst icon to the taskbar / Alt+Tab button via Win32 WM_SETICON.
+    # PyWebView has no icon API — in dev mode the OS shows Python's snake icon
+    # by default.  We patch it in a background thread (the window HWND isn't
+    # available until after webview.start() launches the event loop).
+    if sys.platform == "win32":
+        _ico = _bundle_path(os.path.join("assets", "bot_icon_new.ico"))
+        if not os.path.isfile(_ico):
+            _ico = _bundle_path("bot_icon_new.ico")  # root fallback
+        _icon_thread = threading.Thread(
+            target=_apply_window_icon_win32,
+            args=(_ico,),
+            daemon=True,
+            name="WindowIconSetter",
+        )
+        _icon_thread.start()
 
     # Close button = graceful shutdown (stop bot, kill Flask, exit).
     # We also snapshot the window geometry here so the next launch
@@ -814,6 +938,11 @@ def _wire_notifications(notifier):
 # ---------------------------------------------------------------------------
 def main(argv=None):
     """Desktop app entry point for both .py and .pyw launchers."""
+    # Set Windows AUMID as early as possible — must happen before any window
+    # creation so that the taskbar groups all CATalyst windows together under
+    # "com.monkeyzoo.catalyst" regardless of how the process was launched.
+    _set_windows_app_user_model_id()
+
     parser = argparse.ArgumentParser(description=f"{APP_NAME} v{APP_VERSION}")
     parser.add_argument("--dev", action="store_true", help="Enable dev mode (browser accessible + debug)")
     parser.add_argument("--flask", action="store_true", help="Flask-only mode (no desktop window)")

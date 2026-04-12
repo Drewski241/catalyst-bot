@@ -645,9 +645,17 @@ class OfferManager:
             if not slots:
                 continue
             live_count = live_counts.get(tier, 0)
-            if live_count >= len(slots):
+            needed = len(slots) - live_count
+            if needed <= 0:
                 continue
-            planned_slots.extend(slots[live_count:])
+            # Fill from the INNERMOST slots (front of the list, closest to mid)
+            # so that replenishments after fills land back at the tightest
+            # price position rather than the outermost end of the tier.
+            #
+            # Previous behaviour was slots[live_count:] (tail = outermost),
+            # which caused a filled inner-tier offer to be replaced near the
+            # outer boundary of that tier — not like-for-like.
+            planned_slots.extend(slots[:needed])
         return planned_slots
 
     @staticmethod
@@ -1664,7 +1672,7 @@ class OfferManager:
                     selected_present = verification.get("selected_present", False)
                     if len(verified_locked_coin_ids) > 1 or not selected_present:
                         log_event(
-                            "warning",
+                            "info",
                             "coin_ids_overlap_observed",
                             f"Sage locked {len(verified_locked_coin_ids)} inputs for "
                             f"{trade_id[:12]}... "
@@ -1934,57 +1942,53 @@ class OfferManager:
                      live_offer_ids: set = None,
                      max_offers: int = 0,
                      allowed_tiers: set = None) -> List[Dict]:
-        """Create-first requote — new offers go up BEFORE old ones come down.
+        """Single-pass requote: create new offers then fire-and-forget cancel
+        old ones.
 
-        Strategy: use available spare coins to create new offers at the updated
-        price, post them to Dexie immediately, THEN cancel old offers.  This
-        keeps the orderbook continuously populated — there is never a gap where
-        no offers exist.
+        Simplified from the rolling-wave approach.  One pass through:
+            1. Count spare coins available for this side
+            2. Create new offers at the updated price (limited by spares)
+            3. Post them to Dexie immediately
+            4. Fire-and-forget cancel matching old offers (skip_confirmation)
+            5. Return — the trim pass (step 12a) handles any residual excess
 
-        Flow per batch:
-            1. Create new offers using spare/free coins
-            2. Post new offers to Dexie immediately
-            3. Cancel the same number of old offers (frees their coins for next batch)
-            4. Brief wait for freed coins to become spendable
-            5. Repeat until all old offers are replaced
-
-        Requires spare coins to bootstrap the first batch. If no spare coins
-        exist, falls back to cancel-first for just that batch.
-
-        Note on coin IDs after cancel: Secure cancel (on-chain) DESTROYS the
-        locked coins and creates NEW coins with different IDs. The recycled
-        coins need time to confirm on-chain before they become spendable.
+        No rolling waves, no cancel-first fallback, no inter-batch coin
+        polling, no overalloc guard.  The trim pass already runs every
+        cycle and cancels furthest-from-mid offers above the per-side cap,
+        which naturally cleans up any slow-confirming cancels.
 
         Args:
-            max_offers: If > 0, stop after replacing this many offers.
-                        Remaining offers carry over to the next cycle.
-                        0 means no limit (legacy behaviour).
-            allowed_tiers: If provided, only requote offers in these tiers.
-                           E.g. {"inner", "mid"} for graduated response.
+            max_offers: If > 0, create/cancel at most this many offers.
+                        0 means no limit.
+            allowed_tiers: If provided, only target offers in these tiers
+                           for replacement (graduated response).
 
-        Returns the full list of newly created offers.
+        Returns dict with offers, fully_replaced, replaced_count, target_count.
         """
-        with self._lock:
-            self._last_requote_time[side] = time.time()
+        # NOTE: _last_requote_time is set only when we actually do work (create or cancel).
+        # Early returns (no spares, create failed) intentionally leave it unchanged so the
+        # next cycle's cooldown check doesn't see a false "just requoted" timestamp and
+        # suppress a genuine retry when conditions improve.
 
-        # Get current open offers on this side FROM DATABASE
-        # Exclude boost and sniper offers — they're managed separately
+        # ── Gather open offers to replace ──
         all_open = get_open_offers(side=side, cat_asset_id=cfg.CAT_ASSET_ID)
-        open_offers = [o for o in all_open if o.get("tier") not in ("boost", "sniper")]
-        # Filter against live wallet snapshot to avoid trying to cancel offers
-        # that already filled/expired this cycle (DB lags 1 cycle behind wallet).
-        # Without this, cancel failures abort the requote prematurely.
+        open_offers = [o for o in all_open
+                       if o.get("tier") not in ("boost", "sniper")]
+        # Filter against live wallet snapshot — avoid targeting offers that
+        # already filled/expired this cycle (DB lags 1 cycle behind wallet).
         if live_offer_ids is not None:
             open_offers = [o for o in open_offers
                            if o.get("trade_id") in live_offer_ids]
-        open_offers = self._sort_open_offers_for_requote(open_offers, side,
-                                                          mid_price=current_price)
+        # Sort most-at-risk first so cancels prioritise the stale-est offers.
+        open_offers = self._sort_open_offers_for_requote(
+            open_offers, side, mid_price=current_price)
 
-        # ── Incremental reaction: filter by tier and cap count ──
+        # ── Graduated response: tier filter + budget cap ──
         if allowed_tiers:
             _before = len(open_offers)
             open_offers = [o for o in open_offers
-                           if str(o.get("tier") or "mid").lower() in allowed_tiers]
+                           if str(o.get("tier") or "mid").lower()
+                           in allowed_tiers]
             if len(open_offers) < _before:
                 log_event("info", "requote_tier_filter",
                           f"Tier filter ({', '.join(sorted(allowed_tiers))}): "
@@ -1996,35 +2000,34 @@ class OfferManager:
                       f"Budget cap: processing {max_offers} of {_full} offers "
                       f"this cycle (rest deferred)")
 
-        total_to_replace = len(open_offers)
+        target_count = len(open_offers)
 
         log_event("info", "requote_start",
-                  f"Create-first requote {side}: {total_to_replace} offers to replace "
-                  f"in batches of {cfg.REQUOTE_BATCH_SIZE}, "
+                  f"Requote {side}: {target_count} offers to replace, "
                   f"new price {current_price:.8f}")
 
+        # ── Cold start: no existing offers → full ladder ──
         if not open_offers:
-            log_event("info", "requote_no_cancel", f"No DB offers to cancel for {side}")
-            fresh = self.create_ladder(current_price, side,
-                                       risk_manager=risk_manager,
-                                       spread_fraction=spread_fraction,
-                                       coin_ids_enabled=cfg.COIN_IDS_ENABLED,
-                                       price_cap=price_cap,
-                                       price_floor=price_floor)
-            # CRITICAL: queue these to Dexie/Splash. The batched paths below
-            # do this themselves, but this early-return path was historically
-            # missing the queue step — every cold-start cycle (no existing
-            # offers to replace) created the ladder but never published it.
-            # Symptom: bot_health_dexie_gap warning "wallet N/N vs Dexie 0/0".
+            log_event("info", "requote_cold_start",
+                      f"No existing offers for {side} — creating full ladder")
+            fresh = self.create_ladder(
+                current_price, side,
+                risk_manager=risk_manager,
+                spread_fraction=spread_fraction,
+                coin_ids_enabled=cfg.COIN_IDS_ENABLED,
+                price_cap=price_cap,
+                price_floor=price_floor)
             if dexie_manager and fresh:
                 for offer in fresh:
                     bech32 = offer.get("offer_bech32", "")
                     trade_id = offer.get("trade_id", "")
                     if bech32 and trade_id:
                         dexie_manager.queue_post(bech32, trade_id)
-                log_event("info", "requote_no_cancel_queued",
-                          f"Queued {len(fresh)} fresh {side} offers to Dexie "
-                          f"(cold-start path)")
+                log_event("info", "requote_cold_start_queued",
+                          f"Queued {len(fresh)} fresh {side} offers to Dexie")
+            # Cold start did real work — stamp the cooldown timer
+            with self._lock:
+                self._last_requote_time[side] = time.time()
             return {
                 "offers": fresh,
                 "fully_replaced": True,
@@ -2032,272 +2035,106 @@ class OfferManager:
                 "target_count": 0,
             }
 
-        # Helper: count spare coins available right now for this side
-        wallet_id = cfg.CAT_WALLET_ID if side == "sell" else cfg.WALLET_ID_XCH
-
-        def _count_spare_coins() -> int:
-            """Re-count spare coins available for create-first mode."""
-            try:
-                _resp = get_exact_spendable_coins_rpc(wallet_id)
-                if not _resp:
-                    return 0
+        # ── Count spare coins ──
+        wallet_id = (cfg.CAT_WALLET_ID if side == "sell"
+                     else cfg.WALLET_ID_XCH)
+        spare_count = 0
+        try:
+            _resp = get_exact_spendable_coins_rpc(wallet_id)
+            if _resp:
                 _coins = (_resp.get("confirmed_records",
                           _resp.get("coin_records",
                           _resp.get("records", []))))
-                _count = len(_coins) if _coins else 0
-                # On Chia wallet, spendable includes locked coins — subtract open offers.
-                # On Sage, get_exact_spendable_coins_rpc uses filter_mode="selectable"
-                # which already excludes locked coins — do NOT double-deduct.
+                spare_count = len(_coins) if _coins else 0
+                # On Chia wallet, spendable includes locked coins —
+                # subtract open offers.  Sage's "selectable" filter
+                # already excludes locked coins.
                 if get_wallet_type() != "sage":
                     try:
-                        _open = len(get_open_offers(side=side,
-                                                     cat_asset_id=cfg.CAT_ASSET_ID))
-                        _count = max(0, _count - _open)
+                        _open = len(get_open_offers(
+                            side=side,
+                            cat_asset_id=cfg.CAT_ASSET_ID))
+                        spare_count = max(0, spare_count - _open)
                     except Exception:
                         pass
-                return _count
-            except Exception:
-                return 0
-
-        spare_count = _count_spare_coins()
+        except Exception:
+            pass
 
         log_event("info", "requote_spare_coins",
-                  f"Spare {side} coins available: {spare_count} "
-                  f"(need any >0 for rolling-wave create-first)")
+                  f"Spare {side} coins: {spare_count}")
 
-        # Split into batches — rolling wave approach (Fix E).
-        # Instead of requiring a full batch_size worth of spares, use
-        # whatever spares are available to create a partial wave, then
-        # cancel old offers to free coins for the next wave.
-        batch_size = cfg.REQUOTE_BATCH_SIZE
-        all_new_offers = []
-        batches_done = 0
-        offers_remaining = list(open_offers)  # mutable working copy
-        initial_had_spares = spare_count > 0
+        if spare_count == 0:
+            log_event("info", "requote_no_spares",
+                      f"Requote {side}: 0 spare coins — cannot create "
+                      f"replacements, trim pass will clean excess if needed")
+            return {
+                "offers": [],
+                "fully_replaced": False,
+                "replaced_count": 0,
+                "target_count": target_count,
+            }
 
-        while offers_remaining:
-            # Check stop signal between batches
-            if self._stop_requested:
-                log_event("info", "requote_interrupted",
-                          f"Requote interrupted by stop signal after "
-                          f"{batches_done} batches ({len(all_new_offers)} new offers)")
-                break
+        # ── Step 1: Create new offers at new price ──
+        create_count = min(target_count, spare_count)
+        log_event("info", "requote_creating",
+                  f"Requote {side}: creating {create_count} new offers "
+                  f"({spare_count} spares, target {target_count})")
 
-            batch_num = batches_done + 1
-            total_batches_est = (len(offers_remaining) + batch_size - 1) // batch_size + batches_done
+        new_offers = self.create_ladder(
+            current_price, side, num_offers=create_count,
+            slot_start=0, total_slots=target_count,
+            risk_manager=risk_manager,
+            spread_fraction=spread_fraction,
+            coin_ids_enabled=cfg.COIN_IDS_ENABLED,
+            price_cap=price_cap,
+            price_floor=price_floor,
+        )
 
-            # Re-count spare coins at the start of each wave (Fix E)
-            # After a cancel, freed coins may now be available.
-            if batches_done > 0:
-                # Clear cycle-used coins so freed coins from cancels are eligible
-                self._cycle_used_coin_ids.clear()
-                spare_count = _count_spare_coins()
+        if not new_offers:
+            log_event("info", "requote_create_failed",
+                      f"Requote {side}: create_ladder returned 0 offers "
+                      f"— keeping old offers in place")
+            return {
+                "offers": [],
+                "fully_replaced": False,
+                "replaced_count": 0,
+                "target_count": target_count,
+            }
 
-            # Determine this wave's size: use available spares (up to batch_size)
-            # for create-first, or fall back to cancel-first if zero spares
-            wave_size = min(batch_size, len(offers_remaining))
-            can_create_first = spare_count > 0
+        # ── Step 2: Post new offers to Dexie ──
+        if dexie_manager:
+            for offer in new_offers:
+                bech32 = offer.get("offer_bech32", "")
+                trade_id = offer.get("trade_id", "")
+                if bech32 and trade_id:
+                    dexie_manager.queue_post(bech32, trade_id)
 
-            if can_create_first:
-                # Rolling wave: create using whatever spares we have
-                create_count = min(wave_size, spare_count)
-                batch_offers = offers_remaining[:create_count]
-                batch_count = len(batch_offers)
-                batch_trade_ids = [o["trade_id"] for o in batch_offers]
+        # ── Step 3: Fire-and-forget cancel matching old offers ──
+        # Cancel the same number as created so the book stays near cap.
+        # skip_confirmation=True: don't block for on-chain confirmation.
+        # If cancels are slow the trim pass handles the transient excess.
+        cancel_count = min(len(new_offers), len(open_offers))
+        cancel_ids = [o["trade_id"] for o in open_offers[:cancel_count]
+                      if o.get("trade_id")]
+        if cancel_ids:
+            log_event("info", "requote_cancel",
+                      f"Requote {side}: fire-and-forget cancel of "
+                      f"{len(cancel_ids)} old offers")
+            self.cancel_offers(cancel_ids, reason="requote",
+                               skip_confirmation=True)
 
-                # ---- CREATE-FIRST: new offers go up before old ones come down ----
-
-                # Guard: if repeated failed cancels left us over-allocated, stop
-                # creating more offers until the count comes back down.
-                max_side = (cfg.MAX_ACTIVE_BUY_OFFERS if side == "buy"
-                            else cfg.MAX_ACTIVE_SELL_OFFERS)
-                current_open = len(get_open_offers(side=side,
-                                                   cat_asset_id=cfg.CAT_ASSET_ID))
-                batch_limit = max_side + cfg.REQUOTE_BATCH_SIZE
-                if current_open >= batch_limit:
-                    log_event("warning", "requote_overalloc_guard",
-                              f"Requote {side}: open={current_open} >= cap={batch_limit}, "
-                              f"skipping new offer creation this batch to prevent "
-                              f"over-allocation")
-                    self.cancel_offers(batch_trade_ids, reason="requote_overalloc",
-                                      skip_confirmation=True)
-                    break
-
-                # Step 1: Create new offers using available spare coins
-                slot_start_idx = total_to_replace - len(offers_remaining)
-                log_event("info", "requote_batch_create",
-                          f"Rolling wave {side} batch {batch_num}: "
-                          f"creating {batch_count} new offers using {spare_count} "
-                          f"available spares (create-first)")
-                new_offers = self.create_ladder(
-                    current_price, side, num_offers=batch_count,
-                    slot_start=slot_start_idx, total_slots=total_to_replace,
-                    risk_manager=risk_manager,
-                    spread_fraction=spread_fraction,
-                    coin_ids_enabled=cfg.COIN_IDS_ENABLED,
-                    price_cap=price_cap,
-                    price_floor=price_floor,
-                )
-
-                # Partial-success guard: keep what we created and cancel
-                # only a matching number of old offers.  Only stop if we
-                # created ZERO (no spare coins available at all).
-                if len(new_offers) == 0 and batch_count > 0:
-                    # Zero offers created — no spare coins for this tier.
-                    # SKIP this wave entirely: keep old offers in place (stale
-                    # offers are better than gaps in the book) and advance to
-                    # the next wave.  Topup / coin prep will create fresh coins;
-                    # the next requote cycle will replace these stale offers then.
-                    log_event("info", "requote_tier_skip",
-                              f"Rolling wave {side} batch {batch_num} (slots "
-                              f"{slot_start_idx}-{slot_start_idx + batch_count - 1}): "
-                              f"no coins available — keeping existing offers, "
-                              f"will retry after topup")
-                    offers_remaining = offers_remaining[batch_count:]
-                    batches_done += 1
-                    continue
-                elif len(new_offers) < batch_count:
-                    # Partial success — keep what we created, cancel matching old offers
-                    log_event("info", "requote_partial",
-                              f"Rolling wave {side} batch {batch_num}: "
-                              f"created {len(new_offers)}/{batch_count} offers "
-                              f"(limited by available coins)")
-                    batch_offers = batch_offers[:len(new_offers)]
-                    batch_count = len(new_offers)
-                    batch_trade_ids = [o["trade_id"] for o in batch_offers]
-
-                all_new_offers.extend(new_offers)
-
-                # Step 2: Post new offers to Dexie immediately
-                if dexie_manager:
-                    for offer in new_offers:
-                        bech32 = offer.get("offer_bech32", "")
-                        trade_id = offer.get("trade_id", "")
-                        if bech32 and trade_id:
-                            dexie_manager.queue_post(bech32, trade_id)
-
-                # Step 3: NOW cancel the old offers (orderbook stays populated)
-                # skip_confirmation=True: new offers are already live, don't block
-                # the bot loop for 90-150s waiting for on-chain cancel confirmation.
-                # Background retry + trim pass will handle any cancel failures.
-                log_event("info", "requote_batch_cancel",
-                          f"Rolling wave {side} batch {batch_num}: "
-                          f"cancelling {batch_count} old offers")
-                cancel_results = self.cancel_offers(batch_trade_ids, reason="requote",
-                                                    skip_confirmation=True)
-
-                cancel_ok = sum(1 for r in cancel_results.values()
-                                if r and r.get("success"))
-                cancel_failed = batch_count - cancel_ok
-
-                if cancel_failed > 0:
-                    log_event("warning", "requote_cancel_failed_continue",
-                              f"Rolling wave {side} batch {batch_num}: "
-                              f"{cancel_failed}/{batch_count} cancels failed — "
-                              f"queued for background retry, continuing requote. "
-                              f"Trim pass will correct any over-cap state.")
-
-                log_event("info", "requote_batch_done",
-                          f"Rolling wave {side} batch {batch_num}: "
-                          f"created {len(new_offers)}, cancelled {batch_count}, "
-                          f"{cancel_ok} coins freed (create-first)")
-
-                # Remove processed offers from the working list
-                offers_remaining = offers_remaining[batch_count:]
-
-            else:
-                # ---- CANCEL-FIRST FALLBACK: no spare coins available ----
-                batch_offers = offers_remaining[:wave_size]
-                batch_count = len(batch_offers)
-                batch_trade_ids = [o["trade_id"] for o in batch_offers]
-                slot_start_idx = total_to_replace - len(offers_remaining)
-
-                log_event("info", "requote_batch_cancel",
-                          f"Rolling wave {side} batch {batch_num}: "
-                          f"cancelling {batch_count} offers (cancel-first — "
-                          f"0 spare coins)")
-                self.cancel_offers(batch_trade_ids, reason="requote",
-                                   skip_confirmation=True)
-
-                # Wait for wallet to free the coins from cancelled offers
-                max_poll_secs = max(cfg.REQUOTE_COIN_FREE_WAIT, 15)
-                poll_start = time.time()
-                coins_ready = False
-                for poll_i in range(max_poll_secs // 3):
-                    time.sleep(3)
-                    try:
-                        coins_resp = get_exact_spendable_coins_rpc(wallet_id)
-                        coins_list = (coins_resp.get("confirmed_records",
-                                      coins_resp.get("coin_records",
-                                      coins_resp.get("records", [])))
-                                      if coins_resp else [])
-                        if len(coins_list) > 0:
-                            coins_ready = True
-                            log_event("debug", "requote_coins_freed",
-                                      f"Coins available after "
-                                      f"{int(time.time() - poll_start)}s "
-                                      f"({len(coins_list)} spendable)")
-                            break
-                    except Exception as e:
-                        log_event("debug", "requote_coin_poll_failed",
-                                  f"Requote coin-free poll failed: {e}")
-                if not coins_ready:
-                    log_event("info", "requote_coins_slow",
-                              f"Coins not yet freed after {max_poll_secs}s — "
-                              f"creating offers anyway (may partially fail)")
-
-                # Clear cycle-used coins so freed coins are eligible
-                self._cycle_used_coin_ids.clear()
-
-                # Create replacement offers
-                new_offers = self.create_ladder(
-                    current_price, side, num_offers=batch_count,
-                    slot_start=slot_start_idx, total_slots=total_to_replace,
-                    risk_manager=risk_manager,
-                    spread_fraction=spread_fraction,
-                    coin_ids_enabled=cfg.COIN_IDS_ENABLED,
-                    price_cap=price_cap,
-                    price_floor=price_floor,
-                )
-                all_new_offers.extend(new_offers)
-
-                # Post to Dexie
-                if dexie_manager:
-                    for offer in new_offers:
-                        bech32 = offer.get("offer_bech32", "")
-                        trade_id = offer.get("trade_id", "")
-                        if bech32 and trade_id:
-                            dexie_manager.queue_post(bech32, trade_id)
-
-                log_event("info", "requote_batch_done",
-                          f"Rolling wave {side} batch {batch_num}: "
-                          f"cancelled {batch_count}, created {len(new_offers)} "
-                          f"(cancel-first fallback)")
-
-                # Remove processed offers from the working list
-                offers_remaining = offers_remaining[batch_count:]
-
-            batches_done += 1
-
-            # Yield between waves so cancelled coins have time to free.
-            # The old 0.5s was too short — a Chia block is ~18s and Sage
-            # needs at least a few seconds to process the cancel and
-            # update its coin set.  Spending a just-freed coin before it's
-            # confirmed causes BAD_AGGREGATE_SIGNATURE in Sage.
-            if offers_remaining:
-                time.sleep(3)
-
-        mode = ("rolling-wave create-first" if initial_had_spares
-                else "cancel-first → rolling-wave")
         log_event("info", "requote_done",
-                  f"Requote {side} complete: "
-                  f"replaced {total_to_replace} old → {len(all_new_offers)} new "
-                  f"in {batches_done} batches ({mode})")
+                  f"Requote {side} complete: created {len(new_offers)} new, "
+                  f"cancelled {len(cancel_ids)} old "
+                  f"(trim pass handles residual excess)")
+        # Requote did real work — stamp the cooldown timer now (not at entry)
+        with self._lock:
+            self._last_requote_time[side] = time.time()
         return {
-            "offers": all_new_offers,
-            "fully_replaced": len(all_new_offers) >= total_to_replace,
-            "replaced_count": len(all_new_offers),
-            "target_count": total_to_replace,
+            "offers": new_offers,
+            "fully_replaced": len(new_offers) >= target_count,
+            "replaced_count": len(new_offers),
+            "target_count": target_count,
         }
 
     # -------------------------------------------------------------------
@@ -2551,10 +2388,14 @@ class OfferManager:
         CONFIRMED_METHODS = {
             "confirmed_by_status",
             "confirmed_by_unlock",
+            "confirmed_coins_returned",
+            "confirmed_by_coin_delta",
             "bulk",
         }
         PENDING_METHODS = {
             "submitted_pending_confirm",
+            "already_in_mempool",
+            "mempool_conflict_inflight",
         }
 
         def _classify(r):
@@ -2868,6 +2709,15 @@ class OfferManager:
                 if (o.get("tier") or "").lower() != "sniper"
             ]
 
+            # Exclude offers already pending cancel (fire-and-forget from
+            # requote).  Without this, trim re-cancels the same offers,
+            # wasting RPCs and filling the retry queue with noise.
+            _pending = self._bot_cancelled_ids
+            open_offers = [
+                o for o in open_offers
+                if o.get("trade_id") not in _pending
+            ]
+
             excess = len(open_offers) - cap
             if excess <= 0:
                 continue
@@ -2900,7 +2750,8 @@ class OfferManager:
                       f"cancelling {len(cancel_ids)} furthest-from-mid offer(s)")
 
             try:
-                self.cancel_offers(cancel_ids, reason="trim_excess")
+                self.cancel_offers(cancel_ids, reason="trim_excess",
+                                   skip_confirmation=True)
                 total_trimmed += len(cancel_ids)
             except Exception as e:
                 log_event("error", "trim_excess_cancel_failed",

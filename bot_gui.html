@@ -1736,27 +1736,14 @@
         .dashboard-startup-cta-btn {
             flex-shrink: 0;
             min-width: 170px;
-            box-shadow: 0 12px 28px rgba(16,185,129,0.18);
         }
-        /* F52 (2026-04-09): subtle button-only pulse when the CTA is visible
-           and the button is enabled. Previously the entire container pulsed
-           which was visually noisy. */
         .dashboard-startup-cta.is-visible .dashboard-startup-cta-btn:not(:disabled) {
-            animation: startupBtnPulse 2.2s ease-in-out infinite;
+            animation: startBotGlow 2.4s ease-in-out infinite;
         }
         .dashboard-startup-cta-btn:disabled {
             box-shadow: none;
             opacity: 0.45;
             animation: none;
-        }
-        @keyframes startupBtnPulse {
-            0%, 100% {
-                box-shadow: 0 12px 28px rgba(16,185,129,0.18);
-            }
-            50% {
-                box-shadow: 0 16px 36px rgba(16,185,129,0.40),
-                            0 0 0 3px rgba(16,185,129,0.12);
-            }
         }
         .dashboard-startup-resume {
             display: none;
@@ -3999,28 +3986,24 @@
 
         /* Colour variants — all use tokens, all consistent shape */
         .btn-start {
-            background: linear-gradient(135deg, var(--success-700) 0%, var(--success-600) 45%, var(--status-success) 100%);
+            background: var(--status-success);
             color: var(--text-on-accent, #fff);
             border-color: transparent;
         }
         .btn-start:hover {
-            box-shadow: 0 4px 14px rgba(16, 185, 129, 0.35);
+            background: var(--success-400);
+            box-shadow: 0 4px 12px rgba(16, 185, 129, 0.35);
         }
-        @keyframes startBotReady {
-            0%, 100% {
-                box-shadow: 0 0 8px rgba(16,185,129,0.45), 0 4px 18px rgba(16,185,129,0.25);
-                transform: translateY(0) scale(1);
-            }
-            50% {
-                box-shadow: 0 0 24px rgba(52,211,153,0.85), 0 0 48px rgba(16,185,129,0.5), 0 6px 28px rgba(16,185,129,0.45);
-                transform: translateY(-2px) scale(1.03);
-            }
+        @keyframes startBotGlow {
+            0%, 100% { box-shadow: 0 0 6px rgba(16,185,129,0.3), 0 4px 12px rgba(16,185,129,0.15); }
+            50%      { box-shadow: 0 0 14px rgba(52,211,153,0.55), 0 4px 18px rgba(16,185,129,0.3); }
         }
         .btn-start.ready-to-start {
-            background: linear-gradient(135deg, #065f46 0%, var(--success-600) 40%, var(--success-400) 100%);
+            animation: startBotGlow 2.4s ease-in-out infinite;
         }
         .btn-start.ready-to-start:hover {
-            box-shadow: 0 0 18px rgba(52,211,153,0.6), 0 4px 16px rgba(16,185,129,0.4);
+            animation: none;
+            box-shadow: 0 0 14px rgba(52,211,153,0.5), 0 4px 14px rgba(16,185,129,0.3);
         }
 
         /* ── Token identity pill — shown in every tab header ── */
@@ -7616,7 +7599,7 @@
         <div class="spacescan-card">
             <div class="service-brand-row compact" style="margin-top: 2px;">
                 <span class="brand-chip app-brand">
-                    <img src="/assets/MonkeyZoo_Logo.png" alt="CATalyst logo">
+                    <img src="/assets/bot_icon_new.png" alt="CATalyst logo">
                     <span class="brand-chip-text">
                         <span class="brand-chip-label">CATalyst</span>
                         <span class="brand-chip-note">Bot app</span>
@@ -7840,7 +7823,7 @@
         <nav class="v4-sidebar" id="v4Sidebar">
             <div class="v4-sidebar-brand">
                 <div class="v4-sidebar-brand-mark">
-                    <img src="/assets/MonkeyZoo_Logo.png" alt="CATalyst logo">
+                    <img src="/assets/bot_icon_new.png" alt="CATalyst logo">
                 </div>
                 <div class="v4-sidebar-brand-copy">
                     <span class="v4-sidebar-brand-name"><span class="catalyst-cat">CAT</span><span class="catalyst-alyst">alyst</span></span>
@@ -9497,7 +9480,7 @@
                                     <!-- Hidden compatibility field — backend still reads COIN_PREP_MULTIPLIER. Pinned to 1.0 (one full backup ladder); per-tier counts now drive the spare distribution directly. -->
                                     <input type="hidden" id="configCoinPrepMultiplier" value="1">
                                     <label style="font-size: 0.85em; white-space: nowrap; margin: 0;">Prep Headroom <span class="cc-help">?<span class="cc-tooltip">Extra size added to each prepared coin so the wallet has breathing room for dust, rounding, and slight price movement. This changes coin size, not coin count.</span></span></label>
-                                    <input type="number" id="configCoinPrepHeadroomPct" value="10" step="1" min="0" max="100" style="width: 65px; padding: 5px; background: rgba(0,0,0,0.3); border: 1px solid rgba(16,185,129,0.4); border-radius: 4px; color: white; text-align: center;" oninput="updateCoinPrepPreview()">
+                                    <input type="number" id="configCoinPrepHeadroomPct" value="10" step="1" min="0" max="100" style="width: 65px; padding: 5px; background: rgba(0,0,0,0.3); border: 1px solid rgba(16,185,129,0.4); border-radius: 4px; color: white; text-align: center;" oninput="updateCoinPrepPreview(); validateSettingsForm();">
                                     <span style="font-size: 0.8em; opacity: 0.6;">% larger prep coins</span>
                                 </div>
                             </div>
@@ -10306,14 +10289,14 @@
                     <div class="shutdown-progress-step" id="shutdownStepServer">
                         <div class="shutdown-step-dot"></div>
                         <div class="shutdown-step-text">
-                            <strong>Backup and close</strong>
-                            <span id="shutdownStepServerCopy">Back up the database, stop the server, and close the window.</span>
+                            <strong>Close</strong>
+                            <span id="shutdownStepServerCopy">Stop the server and close the app.</span>
                         </div>
                         <div class="shutdown-step-state" id="shutdownStepServerState">Waiting</div>
                     </div>
                 </div>
                 <div class="shutdown-progress-footer" id="shutdownProgressFooter">
-                    This can take a few seconds if the bot needs to stop services or finish a backup first.
+                    This usually takes a few seconds. The window will close automatically.
                 </div>
                 <div class="v4-modal-actions v4-modal-actions--center" id="shutdownProgressActions" style="display: none; margin-top: 16px;">
                     <button class="btn btn-config btn-secondary" onclick="closeShutdownProgressModal()" style="flex: 1; max-width: 180px;">Close This Message</button>
@@ -11315,6 +11298,13 @@
                 target.classList.add('active');
             }
 
+            // Scroll the main content area to the top so every tab opens at
+            // the top of the page.  The scroll lives on .v4-main-content
+            // (overflow-y: auto), not on the individual .v4-view divs, so
+            // resetting it here is the only place that works.
+            const _mainContent = document.querySelector('.v4-main-content');
+            if (_mainContent) _mainContent.scrollTop = 0;
+
             // Update sidebar active state — also updates aria-current="page"
             // so assistive tech announces the currently-visible view.
             document.querySelectorAll('.v4-nav-item').forEach(btn => {
@@ -11365,9 +11355,6 @@
                     try { v4RenderInventoryChart && v4RenderInventoryChart(); } catch (_) {}
                 });
             } else if (viewName === 'offers') {
-                // Scroll to top so the depth chart is visible on tab open
-                const offersView = document.getElementById('v4View-offers');
-                if (offersView) offersView.scrollTop = 0;
                 requestAnimationFrame(() => {
                     try {
                         if (window._v4LastOrderbookBuys || window._v4LastOrderbookSells) {
@@ -13767,10 +13754,26 @@
             }
 
             const configBaseBps = parseFloat(spreads.base_spread_bps) || 800;
-            // Use the LIVE spread (actual bid-ask gap) for display and comparisons.
-            // Fall back to config base if live data isn't available yet.
+            // your_spread_bps = actual bid-ask gap from live open offers.
+            // buy_spread_bps + sell_spread_bps = risk-manager configured spread
+            // (reflects live control changes immediately via get_adjusted_spread).
+            //
+            // Problem: after a live spread change, open offers are only requoted
+            // when price moves REQUOTE_BPS (400 bps = 4%).  In a quiet market
+            // that can take a very long time, so liveSpreadBps stays at the old
+            // stale value.  Using it alone causes the "repeating recommendation"
+            // bug — the advisor keeps firing the same tighten suggestion every
+            // 60 s because liveSpreadBps hasn't moved.
+            //
+            // Fix: prefer the CONFIGURED spread (buy + sell) which updates
+            // immediately, and take the minimum of configured vs live so we
+            // never *hide* a genuinely wide book from the operator.
             const liveSpreadBps = parseFloat(mhMetrics.your_spread_bps || 0) || 0;
-            const baseBps = liveSpreadBps > 0 ? liveSpreadBps : configBaseBps;
+            const configuredTotalBps = (parseFloat(mhMetrics.buy_spread_bps || 0) || 0)
+                + (parseFloat(mhMetrics.sell_spread_bps || 0) || 0);
+            const baseBps = configuredTotalBps > 50
+                ? (liveSpreadBps > 0 ? Math.min(liveSpreadBps, configuredTotalBps) : configuredTotalBps)
+                : (liveSpreadBps > 0 ? liveSpreadBps : configBaseBps);
             const basePct = baseBps / 100;
             const competitorBps = parseFloat(
                 mhMetrics.market_spread_bps ?? mh.competitor_spread_bps ?? 0
@@ -14330,16 +14333,39 @@
         }
 
         // Advisor quick actions
-        let _saSpreadActionCooldownUntil = 0;  // Suppress re-suggest for 60s after acting
+        let _saSpreadActionCooldownUntil = 0;  // Suppress re-suggest after acting
 
         function saApplySpread(bps) {
             document.getElementById('lcSpreadSlider').value = bps;
             lcSpreadInput(document.getElementById('lcSpreadSlider'));
             // Actually apply the spread change via API, not just move the slider
             lcApplySpread();
-            // Suppress spread recommendations for 60s so the same suggestion
-            // doesn't immediately re-appear before the change propagates.
-            _saSpreadActionCooldownUntil = Date.now() + 60000;
+
+            // Ensure MAX_SPREAD_BPS has meaningful headroom above the new BASE.
+            // When "Tighten to X%" sets BASE close to the existing MAX the dynamic
+            // spread system loses almost all room to widen during volatile periods.
+            // Maintain a 2:1 max:base ratio (the original design intent) by
+            // bumping MAX if BASE would exceed 80 % of the current ceiling.
+            try {
+                const dashSpreads = (window._lastDashboard && window._lastDashboard.settings
+                    && window._lastDashboard.settings.spreads) || {};
+                const currentMax = parseInt(dashSpreads.max_spread_bps || 0, 10) || 0;
+                if (currentMax > 0 && bps > currentMax * 0.8) {
+                    const newMax = Math.round(bps * 2);  // 2:1 ratio
+                    apiFetch(API_URL + '/config/live', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ key: 'MAX_SPREAD_BPS', value: String(newMax), graceful: false })
+                    }).catch(() => {});  // Non-critical — best effort
+                }
+            } catch (_) {}
+
+            // 5-minute cooldown (was 60 s).  In quiet markets where REQUOTE_BPS
+            // hasn't been hit, open offers don't get repriced for many minutes.
+            // A 60 s cooldown caused the "repeating recommendation" UX bug where
+            // the same suggestion re-fired every minute because liveSpreadBps
+            // hadn't moved yet.  5 minutes gives one full requote cycle to land.
+            _saSpreadActionCooldownUntil = Date.now() + 300000;
             // Immediately refresh advisor so the recommendation disappears
             if (typeof saUpdateAdvisor === 'function' && window._lastDashboard) {
                 saUpdateAdvisor(window._lastDashboard);
@@ -16212,6 +16238,14 @@
                     const _topupCat = Number(data.topup_pool_cat || 0);
                     window._topupBufferCat = _topupCat > 0 ? _topupCat : 0;
                 } catch (_e) { window._topupBufferXch = 0; window._topupBufferCat = 0; }
+                // F65 (2026-04-12): snapshot the mid_price Smart Settings
+                // used so the coin-prep preview computes token amounts at
+                // the same price — prevents false overshoot warnings when
+                // the live price has drifted since Smart Settings ran.
+                try {
+                    const _smp = Number(data.smart_mid_price || 0);
+                    window._smartMidPrice = _smp > 0 ? _smp : 0;
+                } catch (_e) { window._smartMidPrice = 0; }
 
                 // Refresh dependent displays
                 updateTierCountHint();
@@ -17204,9 +17238,11 @@
                 const prepFactor = 1 + (headroomPct / 100);
                 const buyLadderReversed = document.getElementById('configBuyLadderReversed')?.checked !== false;
                 const tiers = ['inner', 'mid', 'outer', 'extreme'];
-                const midPrice = (typeof bot_state !== 'undefined' && bot_state?.pricing?.mid)
+                // F65: use Smart Settings snapshot price if available
+                const _liveM = (typeof bot_state !== 'undefined' && bot_state?.pricing?.mid)
                     ? parseFloat(bot_state.pricing.mid) || 0
                     : 0;
+                const midPrice = (window._smartMidPrice > 0) ? window._smartMidPrice : _liveM;
                 const sumCost = (counts, sizeMap) => tiers.reduce(
                     (s, t) => s + (counts[t] || 0) * (sizeMap[t] || 0), 0
                 );
@@ -17876,7 +17912,12 @@
             const pairReady = isPairDataReadyFor(settingsCAT.asset_id);
             const xchBalance = pairReady ? (bot_state?.balances?.xch?.total || 0) : 0;
             const catBalance = pairReady ? (bot_state?.balances?.cat?.total || 0) : 0;
-            const midPrice = pairReady ? (bot_state?.pricing?.mid || 0) : 0;
+            // F65 (2026-04-12): prefer the mid_price Smart Settings used
+            // so the coin-prep preview matches the backend's verified
+            // totals.  Falls back to live price when no snapshot exists
+            // (e.g. manual settings without Smart Settings).
+            const _liveMid = pairReady ? (bot_state?.pricing?.mid || 0) : 0;
+            const midPrice = (window._smartMidPrice > 0) ? window._smartMidPrice : _liveMid;
 
             tradingSettingsImpossible = false;
             const tradeSizeWarn = document.getElementById('tradeSizeWarning');
@@ -18392,8 +18433,10 @@
             const catBalance = getWalletBalance('cat');
             const settingsCAT = getSettingsSelectedCAT();
             const pairReady = isPairDataReadyFor(settingsCAT.asset_id);
-            const midPrice = pairReady ? (bot_state?.pricing?.mid || 0) : 0;
-            
+            // F65: use Smart Settings snapshot price if available
+            const _liveMid2 = pairReady ? (bot_state?.pricing?.mid || 0) : 0;
+            const midPrice = (window._smartMidPrice > 0) ? window._smartMidPrice : _liveMid2;
+
             // Don't show warnings if we have no balance data yet (no CAT selected / not fetched)
             const hasBalanceData = xchBalance > 0 && pairReady;
             const xchWarningEl = document.getElementById('xchReserveWarning');
@@ -22730,8 +22773,8 @@
             } catch (e) { /* will retry on next SSE event */ }
         }
 
-        const _sysLogMax = 500;   // Max buffered entries
-        const _sysLogPage = 50;   // Entries shown per page
+        const _sysLogMax = 5000;  // Max buffered entries (covers full session)
+        const _sysLogPage = 200;  // Entries shown per page
         let _sysLogBuffer = [];   // All buffered entries (oldest→newest)
         let _sysLogShowing = _sysLogPage;  // How many currently visible
 
@@ -22826,7 +22869,7 @@
 
         async function loadInitialSystemLogs() {
             try {
-                const response = await apiFetch(`${API_URL}/logs?limit=200`);
+                const response = await apiFetch(`${API_URL}/logs?limit=2000`);
                 const data = await response.json();
                 const entries = Array.isArray(data.logs) ? data.logs : [];
                 if (!entries.length) return;
@@ -24465,32 +24508,73 @@
             const sellCount = bot_state?.offers?.sell?.length || 0;
             const totalActive = buyCount + sellCount;
 
-            // Close modal immediately and show progress in console
+            // Close confirm modal immediately
             closeCancelConfirm();
 
             addLogEntry('warning', `⚠️ CANCEL ALL — cancelling ${totalActive} offer${totalActive !== 1 ? 's' : ''}...`);
             if (buyCount > 0) addLogEntry('info', `   ${buyCount} buy offer${buyCount !== 1 ? 's' : ''}...`);
             if (sellCount > 0) addLogEntry('info', `   ${sellCount} sell offer${sellCount !== 1 ? 's' : ''}...`);
-            addLogEntry('info', '   Sending cancel requests to wallet (this may take a moment)...');
 
             try {
                 const response = await apiFetch(`${API_URL}/offers/cancel_all`, { method: 'POST' });
                 const result = await response.json();
 
-                if (result.success) {
-                    const cancelled = result.cancelled || 0;
-                    const failed = result.failed || 0;
-
-                    if (cancelled === 0 && failed === 0) {
-                        addLogEntry('warning', '   No offers found to cancel');
-                    } else {
-                        addLogEntry('success', `   ✅ Cancelled ${cancelled} offer${cancelled !== 1 ? 's' : ''}`);
-                        if (failed > 0) {
-                            addLogEntry('warning', `   ⚠️ ${failed} offer${failed !== 1 ? 's' : ''} failed to cancel`);
-                        }
-                    }
-                } else {
+                if (!result.success) {
                     addLogEntry('error', '   ❌ Cancel failed: ' + (result.error || 'Unknown error'));
+                    _cancelAllInProgress = false;
+                    return;
+                }
+
+                // Backend runs asynchronously — open progress modal and poll
+                if (result.async) {
+                    const total = result.total || totalActive;
+                    addLogEntry('info', `   Wallet cancel started for ${total} offers — tracking progress...`);
+                    openCancelProgressModal(total);
+                    startCancelAllProgressPolling(total);
+
+                    // Auto-stop polling when complete (check every second via the
+                    // existing polling, but also set a safety fallback)
+                    const _pollCheck = setInterval(async () => {
+                        try {
+                            const st = _get_cancel_all_state_local();
+                            if (st && (st.phase === 'complete' || st.phase === 'error')) {
+                                clearInterval(_pollCheck);
+                                stopCancelAllProgressPolling();
+                                _cancelAllInProgress = false;
+                                await fetchStatus();
+                                try { updateResumeOverview(); } catch (_re) { /* non-fatal */ }
+                                if (st.phase === 'complete') {
+                                    const msg = st.message || 'Cancel all complete';
+                                    addLogEntry('success', `   ✅ ${msg}`);
+                                    showToast(msg, st.failed > 0 ? 'warning' : 'success');
+                                } else {
+                                    addLogEntry('error', `   ❌ ${st.message || 'Cancel all failed'}`);
+                                    showToast(st.message || 'Cancel all failed', 'error');
+                                }
+                            }
+                        } catch (_e) { /* polling check failed, keep trying */ }
+                    }, 2000);
+
+                    // Safety timeout: stop polling after 5 minutes regardless
+                    setTimeout(() => {
+                        clearInterval(_pollCheck);
+                        stopCancelAllProgressPolling();
+                        _cancelAllInProgress = false;
+                    }, 300000);
+                    return;
+                }
+
+                // Synchronous response (bot-running path or legacy)
+                const cancelled = result.cancelled || 0;
+                const failed = result.failed || 0;
+
+                if (cancelled === 0 && failed === 0) {
+                    addLogEntry('warning', '   No offers found to cancel');
+                } else {
+                    addLogEntry('success', `   ✅ Cancelled ${cancelled} offer${cancelled !== 1 ? 's' : ''}`);
+                    if (failed > 0) {
+                        addLogEntry('warning', `   ⚠️ ${failed} offer${failed !== 1 ? 's' : ''} failed to cancel`);
+                    }
                 }
 
                 addLogEntry('info', '   Refreshing offer list...');
@@ -24503,6 +24587,12 @@
                 _cancelAllInProgress = false;
             }
         }
+
+        // Local helper: read cached cancel-all state from last poll
+        function _get_cancel_all_state_local() {
+            return _cancelAllLastState || null;
+        }
+        let _cancelAllLastState = null;
 
         let _cancelAllProgressPoll = null;
         let _cancelAllLastProgressKey = '';
@@ -24604,6 +24694,8 @@
                 const response = await apiFetch(`${API_URL}/offers/cancel_all/status`);
                 const status = await response.json();
                 if (!status || status.success === false) return;
+                // Cache for _get_cancel_all_state_local()
+                _cancelAllLastState = status;
 
                 renderCancelAllProgress(status, totalHint);
 
@@ -24672,105 +24764,8 @@
             _startCancelDots();
         }
 
-        async function confirmCancelAll() {
-            if (bot_state?.running) {
-                addLogEntry('warning', 'Cancel All blocked - stop the bot first');
-                showToast('Stop the bot before cancelling all offers', 'warning');
-                closeCancelConfirm();
-                return;
-            }
-
-            if (_cancelAllInProgress) {
-                addLogEntry('warning', 'Cancel already in progress - please wait');
-                closeCancelConfirm();
-                return;
-            }
-            _cancelAllInProgress = true;
-
-            const buyCount = bot_state?.offers?.buy?.length || 0;
-            const sellCount = bot_state?.offers?.sell?.length || 0;
-            const totalActive = buyCount + sellCount;
-
-            closeCancelConfirm();
-            openCancelProgressModal(totalActive);
-            startCancelAllProgressPolling(totalActive);
-
-            addLogEntry('warning', `Cancel all - cancelling ${totalActive} offer${totalActive !== 1 ? 's' : ''}...`);
-            if (buyCount > 0) addLogEntry('info', `   ${buyCount} buy offer${buyCount !== 1 ? 's' : ''}`);
-            if (sellCount > 0) addLogEntry('info', `   ${sellCount} sell offer${sellCount !== 1 ? 's' : ''}`);
-            addLogEntry('info', '   Sending cancel requests to wallet...');
-
-            try {
-                const response = await apiFetch(`${API_URL}/offers/cancel_all`, { method: 'POST' });
-                const result = await response.json();
-
-                await pollCancelAllProgressOnce(totalActive);
-                stopCancelAllProgressPolling();
-
-                if (response.ok && result.success) {
-                    const cancelled = result.cancelled || 0;
-                    const failed = result.failed || 0;
-                    renderCancelAllProgress({
-                        phase: 'complete',
-                        total: Math.max(totalActive, cancelled + failed),
-                        cancelled,
-                        failed,
-                        message: `Cancel all complete: ${cancelled} succeeded, ${failed} failed.`,
-                    }, totalActive);
-
-                    if (cancelled === 0 && failed === 0) {
-                        addLogEntry('warning', '   No offers found to cancel');
-                    } else {
-                        addLogEntry('success', `   Cancelled ${cancelled} offer${cancelled !== 1 ? 's' : ''}`);
-                        if (failed > 0) {
-                            addLogEntry('warning', `   ${failed} offer${failed !== 1 ? 's' : ''} failed to cancel`);
-                        }
-                    }
-
-                    showToast(`Cancel complete: ${cancelled} cancelled${failed > 0 ? `, ${failed} failed` : ''}`, failed > 0 ? 'warning' : 'success');
-                    _cancelAllAutoCloseTimer = setTimeout(() => {
-                        closeCancelProgressModal();
-                    }, 1800);
-                } else {
-                    const message = result.error || `Cancel failed (${response.status})`;
-                    renderCancelAllProgress({
-                        phase: 'error',
-                        total: totalActive,
-                        cancelled: 0,
-                        failed: totalActive,
-                        message
-                    }, totalActive);
-                    addLogEntry('error', '   Cancel failed: ' + message);
-                    showToast(message, 'error');
-                }
-
-                addLogEntry('info', '   Refreshing offer list...');
-                await fetchStatus();
-
-                // F52 (2026-04-09): refresh the session-restore panel so its
-                // stale "N active offers" count updates to the live post-cancel
-                // state (usually 0). Without this, the resume panel keeps
-                // showing the original pre-cancel offer count even though
-                // there's nothing left to resume.
-                try { updateResumeOverview(); } catch (_e) { /* non-fatal */ }
-
-                addLogEntry('success', 'Cancel all - done');
-
-            } catch (error) {
-                stopCancelAllProgressPolling();
-                renderCancelAllProgress({
-                    phase: 'error',
-                    total: totalActive,
-                    cancelled: 0,
-                    failed: totalActive,
-                    message: error.message || 'Cancel request failed.',
-                }, totalActive);
-                addLogEntry('error', '   Error: ' + error.message);
-                showToast('Cancel request failed', 'error');
-            } finally {
-                _cancelAllInProgress = false;
-            }
-        }
+        // (Second confirmCancelAll removed — single definition above handles
+        // both synchronous and async cancel responses.)
 
         // ---- Close the Gap button ----
         let _gapCloserActive = false;
@@ -25146,15 +25141,15 @@
             if (detail) detail.textContent = cancelOffers
                 ? 'The bot will stop first, then cancel open offers before exit.'
                 : 'The bot will stop and leave current offers open before exit.';
-            if (footer) footer.textContent = 'This can take a few seconds if the bot needs to stop services or finish a backup first.';
+            if (footer) footer.textContent = 'This usually takes a few seconds. The window will close automatically.';
             if (actions) actions.style.display = 'none';
             if (spinner) spinner.style.display = '';
 
             setShutdownStep('Stop', 'active', 'Stopping pricing, watchers, and active trading.');
             setShutdownStep('Offers', '', cancelOffers
                 ? 'Cancelling active offers before exit.'
-                : 'Leaving active offers open and unmanaged while the app is closed.');
-            setShutdownStep('Server', '', 'Backing up the database, stopping the server, and closing the window.');
+                : 'Existing offers will be left open.');
+            setShutdownStep('Server', '', 'Stop the server and close the window.');
 
             if (modal) modal.classList.add('active');
         }
@@ -25241,12 +25236,12 @@
 
             if (title) title.textContent = success ? 'Shutdown complete' : 'Shutdown hit a problem';
             if (copy) copy.textContent = success
-                ? 'The app has finished winding down and should close on its own.'
+                ? 'Everything stopped cleanly. The window will close on its own.'
                 : 'The shutdown sequence did not finish cleanly. You can review the message below.';
-            if (stage) stage.textContent = success ? 'Finalising window close...' : 'Shutdown error';
-            if (detail) detail.textContent = detailText || (success ? 'The desktop window should close shortly.' : 'Please check the latest log line.');
+            if (stage) stage.textContent = success ? 'Closing...' : 'Shutdown error';
+            if (detail) detail.textContent = detailText || (success ? 'The window will close shortly.' : 'Please check the latest log line.');
             if (footer) footer.textContent = success
-                ? 'If the window stays open, it is safe to close it once the server has stopped.'
+                ? 'If the window stays open, it is safe to close it manually.'
                 : 'You can close this message and try shutdown again after reviewing the error.';
             if (spinner) spinner.style.display = success ? '' : 'none';
             if (actions) actions.style.display = success ? 'none' : 'flex';
@@ -25375,14 +25370,35 @@
                         addLogEntry('warning', '   Could not cancel offers: ' + e.message);
                     }
                 } else {
-                    setShutdownStep('Offers', 'done', 'Skipped on purpose. Existing offers were left open.');
-                    addLogEntry('info', '   Step 2: Skipped - offers left open');
+                    setShutdownStep('Offers', 'done', 'Offers left open.');
+                    addLogEntry('info', '   Step 2: Offers left open');
                 }
 
-                // Step 3: Database backup + kill server
-                setShutdownStep('Server', 'active', 'Saving the latest state and stopping local services.');
-                updateShutdownProgress('Saving state and closing...', 'Creating the final backup and shutting down the local server.');
-                addLogEntry('info', '   Step 3: Backing up database and shutting down server...');
+                // Step 3: Shut down the server and close the window.
+                // The server may die mid-request (killing the webview before
+                // the DOM can paint), so we mark this step done BEFORE firing
+                // the shutdown.  That way the user sees all three steps green
+                // with a clean "Shutdown complete" state before the window
+                // closes — much more polished than a frozen "Working" dot.
+                setShutdownStep('Server', 'active', 'Sending shutdown signal...');
+                updateShutdownProgress('Closing...', 'Stopping the server.');
+                addLogEntry('info', '   Step 3: Shutting down server...');
+
+                // Brief pause so the "active" state renders (gives visual
+                // continuity: grey → red → green across all three steps).
+                await new Promise(r => setTimeout(r, 400));
+
+                // Mark done and show the final state BEFORE the shutdown call.
+                setShutdownStep('Server', 'done', 'Server stopped.');
+                addLogEntry('success', '   Server shutdown initiated');
+                finishShutdownProgress(true, 'Shutdown complete. Closing the window now.');
+
+                // Hold the all-green state for a moment so it's visible.
+                await new Promise(r => setTimeout(r, 1000));
+
+                // Now actually fire the shutdown.  If the server dies mid-
+                // request the catch sets backendStopped = true — that's fine,
+                // the user already sees the complete state above.
                 let backendStopped = false;
                 try {
                     await apiFetch(`${API_URL}/shutdown`, {
@@ -25392,27 +25408,13 @@
                     });
                     backendStopped = await startupWaitForBackendShutdown(7000);
                 } catch(e) {
-                    // Server died mid-response - that's expected
                     backendStopped = true;
                 }
 
-                if (backendStopped) {
-                    setShutdownStep('Server', 'done', 'Server shut down and final state was saved.');
-                    addLogEntry('success', '   Server shut down');
-                } else {
-                    setShutdownStep('Server', 'done', 'Shutdown was sent, but local services were still winding down.');
-                    addLogEntry('warning', '   Server was still winding down when the window close started');
-                }
-
-                addLogEntry('success', 'Shutdown complete');
-                finishShutdownProgress(true, 'Shutdown finished. Closing the window now.');
-
-                // Close the desktop window once shutdown has completed.
-                // Wait 1.5s when clean (lets user read "Shutdown complete"),
-                // 2.5s when uncertain (gives winding-down threads more time).
+                // Close the desktop window.
                 const closed = await closeDesktopWindowAfterShutdown({
                     backendStopped,
-                    extraWaitMs: backendStopped ? 1500 : 2500
+                    extraWaitMs: backendStopped ? 500 : 1500
                 });
                 if (!closed) {
                     addLogEntry('info', '   Server stopped. You can close this tab.');
@@ -25698,15 +25700,23 @@
                     triggerDownload(url, match ? match[1].replace(/^"|"$/g, '') : 'bot_debug_bundle.zip');
                     // Revoke async so click handler can start the download first
                     setTimeout(() => { try { URL.revokeObjectURL(url); } catch (_) {} }, 1000);
+                    showToast('Debug bundle downloaded!', 'success');
                 } else {
                     const payload = await response.json();
+                    if (payload && payload.saved_to) {
+                        // Desktop bridge mode: file was saved to disk and folder opened
+                        showToast('Debug bundle saved to: ' + payload.saved_to, 'success');
+                        return;
+                    }
                     if (!payload || !payload.data_url) {
                         showToast('Debug bundle: bridge returned no data', 'error');
                         return;
                     }
+                    // Fallback: older bridge returning data_url (WebView2 may ignore)
                     triggerDownload(payload.data_url, payload.filename || 'bot_debug_bundle.zip');
+                    showToast('Debug bundle downloaded!', 'success');
+                    return;
                 }
-                showToast('Debug logs downloaded!', 'success');
             } catch (error) {
                 console.error('Failed to download debug logs:', error);
                 showToast('Failed to download debug logs: ' + (error && error.message ? error.message : error), 'error');
@@ -26773,7 +26783,9 @@ function closeCtgErrorModal() {
             const tradeSize = parseFloat(config.default_trade_xch) || 0;
             const maxBuy = parseInt(config.max_active_buy) || 0;
             const maxSell = parseInt(config.max_active_sell) || 0;
-            const midPrice = bot_state.pricing.mid || 0;
+            // F65: use Smart Settings snapshot price if available
+            const _liveM3 = bot_state.pricing.mid || 0;
+            const midPrice = (window._smartMidPrice > 0) ? window._smartMidPrice : _liveM3;
             const tierEnabled = !!config.tier_enabled;
             const catTokenName = (currentCAT && currentCAT.name) || 'Tokens';
             const prepHeadroomPct = getCoinPrepHeadroomPct(config.coin_prep_headroom_pct);
@@ -27131,6 +27143,37 @@ function closeCtgErrorModal() {
                     }
                 }
                 
+                // ── F64: Feed the rolling log buffer so opening the log panel
+                // mid-prep shows all previous steps, not just new ones.
+                // The log panel's _pollCoinPrepLogs() uses _coinPrepMsgHistory
+                // as a fallback when DB log_lines are empty. Without this,
+                // the fallback buffer is blank until the panel is opened.
+                if (status.message && status.message !== _coinPrepLastMsg) {
+                    const _cpNow = new Date().toLocaleTimeString('en-GB', {hour12: false});
+                    const _cpPct = Math.round(progress);
+                    const _cpXch = status.xch_coins !== undefined
+                        ? `${status.xch_coins}/${status.xch_target || '?'}` : '';
+                    const _cpCat = status.cat_coins !== undefined
+                        ? `${status.cat_coins}/${status.cat_target || '?'}` : '';
+                    const _cpCoins = [_cpXch && `XCH ${_cpXch}`, _cpCat && `CAT ${_cpCat}`]
+                        .filter(Boolean).join(' · ');
+                    const _cpDetail = _cpCoins ? ` (${_cpCoins})` : '';
+                    const _cpLine = `${_cpNow} [${_cpPct}%] ${status.message}${_cpDetail}`;
+                    // Collapse repeated waiting/verifying lines
+                    const _cpIsRepeat = /Verifying|Waiting.*\d+s/i.test(status.message);
+                    const _cpLastRepeat = _coinPrepMsgHistory.length > 0
+                        && /Verifying|Waiting.*\d+s/i.test(_coinPrepMsgHistory[_coinPrepMsgHistory.length - 1]);
+                    if (_cpIsRepeat && _cpLastRepeat) {
+                        _coinPrepMsgHistory[_coinPrepMsgHistory.length - 1] = _cpLine;
+                    } else {
+                        _coinPrepMsgHistory.push(_cpLine);
+                    }
+                    if (_coinPrepMsgHistory.length > 200) {
+                        _coinPrepMsgHistory = _coinPrepMsgHistory.slice(-150);
+                    }
+                    _coinPrepLastMsg = status.message;
+                }
+
                 // Check if complete — multiple detection paths to avoid stuck modal:
                 // 1. phase === 'complete' (explicit completion signal)
                 // 2. complete flag set (backend sets this from worker status file)

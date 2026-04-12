@@ -128,6 +128,13 @@ def map_sage_terminal_offer_status(status_val, sage_offer=None, local_offer=None
             return "cancelled"
         if status_val == 4:  # confirmed
             return "filled"
+        # 0 = pending, 1 = active/open — both return None (not terminal).
+        # Anything else is an unknown future status code from Sage.
+        if status_val not in {0, 1}:
+            log_event("warning", "sage_unknown_status_code",
+                      f"Unrecognised Sage offer status code {status_val!r} — "
+                      f"treating as active (not terminal). Sage API may have added "
+                      f"a new status. Update map_sage_terminal_offer_status.")
         return None
 
     if status_text in {"EXPIRED"}:
@@ -136,6 +143,13 @@ def map_sage_terminal_offer_status(status_val, sage_offer=None, local_offer=None
         return "cancelled"
     if status_text in {"CONFIRMED", "COMPLETED", "SUCCEEDED", "SUCCESS"}:
         return "filled"
+    # Known active strings — return None silently
+    if status_text in {"ACTIVE", "OPEN", "PENDING", "SUBMITTED", ""}:
+        return None
+    # Truly unknown string status — log so we know to handle it
+    log_event("warning", "sage_unknown_status_str",
+              f"Unrecognised Sage offer status string {status_text!r} — "
+              f"treating as active (not terminal). Update map_sage_terminal_offer_status.")
     return None
 
 
@@ -2458,24 +2472,52 @@ class BotLoop:
             # Coin readiness report — shows per-tier availability vs requirements
             # so we know exactly what's available before creating offers
             readiness = self.coin_manager.coin_readiness_report()
+            resumed_live_book = len(wallet_open_ids) > 0
             if not readiness.get("overall_ready", True):
                 status = readiness.get("overall_status", "UNKNOWN")
-                resumed_live_book = len(wallet_open_ids) > 0
                 if status == "CRITICAL":
                     log_event("warning", "startup_coins_critical",
                               "COIN READINESS: CRITICAL — some tiers have zero coins! "
                               "Run coin prep before starting offers.")
-                elif not resumed_live_book:
-                    # Only fire LOW_SPARES on a cold start. On resume the per-tier
-                    # free counts naturally read as LOW because most coins are bound
-                    # to the existing offers, which is normal — topup handles it
-                    # transparently as offers cycle.
+
+            # Per-tier spare summary — fires on EVERY start (cold or resume).
+            # Shows exactly which tiers are below their spare_target so the user
+            # can see upfront what topup will address this session.
+            # On resume with active offers, depletion from prior fills is normal.
+            # If a previous bad topup cascade drained other tiers, this makes it
+            # visible rather than silently deferring to "topup when needed."
+            try:
+                _tier_low_msgs = []
+                for _tn, _ti in readiness.get("tiers", {}).items():
+                    _xch_rem = _ti.get("xch_spare_remaining", 0)
+                    _cat_rem = _ti.get("cat_spare_remaining", 0)
+                    _xch_status = _ti.get("xch_status", "READY")
+                    _cat_status = _ti.get("cat_status", "READY")
+                    if _xch_status in ("LOW", "EMPTY") or _cat_status in ("LOW", "EMPTY"):
+                        _parts = []
+                        if _xch_status in ("LOW", "EMPTY"):
+                            _parts.append(
+                                f"XCH {_xch_rem} spare "
+                                f"({'EMPTY' if _xch_status == 'EMPTY' else 'LOW'})"
+                            )
+                        if _cat_status in ("LOW", "EMPTY"):
+                            _parts.append(
+                                f"CAT {_cat_rem} spare "
+                                f"({'EMPTY' if _cat_status == 'EMPTY' else 'LOW'})"
+                            )
+                        _tier_low_msgs.append(f"{_tn}: {', '.join(_parts)}")
+                if _tier_low_msgs:
+                    _context = "resumed session" if resumed_live_book else "cold start"
                     log_event(
                         "warning",
-                        "startup_coins_low",
-                        f"COIN READINESS: {status} — some tiers are below target. "
-                        f"Topup will activate when needed."
+                        "startup_spare_deficit",
+                        f"Startup spare deficit ({_context}) — topup will fire for: "
+                        + "; ".join(_tier_low_msgs)
+                        + ". Run coin prep to restore full allocation."
                     )
+            except Exception as _spare_check_err:
+                log_event("debug", "startup_spare_check_failed",
+                          f"Startup spare check error (non-critical): {_spare_check_err}")
 
             # V3: Startup collateral advisory — tells user how XCH is allocated
             try:
@@ -2900,6 +2942,7 @@ class BotLoop:
         """Execute one complete trading cycle."""
         self._recovery_state["cycle_probe_churn"] = False
         self._recovery_state["cycle_create_stalled"] = False
+        self._requoted_this_cycle: set = set()  # sides requoted in step 9
         self._set_cycle_step("cycle_start")
 
         # ---- Step 0pre: Clear per-cycle coin exclusion set ----
@@ -3400,7 +3443,7 @@ class BotLoop:
         # generating a requote storm. We now refuse to re-trigger drift
         # requote within REQUOTE_COOLDOWN_SECS of the last AMM-drift force.
         try:
-            if self.amm_monitor.is_available():
+            if self.amm_monitor.is_available() and self._loop_count > 5:
                 amm_drift_bps = self.amm_monitor.get_drift_bps()
                 if amm_drift_bps is not None:
                     _drift_threshold = Decimal(str(getattr(cfg, "AMM_DRIFT_REQUOTE_BPS", "80")))
@@ -4115,6 +4158,7 @@ class BotLoop:
                         price_floor=price_floor,
                         live_offer_ids=_live_ids,
                     )
+                    self._requoted_this_cycle.add(eq_side)
                     if isinstance(requote_result, dict):
                         new_offers = requote_result.get("offers", [])
                         if requote_result.get("fully_replaced"):
@@ -4883,11 +4927,16 @@ class BotLoop:
             if last_price <= 0 and not forced:
                 continue
 
-            # ---- Smart startup: grace period for first 3 loops ----
+            # ---- Smart startup: grace period for first 5 loops ----
             # Newly created offers need time to settle and post to Dexie.
-            # Suppress normal requotes (not forced convergence) for the first
-            # 3 loops to avoid immediate churn from minor price differences.
-            if not forced and self._loop_count <= 3:
+            # Suppress ALL requotes (including AMM drift forces) during
+            # startup — the ladder was JUST built at current prices.  Any
+            # minor drift between ladder creation and first cycle is noise,
+            # not a genuine market move.  Emergency requotes (Step 8b) are
+            # a separate code path and are NOT affected by this gate.
+            if self._loop_count <= 5:
+                if forced:
+                    self._force_requote[side] = False  # Clear stale flag
                 continue  # Grace period — skip silently
 
             # Check fill protection (anti-churn) — but don't block forced convergence requotes
@@ -4899,10 +4948,18 @@ class BotLoop:
                 RequoteSeverity, tiers_for_severity, CycleBudget as _CB,
             )
             severity = RequoteSeverity.NONE
+
+            # Compare apples-to-apples: the deployed baseline is probe-
+            # anchored (set after create/requote), so the current mid must
+            # also be anchored before we measure drift.  Without this, a
+            # large probe offset looks like a permanent price move and
+            # triggers pointless requotes at the exact same prices.
+            compare_mid = self._get_probe_anchored_mid(side, mid_price)
+
             if forced:
                 # Forced convergence — use graduated severity based on drift magnitude
                 if last_price > 0:
-                    _move_frac = abs(mid_price - last_price) / last_price
+                    _move_frac = abs(compare_mid - last_price) / last_price
                     from reaction_strategy import classify_drift
                     severity = classify_drift(
                         _move_frac,
@@ -4917,14 +4974,14 @@ class BotLoop:
                 else:
                     severity = RequoteSeverity.FULL
             else:
-                severity = self.offer_manager.should_requote_graduated(side, mid_price, last_price)
+                severity = self.offer_manager.should_requote_graduated(side, compare_mid, last_price)
 
             should_requote = severity != RequoteSeverity.NONE
 
             if should_requote:
                 reason = (f"convergence tightening [{severity.value}]"
                           if forced
-                          else f"price moved {last_price:.8f} -> {mid_price:.8f} [{severity.value}]")
+                          else f"price moved {last_price:.8f} -> {compare_mid:.8f} [{severity.value}]")
                 print(f"\n   [REQUOTE] {side} side ({reason})", flush=True)
                 log_event("info", "requoting",
                           f"Requoting {side} side ({reason})",
@@ -4935,7 +4992,8 @@ class BotLoop:
                     self._force_requote[side] = False
 
                 spread = self.risk_manager.get_adjusted_spread(side)
-                requote_mid = self._get_probe_anchored_mid(side, mid_price)
+                # compare_mid is already probe-anchored — reuse it
+                requote_mid = compare_mid
                 price_cap = self._get_probe_price_boundary(side) if side == "buy" else None
                 price_floor = self._get_probe_price_boundary(side) if side == "sell" else None
                 if requote_mid != mid_price:
@@ -4965,6 +5023,11 @@ class BotLoop:
                     allowed_tiers=_allowed_tiers if severity not in (
                         RequoteSeverity.FULL, RequoteSeverity.EMERGENCY) else None,
                 )
+                # Mark this side as requoted so step 10 skips
+                # redundant creation (requote already used the
+                # spare coins — step 10 would just fail and
+                # suspend slots).
+                self._requoted_this_cycle.add(side)
                 if isinstance(requote_result, dict):
                     new_offers = requote_result.get("offers", [])
                     if requote_result.get("fully_replaced"):
@@ -5107,6 +5170,21 @@ class BotLoop:
         effective_buy_count += self.offer_manager.get_recently_created_count("buy")
         effective_sell_count = max(0, current_sell_count - probe_slot_offsets["sell"])
         effective_sell_count += self.offer_manager.get_recently_created_count("sell")
+        # Skip creation on sides that were requoted this cycle — the
+        # requote already consumed spare coins and created what it could.
+        # Without this, step 10 attempts creation with no spares left,
+        # coin selection fails 3 times per slot, and those slots get
+        # suspended (ladder degradation that persists across cycles).
+        _rq = getattr(self, "_requoted_this_cycle", set())
+        if "buy" in _rq:
+            skip_buy = True
+            log_event("debug", "create_skip_requoted",
+                      "Skipping buy creation — already requoted this cycle")
+        if "sell" in _rq:
+            skip_sell = True
+            log_event("debug", "create_skip_requoted",
+                      "Skipping sell creation — already requoted this cycle")
+
         buy_enabled  = (cfg.ENABLE_BUY  and not skip_buy
                         and effective_buy_count  < cfg.MAX_ACTIVE_BUY_OFFERS
                         and self.risk_manager.should_enable_side("buy",  mid_price))
@@ -5221,6 +5299,9 @@ class BotLoop:
                 names = ", ".join(t.name for t in stale)
                 log_event("warning", "ladder_overlap_skip",
                           f"Skipping ladder creation — previous threads still alive: {names}")
+                # Count as a stall so recovery escalates if threads stay hung
+                if work_items:
+                    self._mark_recovery_create_stall()
                 return
             self._ladder_threads.clear()
 

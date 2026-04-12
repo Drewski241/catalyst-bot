@@ -26,8 +26,11 @@ try:
 except ImportError:
     def slog(cat, msg, data=None, level="info"): pass
 
-# Methods slower than this threshold are logged at WARN level
+# Methods slower than this threshold are logged at INFO level;
+# methods slower than 5× this threshold are logged at WARN level.
 SLOW_METHOD_MS = 500
+# Network-facing categories get higher thresholds (HTTP / RPC latency).
+SLOW_NETWORK_MS = 2000   # Dexie HTTP, TibetSwap, offer creation via Sage
 # Wallet RPC calls get a longer threshold (they talk to network)
 SLOW_WALLET_MS = 5000
 
@@ -76,8 +79,13 @@ def _wrap_method(obj, method_name, category, log_args=False, arg_names=None,
             elif isinstance(result, tuple) and len(result) <= 4:
                 result_info["result"] = str(result)[:80]
 
-            # Slow → WARN (to file), normal → TRACE (ring buffer)
-            lvl = "warn" if elapsed_ms > slow_ms else "trace"
+            # 3-tier: TRACE → INFO (>slow_ms) → WARN (>5×slow_ms)
+            if elapsed_ms > slow_ms * 5:
+                lvl = "warn"
+            elif elapsed_ms > slow_ms:
+                lvl = "info"
+            else:
+                lvl = "trace"
             slog(category, f"<<< {method_name}", result_info, level=lvl)
             return result
         except Exception as e:
@@ -122,7 +130,13 @@ def _wrap_function(module, func_name, category, log_args=False, arg_names=None,
             elif isinstance(result, bool):
                 result_info["result"] = str(result)
 
-            lvl = "warn" if elapsed_ms > slow_ms else "trace"
+            # 3-tier: TRACE → INFO (>slow_ms) → WARN (>5×slow_ms)
+            if elapsed_ms > slow_ms * 5:
+                lvl = "warn"
+            elif elapsed_ms > slow_ms:
+                lvl = "info"
+            else:
+                lvl = "trace"
             slog(category, f"<<< {func_name}", result_info, level=lvl)
             return result
         except Exception as e:
@@ -147,7 +161,7 @@ def install_all_hooks():
                         "cancel_all", "cleanup_expired", "detect_expiring_offers",
                         "retry_failed_cancels", "sync_from_wallet", "should_requote",
                         "requote_side"]:
-            _wrap_method(cls, method, "OFFER")
+            _wrap_method(cls, method, "OFFER", slow_ms=SLOW_NETWORK_MS)
             hooked += 1
         slog("HOOKS", f"  offer_manager: hooked", level="debug")
     except Exception as e:
@@ -172,7 +186,7 @@ def install_all_hooks():
         count = 0
         for method in ["queue_post", "flush_queue", "_post_single",
                         "repost_active_offers", "prune_mappings"]:
-            _wrap_method(DexieManager, method, "DEXIE")
+            _wrap_method(DexieManager, method, "DEXIE", slow_ms=SLOW_NETWORK_MS)
             count += 1
         hooked += count
         slog("HOOKS", f"  dexie_manager: hooked", level="debug")
@@ -229,7 +243,7 @@ def install_all_hooks():
         for method in ["get_price", "get_volatility", "get_tibet_pool_info",
                         "get_tibet_quote", "get_pool_depth_ratio",
                         "invalidate_tibet_cache", "get_dynamic_limits"]:
-            _wrap_method(PriceEngine, method, "PRICE")
+            _wrap_method(PriceEngine, method, "PRICE", slow_ms=SLOW_NETWORK_MS)
             count += 1
         hooked += count
         slog("HOOKS", f"  price_engine: hooked", level="debug")
@@ -292,7 +306,7 @@ def install_all_hooks():
                         "_create_offers_if_needed", "_handle_coins",
                         "_handle_housekeeping", "_repost_active_offers_to_dexie",
                         "graceful_config_change"]:
-            _wrap_method(BotLoop, method, "LOOP")
+            _wrap_method(BotLoop, method, "LOOP", slow_ms=SLOW_NETWORK_MS)
             count += 1
         hooked += count
         slog("HOOKS", f"  bot_loop: hooked", level="debug")

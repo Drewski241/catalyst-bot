@@ -249,6 +249,9 @@ exe = EXE(  # noqa: F821
     codesign_identity=None,
     entitlements_file=None,
     icon=os.path.join(_assets_dir, 'bot_icon_new.ico') if os.path.isfile(os.path.join(_assets_dir, 'bot_icon_new.ico')) else None,
+    # Embed Windows PE version metadata so Task Manager, file Properties, and
+    # SmartScreen show the correct product name / description / company.
+    version=os.path.join(_HERE, 'version_info.txt') if os.path.isfile(os.path.join(_HERE, 'version_info.txt')) else None,
 )
 
 # ---------------------------------------------------------------------------

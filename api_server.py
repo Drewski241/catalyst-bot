@@ -680,7 +680,18 @@ def _build_fill_history_for_gui(asset_id: str, limit: int = 20) -> list:
 
     def _add_history_row(row: dict):
         trade_id = str(row.get("trade_id") or "").strip()
-        if not trade_id or trade_id in history_by_trade_id:
+        if not trade_id:
+            return
+
+        dexie_id = str(row.get("dexie_id") or "").strip()
+        dexie_link = f"https://dexie.space/offers/{dexie_id}" if dexie_id else ""
+
+        if trade_id in history_by_trade_id:
+            # Already have this trade — just patch in the Dexie link if the
+            # fills table didn't have it (dexie_id lives on the offers row,
+            # not the fills row, so the first pass often leaves it blank).
+            if dexie_link and not history_by_trade_id[trade_id].get("dexie_link"):
+                history_by_trade_id[trade_id]["dexie_link"] = dexie_link
             return
 
         filled_at = (
@@ -689,7 +700,6 @@ def _build_fill_history_for_gui(asset_id: str, limit: int = 20) -> list:
             or row.get("created_at")
             or ""
         )
-        dexie_id = str(row.get("dexie_id") or "").strip()
         history_by_trade_id[trade_id] = {
             "trade_id": trade_id,
             "full_id": trade_id,
@@ -703,7 +713,7 @@ def _build_fill_history_for_gui(asset_id: str, limit: int = 20) -> list:
             "cat_name": cat_name,
             "age": _history_age_label(filled_at),
             "filled_at": filled_at,
-            "dexie_link": f"https://dexie.space/offers/{dexie_id}" if dexie_id else "",
+            "dexie_link": dexie_link,
             "_sort_key": str(filled_at),
         }
 
@@ -1210,7 +1220,7 @@ def _reset_fresh_run_session(clear_coins: bool = False,
     chooses Start Fresh, so the Offers history and PnL panels do not carry the
     previous run forward while the user prepares a new setup.
     """
-    global _run_history_cutoff
+    global _run_history_cutoff, _session_start_time
 
     from database import _sqlite_ts
     reset_at = _sqlite_ts(datetime.now(timezone.utc))
@@ -1273,6 +1283,10 @@ def _reset_fresh_run_session(clear_coins: bool = False,
 
     _run_history_cutoff = reset_at
     cfg.RUN_HISTORY_CUTOFF = reset_at
+    # Also advance the session-start cutoff so /api/logs and the dashboard
+    # logs section only show events from THIS fresh run, not the original
+    # server startup.
+    _session_start_time = reset_at
 
     if bot and getattr(bot, "risk_manager", None):
         try:
@@ -3521,8 +3535,8 @@ def api_cancel_all():
         finished_at=None,
     )
 
-    if bot and bot.offer_manager:
-        # Use bot's offer manager (handles database updates + fill tracking)
+    if bot and bot.is_running() and bot.offer_manager:
+        # Bot is live — use offer manager (handles database updates + fill tracking)
         try:
             def on_progress(payload):
                 _set_cancel_all_state(**payload)
@@ -3564,10 +3578,17 @@ def api_cancel_all():
             )
             return _api_error(e, request.path)
     else:
-        # Bot not started — cancel directly via wallet RPC
+        # Bot stopped or not started — cancel directly via wallet RPC.
+        # Always use the wallet as source of truth, not the database,
+        # because requoting or failed cancels can leave orphaned offers
+        # that exist in the wallet but aren't tracked in the DB.
+        #
+        # Run in a BACKGROUND THREAD so the HTTP response returns instantly
+        # and the GUI can poll /api/offers/cancel_all/status for live progress
+        # instead of hanging for 2-3 minutes with no feedback.
         try:
             from wallet import get_all_offers, cancel_offers_batch, is_offer_time_expired
-            all_offers = get_all_offers()
+            all_offers = get_all_offers(include_completed=False, end=500)
             if not all_offers:
                 _set_cancel_all_state(
                     running=False,
@@ -3579,59 +3600,29 @@ def api_cancel_all():
                 )
                 return jsonify({"success": True, "cancelled": 0, "message": "No offers found"})
 
-            # Filter to open offers only
+            # Filter to open offers only.
             # Accept both Chia statuses (PENDING_ACCEPT / 4) and
-            # Sage statuses (ACTIVE / OPEN / PENDING)
+            # Sage statuses (ACTIVE / OPEN / PENDING).
+            # Sage may return integer status (0/1 = open) or string.
             OPEN_STATUSES = {"PENDING_ACCEPT", "4", "ACTIVE", "OPEN",
-                             "PENDING", "PENDING_CONFIRM", "IN_PROGRESS"}
+                             "PENDING", "PENDING_CONFIRM", "IN_PROGRESS",
+                             "0", "1"}
             open_ids = []
             for o in (all_offers if isinstance(all_offers, list) else []):
                 if not isinstance(o, dict):
                     continue
-                status = str(o.get("status", "")).upper()
-                if status in OPEN_STATUSES:
+                raw_status = o.get("status", "")
+                status = str(raw_status).upper() if raw_status is not None else ""
+                # Integer status: 0 or 1 = open in Sage
+                is_open = (status in OPEN_STATUSES
+                           or (isinstance(raw_status, int) and raw_status <= 1))
+                if is_open:
                     if not is_offer_time_expired(o):
-                        tid = o.get("trade_id", "")
+                        tid = o.get("trade_id", "") or o.get("offer_id", "")
                         if tid:
                             open_ids.append(tid)
 
-            if open_ids:
-                _set_cancel_all_state(
-                    running=True,
-                    complete=False,
-                    error=None,
-                    phase="running",
-                    total=len(open_ids),
-                    batch_size=len(open_ids),
-                    total_batches=1,
-                    current_batch=1,
-                    message=f"Cancelling {len(open_ids)} offers directly from the wallet...",
-                )
-                log_event("info", "cancel_all_direct",
-                          f"Cancelling {len(open_ids)} offers directly (bot not running)")
-                results = cancel_offers_batch(open_ids, secure=True)
-                for tid, res in results.items():
-                    if res and res.get("success"):
-                        cancelled += 1
-                    else:
-                        failed += 1
-                _set_cancel_all_state(
-                    running=False,
-                    complete=True,
-                    error=None,
-                    phase="complete",
-                    total=len(open_ids),
-                    batch_size=len(open_ids),
-                    total_batches=1,
-                    current_batch=1,
-                    batch_cancelled=cancelled,
-                    batch_failed=failed,
-                    cancelled=cancelled,
-                    failed=failed,
-                    finished_at=datetime.now(timezone.utc).isoformat(),
-                    message=f"Cancel all complete: {cancelled} succeeded, {failed} failed.",
-                )
-            else:
+            if not open_ids:
                 _set_cancel_all_state(
                     running=False,
                     complete=True,
@@ -3640,6 +3631,109 @@ def api_cancel_all():
                     message="No active offers found to cancel.",
                     finished_at=datetime.now(timezone.utc).isoformat(),
                 )
+                return jsonify({"success": True, "cancelled": 0, "message": "No active offers found"})
+
+            # Set initial progress state — frontend polls this immediately.
+            _set_cancel_all_state(
+                running=True,
+                complete=False,
+                error=None,
+                phase="running",
+                total=len(open_ids),
+                batch_size=len(open_ids),
+                total_batches=1,
+                current_batch=1,
+                cancelled=0,
+                failed=0,
+                message=f"Cancelling {len(open_ids)} offers directly from the wallet...",
+            )
+            log_event("info", "cancel_all_direct",
+                      f"Cancelling {len(open_ids)} offers directly via wallet "
+                      f"(bot stopped, bypassing DB)")
+
+            # ---- Background worker ----
+            _cancel_open_ids = list(open_ids)  # snapshot
+
+            def _cancel_all_worker():
+                _w_cancelled = 0
+                _w_failed = 0
+                try:
+                    _results = cancel_offers_batch(_cancel_open_ids, secure=True)
+                    _cancelled_ids = []
+                    for _tid, _res in _results.items():
+                        if _res and _res.get("success"):
+                            _w_cancelled += 1
+                            _cancelled_ids.append(_tid)
+                        else:
+                            _w_failed += 1
+                    # Sync DB: mark cancelled offers so they don't reappear
+                    if _cancelled_ids:
+                        try:
+                            conn = get_connection()
+                            for _tid in _cancelled_ids:
+                                conn.execute(
+                                    "UPDATE offers SET status='cancelled' "
+                                    "WHERE trade_id=? AND status='open'",
+                                    (_tid,),
+                                )
+                            conn.commit()
+                        except Exception:
+                            pass  # DB sync is best-effort
+                    _set_cancel_all_state(
+                        running=False,
+                        complete=True,
+                        error=None,
+                        phase="complete",
+                        total=len(_cancel_open_ids),
+                        batch_size=len(_cancel_open_ids),
+                        total_batches=1,
+                        current_batch=1,
+                        batch_cancelled=_w_cancelled,
+                        batch_failed=_w_failed,
+                        cancelled=_w_cancelled,
+                        failed=_w_failed,
+                        finished_at=datetime.now(timezone.utc).isoformat(),
+                        message=f"Cancel all complete: {_w_cancelled} succeeded, {_w_failed} failed.",
+                    )
+                    events.emit("offers_cancelled", {"count": _w_cancelled, "reason": "manual_cancel_all"})
+                    log_event("info", "cancel_all_complete",
+                              f"Cancel all finished: {_w_cancelled} succeeded, {_w_failed} failed")
+                    # Reset gap closer state if active
+                    if bot and getattr(bot, "boost_manager", None):
+                        try:
+                            if bot.boost_manager._boost_active:
+                                bot.boost_manager._boost_active = False
+                                bot.boost_manager._active_boost_ids.clear()
+                                bot.boost_manager._boost_mid_price = Decimal("0")
+                                bot.boost_manager._gap_spread_bps = 0
+                                bot.boost_manager._convergence_factor = Decimal("1.0")
+                                events.emit("boost", {"active": False})
+                        except Exception:
+                            pass
+                except Exception as _e:
+                    _set_cancel_all_state(
+                        running=False,
+                        complete=False,
+                        error=str(_e),
+                        phase="error",
+                        finished_at=datetime.now(timezone.utc).isoformat(),
+                        message=f"Cancel all failed: {_e}",
+                    )
+                    log_event("error", "cancel_all_error",
+                              f"Cancel all background worker failed: {_e}")
+
+            _t = threading.Thread(target=_cancel_all_worker, name="cancel-all-bg",
+                                  daemon=True)
+            _t.start()
+
+            # Return immediately — frontend polls /api/offers/cancel_all/status
+            return jsonify({
+                "success": True,
+                "async": True,
+                "total": len(open_ids),
+                "message": f"Cancelling {len(open_ids)} offers in background...",
+            })
+
         except Exception as e:
             _set_cancel_all_state(
                 running=False,
@@ -3892,7 +3986,11 @@ def api_fills():
 
     limit = request.args.get("limit", 20, type=int)
     from database import get_fills
-    fills = get_fills(cat_asset_id=cfg.CAT_ASSET_ID, limit=limit)
+    fills = get_fills(
+        cat_asset_id=cfg.CAT_ASSET_ID,
+        limit=limit,
+        since=_get_run_history_cutoff(),
+    )
     return jsonify({"fills": _serialize_list(fills)})
 
 
@@ -3916,7 +4014,7 @@ def api_fills_classified():
         side_filter           = request.args.get("side") or None
         limit                 = min(request.args.get("limit", 50, type=int), 200)
         offset                = request.args.get("offset", 0, type=int)
-        since                 = request.args.get("since") or None
+        since                 = request.args.get("since") or _get_run_history_cutoff() or None
 
         conn = get_connection()
         cat_asset_id = cfg.CAT_ASSET_ID if hasattr(cfg, "CAT_ASSET_ID") else ""
@@ -7113,6 +7211,21 @@ def _calculate_smart_defaults(xch_reserve=0.0, cat_reserve=0.0, risk_profile="ba
     else:
         _SNIPER_PCT = 0.04   # Normal/quiet: 4%
 
+    _SNIPER_MIN_SIZE_XCH = 0.01
+    _smart_sniper_size = _SNIPER_MIN_SIZE_XCH
+
+    # ── Fee < Sniper enforcement ──
+    # Sage auto-picks the smallest available coin for fees.  Fee coins MUST
+    # be smaller than sniper coins so Sage always grabs the right pool.
+    # If Coinset-estimated fee size is ≥ sniper size, clamp it to half the
+    # sniper size — still large enough for ~10 reuses but clearly smaller.
+    if _fee_coin_size >= _SNIPER_MIN_SIZE_XCH:
+        _fee_coin_size = round(_SNIPER_MIN_SIZE_XCH / 2, 6)  # 0.005 XCH
+        messages.append(
+            f"Fee coin size clamped to {_fee_coin_size} XCH "
+            f"(must be < sniper min {_SNIPER_MIN_SIZE_XCH} XCH)"
+        )
+
     _fee_pool_target  = _avail_xch * _FEE_PCT
     _fee_prep_count   = max(5, min(50, int(_fee_pool_target / max(0.0001, _fee_coin_size))))
     _fee_pool_xch     = _fee_coin_size * _fee_prep_count
@@ -7121,8 +7234,6 @@ def _calculate_smart_defaults(xch_reserve=0.0, cat_reserve=0.0, risk_profile="ba
     # Sniper offers are expendable probes — keep them at Dexie's minimum
     # displayable size (0.01 XCH) so they show up on the book without wasting
     # capital. The pool carries many cheap coins rather than fewer large ones.
-    _SNIPER_MIN_SIZE_XCH = 0.01
-    _smart_sniper_size = _SNIPER_MIN_SIZE_XCH
 
     # Prep count: more fills = faster sniper coin burn = need more ready.
     # Cap scales with the sniper pool so we never prep more than the pool
@@ -7391,6 +7502,7 @@ def _calculate_smart_defaults(xch_reserve=0.0, cat_reserve=0.0, risk_profile="ba
     _smart_extreme   = 0.0
     _smart_trade_size = 0.0
     _capital_plan    = {}
+    _n_sell_cap      = 0   # F64: CAT-backed sell capacity (set inside capital plan)
 
     if _avail_xch > 0 and _trading_xch >= (_MIN_OFFER_XCH * 2) and _target_n > 0:
         # Derive base size from trading capital — includes active + spares + headroom.
@@ -8243,6 +8355,346 @@ def _calculate_smart_defaults(xch_reserve=0.0, cat_reserve=0.0, risk_profile="ba
         )
     # ═══ END PER-SIDE TIER SIZES ══════════════════════════════════════════
 
+    # ═══ F64 (2026-04-12): SELL-SIDE INDEPENDENT SIZING ═════════════════
+    # Mirror of F62 (which gives the buy side independent *sizes* from the
+    # XCH budget).  F64 handles the reverse: when the CAT balance can fund
+    # larger sell offers than the XCH-constrained symmetric base_size,
+    # compute independent sell tier sizes from the CAT-side budget so the
+    # sell ladder deploys the full CAT capacity.
+    #
+    # Without F64, sell offer sizes are locked to `_base_size` which is
+    # min(XCH, CAT) constrained.  When XCH is the bottleneck, sell offers
+    # are artificially small and excess CAT sits idle in the wallet.
+    #
+    # Approach:
+    #   1. Compute the sell-side CAT budget in XCH-equiv (same carve-outs
+    #      as the coin-prep feasibility clamp: 85% minus sniper & topup)
+    #   2. Derive the largest sell base_size that fits this budget
+    #   3. If sell_base > symmetric base (>5% larger), compute independent
+    #      sell tier sizes from the sell base
+    #   4. Optionally expand sell count if CAT still has excess capacity
+    # ──────────────────────────────────────────────────────────────────────
+    _sell_n_inner   = _smart_n_inner
+    _sell_n_mid     = _smart_n_mid
+    _sell_n_outer   = _smart_n_outer
+    _sell_n_extreme = _smart_n_extreme
+    _sell_spare_inner   = _spare_inner
+    _sell_spare_mid     = _spare_mid
+    _sell_spare_outer   = _spare_outer
+    _sell_spare_extreme = _spare_extreme
+
+    if (_avail_cat > 0 and mid_price and mid_price > 0
+            and _smart_sell_inner > 0 and _n_final > 0):
+        # ── Step 1: Compute sell-side CAT budget in XCH-equiv ──
+        # Mirror the XCH approach: avail − carve-outs.
+        # XCH side uses _orig_xch_budget = _post_pools_xch − topup.
+        # CAT side:     _f64 budget  = avail_cat × 0.98 − sniper − topup.
+        # The 2% margin absorbs price drift between Smart Settings
+        # computation and the frontend coin-prep preview (which uses
+        # the LIVE mid_price — even a ~1.5% drop increases per-coin
+        # token amounts enough to overshoot the balance).
+        _cp_hm_f64 = 1.0 + (coin_prep_headroom_pct / 100.0)
+        _sniper_cat_tokens = (
+            round((_smart_sniper_size / mid_price) * _cp_hm_f64)
+            * _smart_sniper_prep
+            if _smart_sniper_size > 0 else 0
+        )
+        _topup_cat_tokens = round(_avail_cat * _TOPUP_BUFFER_PCT)
+        _f64_cat_budget_tokens = max(
+            0.0,
+            _avail_cat * 0.98 - _sniper_cat_tokens - _topup_cat_tokens
+        )
+        _f64_sell_budget_xch = _f64_cat_budget_tokens * mid_price
+
+        if _f64_sell_budget_xch > 0:
+            # ── Step 2: Derive the largest sell base that fits ──
+            # Sell side is not reversed — position inner = size inner.
+            _sell_live_coeff = (
+                _smart_n_inner   * _size_mults[0] +
+                _smart_n_mid     * _size_mults[1] +
+                _smart_n_outer   * _size_mults[2] +
+                _smart_n_extreme * _size_mults[3]
+            )
+            _sell_spare_coeff = (
+                _spare_inner   * _size_mults[0] +
+                _spare_mid     * _size_mults[1] +
+                _spare_outer   * _size_mults[2] +
+                _spare_extreme * _size_mults[3]
+            )
+            _sell_denom = max(1e-9,
+                (_sell_live_coeff + _sell_spare_coeff) * _cp_hm_f64
+            )
+            # 0.5% safety margin (same as F62) absorbs per-tier rounding.
+            _sell_base_max = (_f64_sell_budget_xch * 0.995) / _sell_denom
+            _sell_base_max = max(_MIN_OFFER_XCH, _sell_base_max)
+
+            # ── Step 3: Apply if meaningfully larger (>5%) ──
+            if _sell_base_max > _base_size * 1.05:
+                _f64_old_sell_inner = _smart_sell_inner
+
+                # Helper: compute tier sizes from a base, then verify the
+                # ACTUAL total in tokens using the same per-tier integer
+                # rounding the frontend uses (round(xch / mid_price × hm)).
+                # Returns (sizes_dict, total_cat_tokens).
+                def _f64_size_and_verify(base):
+                    si = max(_MIN_OFFER_XCH, round(base * _size_mults[0], 4))
+                    sm = max(_MIN_OFFER_XCH, round(base * _size_mults[1], 4))
+                    so = (max(_MIN_OFFER_XCH, round(base * _size_mults[2], 4))
+                          if _max_tiers >= 3 and _smart_sell_outer > 0
+                          else _smart_sell_outer)
+                    se = (max(_MIN_OFFER_XCH, round(base * _size_mults[3], 4))
+                          if _max_tiers == 4 and _smart_sell_extreme > 0
+                          else _smart_sell_extreme)
+                    # Same formula the frontend uses in buildCoinPrepPlan:
+                    # (live + spare) × round(tier_xch / mid_price × headroom)
+                    _tls = [
+                        (_smart_n_inner + _spare_inner, si),
+                        (_smart_n_mid + _spare_mid, sm),
+                    ]
+                    if _max_tiers >= 3 and so > 0:
+                        _tls.append((_smart_n_outer + _spare_outer, so))
+                    if _max_tiers == 4 and se > 0:
+                        _tls.append((_smart_n_extreme + _spare_extreme, se))
+                    total = sum(
+                        cnt * round((sx / mid_price) * _cp_hm_f64)
+                        for cnt, sx in _tls
+                    )
+                    return (si, sm, so, se), total
+
+                _f64_sizes, _f64_total_cat = _f64_size_and_verify(
+                    _sell_base_max)
+
+                # If the integer-rounded total overshoots the token budget,
+                # binary-search for the largest base that fits.
+                if _f64_total_cat > _f64_cat_budget_tokens:
+                    _lo = _base_size        # known-safe (symmetric)
+                    _hi = _sell_base_max     # known-over
+                    for _ in range(30):      # converges in <20 iterations
+                        _mid_b = (_lo + _hi) / 2.0
+                        _, _mid_total = _f64_size_and_verify(_mid_b)
+                        if _mid_total <= _f64_cat_budget_tokens:
+                            _lo = _mid_b
+                        else:
+                            _hi = _mid_b
+                    _f64_sizes, _f64_total_cat = _f64_size_and_verify(_lo)
+                    _sell_base_max = _lo
+
+                # Only apply if still meaningfully larger after the clamp
+                if _sell_base_max > _base_size * 1.05:
+                    _smart_sell_inner, _smart_sell_mid = _f64_sizes[0], _f64_sizes[1]
+                    _smart_sell_outer, _smart_sell_extreme = _f64_sizes[2], _f64_sizes[3]
+
+                    # Also update legacy shared fields so pre-F62 callers see
+                    # the sell-side values (shared = sell, as before).
+                    _smart_inner   = _smart_sell_inner
+                    _smart_mid     = _smart_sell_mid
+                    _smart_outer   = _smart_sell_outer
+                    _smart_extreme = _smart_sell_extreme
+
+                    # Sell live CAT deployment for reporting
+                    _sell_live_xch = (
+                        _smart_n_inner   * _smart_sell_inner +
+                        _smart_n_mid     * _smart_sell_mid +
+                        _smart_n_outer   * _smart_sell_outer +
+                        _smart_n_extreme * _smart_sell_extreme
+                    )
+                    _sell_cat_deployed = round(_sell_live_xch / mid_price, 0)
+                    _sell_cat_pct = round(
+                        _sell_cat_deployed / _avail_cat * 100, 1
+                    ) if _avail_cat > 0 else 0.0
+
+                    if "_capital_plan" in dir() and isinstance(_capital_plan, dict):
+                        _capital_plan["sell_base_size"] = round(_sell_base_max, 4)
+                        _capital_plan["sell_budget_xch"] = round(
+                            _f64_sell_budget_xch, 4)
+                    messages.append(
+                        f"F64 sell sizing: sell base {_sell_base_max:.4f} XCH "
+                        f"(vs symmetric {_base_size:.4f}) — "
+                        f"inner {_f64_old_sell_inner:.4f} → "
+                        f"{_smart_sell_inner:.4f} XCH, "
+                        f"~{_f64_total_cat:,.0f}/{_f64_cat_budget_tokens:,.0f} "
+                        f"CAT ({_sell_cat_pct:.0f}% of balance)"
+                    )
+                    print(
+                        f"[SMART_DEFAULTS] F64 sell sizing: "
+                        f"sell base {_sell_base_max:.4f} vs sym {_base_size:.4f}, "
+                        f"inner {_f64_old_sell_inner:.4f} → "
+                        f"{_smart_sell_inner:.4f}, "
+                        f"~{_f64_total_cat:,.0f}/{_f64_cat_budget_tokens:,.0f} "
+                        f"CAT ({_sell_cat_pct:.0f}%)"
+                    )
+
+        # ── Step 4: Count expansion (if CAT still has excess capacity) ──
+        # After sizing up, check if the CAT can also support more sell
+        # offers (e.g. _n_sell_cap > _smart_max_sell at the new sizes).
+        # This handles the edge case where XCH and CAT have similar
+        # per-offer capacity but the CAT can fund more total offers.
+        if (_n_sell_cap > _smart_max_sell and _smart_sell_inner > 0):
+            import math as _math_f64
+            _f64_expand_target = min(_n_sell_cap, _target_n)
+            if _f64_expand_target > _smart_max_sell:
+                _f64_old_sell_count = _smart_max_sell
+
+                def _f64_distribute(n):
+                    """Distribute n across tiers; return (counts, spares, cat)."""
+                    ni = max(1, round(n * _count_dist[0]))
+                    no = (max(0, round(n * _count_dist[2]))
+                          if n >= 4 and _max_tiers >= 3 else 0)
+                    ne = (max(0, round(n * _count_dist[3]))
+                          if n >= 5 and _max_tiers == 4 else 0)
+                    nm = max(1, n - ni - no - ne)
+                    si = max(_spare_inner,   _math_f64.ceil(ni * 0.5))
+                    sm = max(_spare_mid,     _math_f64.ceil(nm * 0.5))
+                    so = (max(_spare_outer,  _math_f64.ceil(no * 0.5))
+                          if no > 0 else _spare_outer)
+                    se = (max(_spare_extreme, _math_f64.ceil(ne * 0.5))
+                          if ne > 0 else _spare_extreme)
+                    _tiers = [
+                        (ni, si, _smart_sell_inner),
+                        (nm, sm, _smart_sell_mid),
+                    ]
+                    if _max_tiers >= 3 and _smart_sell_outer > 0:
+                        _tiers.append((no, so, _smart_sell_outer))
+                    if _max_tiers == 4 and _smart_sell_extreme > 0:
+                        _tiers.append((ne, se, _smart_sell_extreme))
+                    cat = sum(
+                        (_nl + _ns) * round((_sx / mid_price) * _cp_hm_f64)
+                        for _nl, _ns, _sx in _tiers
+                    )
+                    return (ni, nm, no, ne), (si, sm, so, se), cat
+
+                _f64c, _f64s, _f64_cat = _f64_distribute(_f64_expand_target)
+                if _f64_cat <= _f64_cat_budget_tokens:
+                    _f64_expanded = _f64_expand_target
+                else:
+                    # Scale down to fit, then fine-tune upward
+                    _f64_scale = _f64_cat_budget_tokens / max(1, _f64_cat)
+                    _f64_expanded = max(
+                        _smart_max_sell, int(_f64_expand_target * _f64_scale)
+                    )
+                    while _f64_expanded < _f64_expand_target:
+                        _, _, _tc = _f64_distribute(_f64_expanded + 1)
+                        if _tc <= _f64_cat_budget_tokens:
+                            _f64_expanded += 1
+                        else:
+                            break
+                    _f64c, _f64s, _f64_cat = _f64_distribute(_f64_expanded)
+
+                if _f64_expanded > _f64_old_sell_count:
+                    _smart_max_sell     = _f64_expanded
+                    _sell_n_inner       = _f64c[0]
+                    _sell_n_mid         = _f64c[1]
+                    _sell_n_outer       = _f64c[2]
+                    _sell_n_extreme     = _f64c[3]
+                    _sell_spare_inner   = _f64s[0]
+                    _sell_spare_mid     = _f64s[1]
+                    _sell_spare_outer   = _f64s[2]
+                    _sell_spare_extreme = _f64s[3]
+                    messages.append(
+                        f"F64 sell count: {_f64_old_sell_count} → "
+                        f"{_f64_expanded} sell offers "
+                        f"({_f64_cat:,.0f}/{_f64_cat_budget_tokens:,.0f} "
+                        f"tokens)"
+                    )
+                    print(
+                        f"[SMART_DEFAULTS] F64 sell count: "
+                        f"{_f64_old_sell_count} → {_f64_expanded} "
+                        f"(CAT: {_f64_cat:,.0f}/{_f64_cat_budget_tokens:,.0f})"
+                    )
+
+        # ── Update strategy if asymmetric ──
+        if _smart_max_buy != _smart_max_sell or _smart_sell_inner != _smart_buy_inner:
+            _strategy = (
+                f"{_tier_style} {_max_tiers}-tier ladder · "
+                f"{_smart_max_buy}B/{_smart_max_sell}S offers"
+                f" · {_trading_xch:.2f} XCH trading ({_trading_pct:.0f}%)"
+                + (f" · {_pool_note}" if _pool_note else "")
+            )
+            if "_capital_plan" in dir() and isinstance(_capital_plan, dict):
+                _capital_plan["strategy"] = _strategy
+    # ═══ END SELL-SIDE INDEPENDENT SIZING ═════════════════════════════════
+
+    # ═══ F65 FINAL SELL-SIDE CAT VERIFICATION ═════════════════════════════
+    # Belt-and-suspenders check: compute the EXACT coin-prep total using
+    # the same formula the frontend uses (tiers + sniper + topup), and
+    # scale sell sizes down if the total exceeds _avail_cat.
+    # This catches any overshoot regardless of origin: F64 budget drift,
+    # rounding accumulation, mid_price movement, or future code changes.
+    if (_avail_cat > 0 and mid_price and mid_price > 0
+            and _smart_sell_inner > 0):
+        _f65_hm = 1.0 + (coin_prep_headroom_pct / 100.0)
+        _f65_tiers = [
+            (_sell_n_inner   + _sell_spare_inner,   _smart_sell_inner),
+            (_sell_n_mid     + _sell_spare_mid,     _smart_sell_mid),
+        ]
+        if _max_tiers >= 3 and _smart_sell_outer > 0:
+            _f65_tiers.append(
+                (_sell_n_outer + _sell_spare_outer, _smart_sell_outer))
+        if _max_tiers == 4 and _smart_sell_extreme > 0:
+            _f65_tiers.append(
+                (_sell_n_extreme + _sell_spare_extreme, _smart_sell_extreme))
+        _f65_tier_cat = sum(
+            _cnt * round((_sx / mid_price) * _f65_hm)
+            for _cnt, _sx in _f65_tiers
+        )
+        _f65_sniper_cat = (
+            round((_smart_sniper_size / mid_price) * _f65_hm)
+            * _smart_sniper_prep
+            if _smart_sniper_size > 0 else 0
+        )
+        _f65_topup_cat = round(_avail_cat * _TOPUP_BUFFER_PCT)
+        _f65_total_cat = _f65_tier_cat + _f65_sniper_cat + _f65_topup_cat
+
+        if _f65_total_cat > _avail_cat:
+            # Overshoot!  Scale sell sizes down so the total fits.
+            # Only tier sizes are adjustable — sniper and topup are fixed.
+            _f65_tier_budget = max(1.0, _avail_cat - _f65_sniper_cat - _f65_topup_cat)
+            _f65_scale = _f65_tier_budget / max(1.0, _f65_tier_cat)
+            _f65_old_inner = _smart_sell_inner
+            _smart_sell_inner   = max(_MIN_OFFER_XCH, round(_smart_sell_inner   * _f65_scale, 4))
+            _smart_sell_mid     = max(_MIN_OFFER_XCH, round(_smart_sell_mid     * _f65_scale, 4))
+            _smart_sell_outer   = (max(_MIN_OFFER_XCH, round(_smart_sell_outer  * _f65_scale, 4))
+                                   if _smart_sell_outer > 0 else 0.0)
+            _smart_sell_extreme = (max(_MIN_OFFER_XCH, round(_smart_sell_extreme * _f65_scale, 4))
+                                   if _smart_sell_extreme > 0 else 0.0)
+            # Keep shared sizes in sync (pre-F62 callers read these)
+            _smart_inner   = _smart_sell_inner
+            _smart_mid     = _smart_sell_mid
+            _smart_outer   = _smart_sell_outer
+            _smart_extreme = _smart_sell_extreme
+
+            # Verify the scaled sizes actually fit now
+            _f65_tiers2 = [
+                (_sell_n_inner + _sell_spare_inner, _smart_sell_inner),
+                (_sell_n_mid   + _sell_spare_mid,   _smart_sell_mid),
+            ]
+            if _max_tiers >= 3 and _smart_sell_outer > 0:
+                _f65_tiers2.append(
+                    (_sell_n_outer + _sell_spare_outer, _smart_sell_outer))
+            if _max_tiers == 4 and _smart_sell_extreme > 0:
+                _f65_tiers2.append(
+                    (_sell_n_extreme + _sell_spare_extreme, _smart_sell_extreme))
+            _f65_new_tier = sum(
+                _c * round((_s / mid_price) * _f65_hm)
+                for _c, _s in _f65_tiers2
+            )
+            _f65_new_total = _f65_new_tier + _f65_sniper_cat + _f65_topup_cat
+            messages.append(
+                f"F65 sell-side CAT safety clamp: "
+                f"inner {_f65_old_inner:.4f} → {_smart_sell_inner:.4f} "
+                f"({_f65_scale*100:.1f}% scale), "
+                f"~{_f65_new_total:,.0f}/{_avail_cat:,.0f} CAT "
+                f"(was {_f65_total_cat:,.0f} — overshoot of "
+                f"{_f65_total_cat - _avail_cat:,.0f})"
+            )
+            print(
+                f"[SMART_DEFAULTS] F65 CAT safety clamp: "
+                f"inner {_f65_old_inner:.4f} → {_smart_sell_inner:.4f}, "
+                f"total {_f65_total_cat:,.0f} → {_f65_new_total:,.0f} "
+                f"(budget {_avail_cat:,.0f})"
+            )
+    # ═══ END F65 FINAL SELL-SIDE CAT VERIFICATION ═════════════════════════
+
     # ═══ Build response ═══
     result = {
         # Smart Pricing
@@ -8294,10 +8746,16 @@ def _calculate_smart_defaults(xch_reserve=0.0, cat_reserve=0.0, risk_profile="ba
         "buy_mid_tier_spare_count":     _buy_spare_mid,
         "buy_outer_tier_spare_count":   _buy_spare_outer,
         "buy_extreme_tier_spare_count": _buy_spare_extreme,
-        "sell_inner_tier_spare_count": _spare_inner,
-        "sell_mid_tier_spare_count":   _spare_mid,
-        "sell_outer_tier_spare_count": _spare_outer,
-        "sell_extreme_tier_spare_count": _spare_extreme,
+        "sell_inner_tier_spare_count": _sell_spare_inner,
+        "sell_mid_tier_spare_count":   _sell_spare_mid,
+        "sell_outer_tier_spare_count": _sell_spare_outer,
+        "sell_extreme_tier_spare_count": _sell_spare_extreme,
+        # F65 (2026-04-12): snapshot the mid_price used by Smart Settings
+        # so the frontend coin-prep preview uses the SAME price for
+        # per-coin token calculations — not the live price which may
+        # have drifted since Smart Settings ran, causing false
+        # overshoot warnings.
+        "smart_mid_price": mid_price if mid_price and mid_price > 0 else None,
 
         # Transaction Fees (Coinset-estimated or existing values)
         "transaction_fee_mode": "auto",
@@ -8378,10 +8836,10 @@ def _calculate_smart_defaults(xch_reserve=0.0, cat_reserve=0.0, risk_profile="ba
         "buy_mid_tier_count":     _buy_n_mid     if _buy_n_mid     > 0 else None,
         "buy_outer_tier_count":   _buy_n_outer   if _buy_n_outer   >= 0 else None,
         "buy_extreme_tier_count": _buy_n_extreme if _buy_n_extreme >= 0 else None,
-        "sell_inner_tier_count": _smart_n_inner if _smart_n_inner > 0 else None,
-        "sell_mid_tier_count": _smart_n_mid if _smart_n_mid > 0 else None,
-        "sell_outer_tier_count": _smart_n_outer if _smart_n_outer >= 0 else None,
-        "sell_extreme_tier_count": _smart_n_extreme if _smart_n_extreme >= 0 else None,
+        "sell_inner_tier_count": _sell_n_inner if _sell_n_inner > 0 else None,
+        "sell_mid_tier_count": _sell_n_mid if _sell_n_mid > 0 else None,
+        "sell_outer_tier_count": _sell_n_outer if _sell_n_outer >= 0 else None,
+        "sell_extreme_tier_count": _sell_n_extreme if _sell_n_extreme >= 0 else None,
         "_capital_plan": _capital_plan,
 
         # Bot Operations
@@ -8432,7 +8890,9 @@ def _calculate_smart_defaults(xch_reserve=0.0, cat_reserve=0.0, risk_profile="ba
 
     print(f"[SMART_DEFAULTS v2] Offers: buy={_smart_max_buy}, sell={_smart_max_sell} | "
           f"Tiers: inner={_smart_inner}, mid={_smart_mid}, outer={_smart_outer}, extreme={_smart_extreme} | "
-          f"Spares: inner={_spare_inner}, mid={_spare_mid}, outer={_spare_outer}, extreme={_spare_extreme} | "
+          + (f"Sell tiers: {_sell_n_inner}/{_sell_n_mid}/{_sell_n_outer}/{_sell_n_extreme} | "
+             if _sell_n_inner != _smart_n_inner else "")
+          + f"Spares: inner={_spare_inner}, mid={_spare_mid}, outer={_spare_outer}, extreme={_spare_extreme} | "
           f"Position: {max_position} XCH | Skew: {skew_intensity}")
     print(f"[SMART_DEFAULTS v2] === Done! Spread: {_bps_to_pct(base_spread_bps)}, "
           f"Requote: {_bps_to_pct(requote_bps)}, "

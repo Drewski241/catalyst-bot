@@ -816,7 +816,7 @@ class RuntimeMonitor:
         )
         if self._apply_condition(
             "slow_runtime",
-            bool(self._slow_active),
+            (not startup_grace) and bool(self._slow_active),
             severity="warning",
             open_event="bot_health_perf_slow",
             open_message=(

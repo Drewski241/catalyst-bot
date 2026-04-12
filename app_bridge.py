@@ -660,25 +660,28 @@ class AppBridge:
 
     @_safe
     def download_logs(self):
-        """Download logs. Maps to GET /api/logs/download.
-        Returns a data URL for JS to trigger a download.
+        """Download debug bundle. Maps to GET /api/logs/download.
 
-        The backend returns a ZIP debug bundle (not a plain .txt log) —
-        the filename here must reflect that or browsers will save the
-        file with the wrong extension and refuse to open it.
+        WebView2 (PyWebView on Windows) does not support the a.download
+        anchor trick for data: URLs or blob: URLs — the click is silently
+        swallowed and no save dialog appears.  Instead we write the ZIP
+        directly to the user's Downloads folder and open it in Explorer /
+        Finder / file-manager so they can see it immediately.
+
+        Returns {"success": True, "saved_to": "<abs path>", "filename": "<name>"}
+        so the JS can show a toast with the exact file location.
         """
         import api_server
-        import base64
         import re
+        import pathlib
+        import subprocess
+        import sys as _sys
         from datetime import datetime, timezone
         with api_server.app.test_request_context('/api/logs/download'):
             resp = api_server.api_logs_download()
         try:
-            if hasattr(resp, 'data'):
-                b64 = base64.b64encode(resp.data).decode('utf-8')
-                ct = resp.content_type or 'application/zip'
-                # Prefer the filename the Flask handler already set via
-                # Content-Disposition so the two paths stay in sync.
+            if hasattr(resp, 'data') and resp.data:
+                # Resolve filename from Content-Disposition header
                 filename = None
                 try:
                     cd = resp.headers.get('Content-Disposition', '') if hasattr(resp, 'headers') else ''
@@ -689,8 +692,30 @@ class AppBridge:
                     filename = None
                 if not filename:
                     filename = 'bot_debug_bundle_' + datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S') + '.zip'
-                return {"success": True, "data_url": f"data:{ct};base64,{b64}",
-                        "filename": filename}
+
+                # Save to user Downloads folder (falls back to home dir)
+                try:
+                    downloads = pathlib.Path.home() / 'Downloads'
+                    downloads.mkdir(parents=True, exist_ok=True)
+                except Exception:
+                    downloads = pathlib.Path.home()
+                save_path = downloads / filename
+                with open(save_path, 'wb') as fh:
+                    fh.write(resp.data)
+
+                # Open the containing folder and highlight the file (best-effort)
+                try:
+                    if _sys.platform == 'win32':
+                        # /select, highlights the file in Explorer
+                        subprocess.Popen(['explorer', '/select,', str(save_path)])
+                    elif _sys.platform == 'darwin':
+                        subprocess.Popen(['open', '-R', str(save_path)])
+                    else:
+                        subprocess.Popen(['xdg-open', str(downloads)])
+                except Exception:
+                    pass
+
+                return {"success": True, "saved_to": str(save_path), "filename": filename}
         except Exception:
             pass
         return _unwrap_flask_response(resp)

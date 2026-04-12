@@ -204,6 +204,14 @@ class SageUnknownUnspent(Exception):
     pass
 
 
+class SageAlreadyIncluding(Exception):
+    """Raised when Sage reports ALREADY_INCLUDING_TRANSACTION — the cancel TX
+    is already in the mempool from a previous submit. This is effectively a
+    success: the cancel is in flight and just needs blocks to confirm.
+    """
+    pass
+
+
 # ---- Sage RPC result validation ----
 
 def _rpc_succeeded(result) -> bool:
@@ -405,6 +413,9 @@ def _sage_post(path: str, payload: dict, timeout: int = 10):
             if "UNKNOWN_UNSPENT" in combined:
                 raise SageUnknownUnspent(
                     f"UNKNOWN_UNSPENT on {path}: coin not in UTXO set (not confirmed or already spent)")
+            if "ALREADY_INCLUDING_TRANSACTION" in combined:
+                raise SageAlreadyIncluding(
+                    f"ALREADY_INCLUDING_TRANSACTION on {path}: cancel TX already in mempool")
         return parsed
     else:
         # Check for specific error types in non-200 responses
@@ -414,6 +425,9 @@ def _sage_post(path: str, payload: dict, timeout: int = 10):
         if "UNKNOWN_UNSPENT" in data:
             raise SageUnknownUnspent(
                 f"UNKNOWN_UNSPENT on {path}: {data[:200]}")
+        if "ALREADY_INCLUDING_TRANSACTION" in data:
+            raise SageAlreadyIncluding(
+                f"ALREADY_INCLUDING_TRANSACTION on {path}: {data[:200]}")
         raise ConnectionError(f"Sage HTTP {resp.status}: {data[:300]}")
 
 # Quiet mode: suppress RPC error logging
@@ -1326,6 +1340,105 @@ def split_coins_rpc(wallet_id: int, target_coin_id: str, num_coins: int,
     if WALLET_DEBUG:
         print(f"  [Sage] split result: {result}")
     return result
+
+
+def create_transaction_rpc(selected_coin_ids: list, actions: list,
+                            auto_submit: bool = True) -> Optional[Dict]:
+    """Sage's flexible transaction builder with forced coin selection.
+
+    /create_transaction supports:
+    - selected_coin_ids: force specific input coins to be spent
+    - actions: arbitrary custom-sized output amounts
+
+    This is the correct approach for topup splits — /send_xch silently
+    ignores coin_ids hints, but /create_transaction honors selected_coin_ids.
+
+    Source: sage-api/src/requests/action_system.rs (struct CreateTransaction)
+    Parameters:
+      - selected_coin_ids: Vec<String>  — pre-selected input coins (bare hex, no 0x)
+      - actions: Vec<Action>            — send/fee actions for outputs
+      - auto_submit: bool               — whether to submit immediately
+
+    Action types (serde snake_case tagged):
+      Send XCH:
+        {"type": "send", "id": {"type": "xch"}, "address": "xch1...",
+         "amount": "<mojos>", "memos": []}
+      Send CAT:
+        {"type": "send", "id": {"type": "existing", "asset_id": "0x..."},
+         "address": "xch1...", "amount": "<mojos>", "memos": []}
+      Fee:
+        {"type": "fee", "amount": "<mojos>"}
+    """
+    if not _require_signing_capability():
+        return None
+
+    # Strip 0x prefixes from coin IDs
+    bare_ids = [cid.replace("0x", "") for cid in (selected_coin_ids or [])]
+
+    payload = {
+        "selected_coin_ids": bare_ids,
+        "actions": actions,
+        "auto_submit": auto_submit,
+    }
+
+    print(f"   [Sage] create_transaction: {len(bare_ids)} selected coins, "
+          f"{len(actions)} actions via /create_transaction")
+    result = rpc("create_transaction", payload, timeout=60)
+    if WALLET_DEBUG:
+        print(f"  [Sage] create_transaction result: {result}")
+    return result
+
+
+def sage_topup_split(source_coin_id: str, num_coins: int, trading_size_mojos: int,
+                     own_address: str, fee_mojos: int = 0,
+                     is_cat: bool = False) -> Optional[Dict]:
+    """One-step topup split using Sage's /create_transaction endpoint.
+
+    Spends ONLY the designated topup pool coin (source_coin_id) and creates
+    num_coins output coins of exactly trading_size_mojos each in a single
+    atomic transaction.  Change returns to the wallet automatically.
+
+    Using /create_transaction instead of /send_xch because /send_xch does NOT
+    honour the coin_ids hint — Sage's SendXch struct has no such field, so the
+    param is silently dropped and Sage picks coins freely (consuming tier_spare
+    coins from other tiers rather than the intended topup pool coin).
+
+    /create_transaction's selected_coin_ids IS honoured by Sage (pre-selects
+    the coins before running normal selection logic).
+    """
+    if is_cat:
+        asset_id = _get_cat_asset_id()
+        if not asset_id:
+            print("  [Sage] CAT_ASSET_ID not configured — cannot sage_topup_split CAT")
+            return None
+        send_id = {"type": "existing", "asset_id": asset_id}
+    else:
+        send_id = {"type": "xch"}
+
+    actions: list = []
+
+    # N send-to-self actions, each of exactly trading_size_mojos
+    for _ in range(num_coins):
+        actions.append({
+            "type": "send",
+            "id": send_id,
+            "address": own_address,
+            "amount": str(int(trading_size_mojos)),
+            "memos": [],
+        })
+
+    # Explicit fee action (if any)
+    if fee_mojos > 0:
+        actions.append({
+            "type": "fee",
+            "amount": str(int(fee_mojos)),
+        })
+
+    return create_transaction_rpc(
+        selected_coin_ids=[source_coin_id],
+        actions=actions,
+        auto_submit=True,
+    )
 
 
 def combine_coins(coin_ids: list, fee_mojos: int = 0) -> Optional[Dict]:
@@ -2784,653 +2897,231 @@ def _get_still_locked_trade_ids(trade_ids: set, owned_coin_map: Optional[Dict]) 
 def cancel_offers_batch(trade_ids: list, secure: bool = True, max_workers: int = 3,
                         fee_mojos: Optional[int] = None,
                         skip_confirmation: bool = False):
-    """Cancel multiple offers — tries Sage's bulk cancel_offers first,
-    falls back to sequential cancel_offer if bulk fails.
+    """Cancel multiple offers via Sage bulk RPC, then wait for coins to return.
 
-    Sage supports: cancel_offers(offer_ids=[...], fee="0", auto_submit=True)
-    which can cancel many offers in a single RPC call.
+    Simple model:
+      1. Snapshot spendable coin count before cancel.
+      2. Send bulk cancel_offers RPC (single transaction, one fee).
+      3. Poll spendable count until coins come back (count increases)
+         or timeout. Coins will have new IDs but same values — coin
+         manager handles ID tracking naturally.
+      4. If bulk RPC fails, fall back to sequential cancels.
 
-    After cancellation, polls the wallet to confirm offers are actually gone
-    (matching the bot's confirmation pattern for all wallet operations).
+    Returns dict of {trade_id: {"success": bool, ...}}.
     """
     results = {}
+    if not trade_ids:
+        return results
+
     resolved_fee = 0 if not secure else (
         max(0, int(fee_mojos))
         if fee_mojos is not None
         else get_effective_transaction_fee_mojos()
     )
 
-    if not trade_ids:
-        return results
+    num_offers = len(trade_ids)
 
-    cancel_succeeded = False
-    trade_id_set = set(trade_ids)
-
-    # Helper: include both XCH wallet (1) and CAT wallet for coin-count checks
-    _confirm_wallet_ids: set = {1}
+    # ── Wallet IDs for coin count checks ──
+    _wallet_ids: set = {1}
     try:
         from config import cfg as _cfg_ref
-        _confirm_wallet_ids.add(int(getattr(_cfg_ref, "CAT_WALLET_ID", 1)))
+        _wallet_ids.add(int(getattr(_cfg_ref, "CAT_WALLET_ID", 1)))
     except Exception:
         pass
 
     def _total_spendable():
-        """Return total spendable coins, or None if any wallet RPC failed."""
+        """Total spendable coins across XCH + CAT wallets, or None on RPC failure."""
         total = 0
-        for _wid in _confirm_wallet_ids:
+        for _wid in _wallet_ids:
             try:
                 count = get_spendable_coin_count(wallet_id=_wid)
-                if count < 0:
-                    # RPC failure — can't trust partial total
+                if count is None or count < 0:
                     return None
                 total += count
             except Exception:
                 return None
         return total
 
-    def _merged_owned_coins():
-        merged: dict = {}
-        any_success = False
-        for _wid in _confirm_wallet_ids:
-            try:
-                part = get_owned_coins_detailed(wallet_id=_wid)
-                if part is not None:
-                    merged.update(part)
-                    any_success = True
-            except Exception:
-                pass
-        return merged if any_success else None
+    # ── 1. Pre-cancel snapshot ──
+    pre_coins = _total_spendable()
+    if pre_coins is not None:
+        print(f"   📸 [Sage] Pre-cancel: {pre_coins} spendable coins")
+    else:
+        print(f"   ⚠️ [Sage] Could not snapshot pre-cancel coins")
 
-    # --- Pre-cancel snapshots for verification ---
-    # Use Sage's documented count and pending-tx endpoints rather than
-    # approximating from coin list lengths.
-    # None = "unknown" (RPC failed); callers must not treat None as 0.
-    pre_cancel_coin_count = None
-    pre_pending_count = None
-    try:
-        pre_cancel_coin_count = _total_spendable()
-        if pre_cancel_coin_count is not None:
-            print(f"   📸 [Sage] Pre-cancel snapshot: {pre_cancel_coin_count} spendable coins")
-        else:
-            print(f"   ⚠️ [Sage] Could not snapshot pre-cancel coins: RPC failed")
-    except Exception as e:
-        print(f"   ⚠️ [Sage] Could not snapshot pre-cancel coins: {e}")
-    try:
-        pending_list = get_pending_transactions()
-        if pending_list is not None:
-            pre_pending_count = len(pending_list)
-            print(f"   📸 [Sage] Pre-cancel pending txs: {pre_pending_count}")
-        else:
-            print(f"   ⚠️ [Sage] Could not snapshot pending txs: RPC failed")
-    except Exception as e:
-        print(f"   ⚠️ [Sage] Could not snapshot pending txs: {e}")
+    # ── 2. Send bulk cancel RPC ──
+    cancel_submitted = False
 
-    # --- Try bulk cancel first (Sage-specific) ---
-    # DISABLED for now — bulk cancel overwhelms Sage and causes long pending
-    # states. The caller now sends measured batches (currently 25), so
-    # F63 (2026-04-10): Sage's bulk cancel_offers RPC processes all offers
-    # in a single call — Sage's own GUI uses this and cancels 44 offers in
-    # ~5 seconds. The bot was only using bulk for >100 offers and falling
-    # back to sequential (0.3s per offer = 13s for 44) for smaller batches.
-    # Lowered threshold to 3 so virtually all cancel operations use bulk.
-    if len(trade_ids) >= 3:
-        print(f"📋 [Sage] Attempting bulk cancel of {len(trade_ids)} offers...")
+    if num_offers >= 2:
+        print(f"📋 [Sage] Bulk cancel of {num_offers} offers (fee={resolved_fee})...")
         try:
-            # Use _sage_post directly to see actual HTTP status on error
-            # NOTE: Sage's CancelOffers struct does NOT accept coin_ids.
-            # Fee coin is auto-selected.  Bulk cancel is a single transaction
-            # so only 1 fee coin is consumed regardless of offer count.
             bulk_result = _sage_post("cancel_offers", {
                 "offer_ids": trade_ids,
                 "fee": str(int(resolved_fee)),
                 "auto_submit": True,
-            }, timeout=max(30, len(trade_ids) * 2))
+            }, timeout=max(30, num_offers * 2))
 
             if bulk_result is not None:
-                print(f"   ✅ [Sage] Bulk cancel RPC accepted. Response: "
-                      f"{str(bulk_result)[:200]}")
-                cancel_succeeded = True
+                print(f"   ✅ [Sage] Bulk cancel accepted")
+                cancel_submitted = True
                 for tid in trade_ids:
                     results[tid] = {"success": True, "method": "bulk"}
             else:
                 print(f"   ⚠️ [Sage] Bulk cancel returned None — falling back to sequential")
+        except SageAlreadyIncluding:
+            # Cancel TX is already in the mempool from a previous attempt —
+            # this IS success, just need to wait for it to confirm on-chain.
+            print(f"   ✅ [Sage] Cancel TX already in mempool — waiting for coins to return")
+            cancel_submitted = True
+            for tid in trade_ids:
+                results[tid] = {"success": True, "method": "already_in_mempool"}
+        except SageMempoolConflict:
+            # A conflicting transaction is using the same coins — the previous
+            # cancel attempt's TX is likely still pending. Treat as in-flight.
+            print(f"   ✅ [Sage] Mempool conflict — previous cancel TX still pending, "
+                  f"waiting for coins to return")
+            cancel_submitted = True
+            for tid in trade_ids:
+                results[tid] = {"success": True, "method": "mempool_conflict_inflight"}
         except ConnectionError as e:
             err_str = str(e)
-            print(f"   ⚠️ [Sage] Bulk cancel HTTP error: {err_str[:300]}")
-            # If Sage returned 500 but actually processed, the confirmation poll
-            # below will catch it. For now, fall through to sequential.
+            print(f"   ⚠️ [Sage] Bulk cancel HTTP error: {err_str[:200]}")
             if "HTTP 500" in err_str:
-                print(f"   [Sage] Bulk cancel got HTTP 500 — may be async processing. "
-                      f"Will verify via polling.", flush=True)
-                # Do NOT set cancel_succeeded or mark results as success.
-                # Polling will determine actual outcome. If polling also fails,
-                # the sequential fallback will run.
+                # Sage sometimes returns 500 but still processes — poll will verify
+                cancel_submitted = True
+                print(f"   [Sage] Got HTTP 500 — may have processed, will verify via coins")
         except Exception as e:
             print(f"   ⚠️ [Sage] Bulk cancel error: {e} — falling back to sequential")
 
-    # --- Sequential cancel (used for <3 offers, or fallback when bulk fails) ---
-    # 0.3s inter-cancel delay lets Sage update its internal coin tracking
-    # so it picks different fee coins for each sequential transaction.
-    if not cancel_succeeded:
-        delay = 0.3
-        print(f"📋 [Sage] Cancelling {len(trade_ids)} offers sequentially "
-              f"({delay}s delay)...")
-
+    # Sequential fallback: < 2 offers or bulk failed
+    if not cancel_submitted:
+        delay = 1.5
+        print(f"📋 [Sage] Cancelling {num_offers} offers sequentially ({delay}s delay)...")
         for i, tid in enumerate(trade_ids):
             try:
-                timeout = 15
-                result = cancel_offer(tid, secure, timeout=timeout, fee_mojos=resolved_fee)
+                result = cancel_offer(tid, secure, timeout=15, fee_mojos=resolved_fee)
                 results[tid] = result or {"success": False, "error": "RPC returned None"}
                 if result and result.get("success"):
-                    if (i + 1) % 10 == 0 or (i + 1) == len(trade_ids):
-                        print(f"   ✅ [Sage] Cancelled {i + 1}/{len(trade_ids)}")
+                    cancel_submitted = True
+                    if (i + 1) % 10 == 0 or (i + 1) == num_offers:
+                        print(f"   ✅ [Sage] Cancelled {i + 1}/{num_offers}")
                 else:
                     error = (result or {}).get("error", "unknown")
                     print(f"   ❌ [Sage] Failed {tid[:16]}...: {error}")
-                time.sleep(delay)
+                if i < num_offers - 1:
+                    time.sleep(delay)
+            except (SageAlreadyIncluding, SageMempoolConflict) as e:
+                # Cancel already in mempool — treat as success
+                print(f"   ✅ [Sage] {tid[:16]}... already in mempool")
+                results[tid] = {"success": True, "method": "already_in_mempool"}
+                cancel_submitted = True
             except Exception as e:
-                print(f"❌ [Sage] Failed to cancel offer {tid}: {e}")
+                print(f"   ❌ [Sage] Failed {tid[:16]}...: {e}")
                 results[tid] = {"success": False, "error": str(e)}
 
-    # --- Skip confirmation if caller requested fire-and-forget mode ---
-    # Used by the requote path: requote_side() creates new offers BEFORE
-    # cancelling old ones, so the orderbook stays populated. Waiting 90-150s
-    # for on-chain confirmation blocks the entire bot loop and prevents
-    # mid-price updates, fill detection, and sniper management.
-    # The retry_failed_cancels() background loop will handle any cancels
-    # that don't confirm, and the trim pass will clean up over-allocation.
-    if skip_confirmation:
-        print(f"   📨 [Sage] Skipping on-chain confirmation (requote fire-and-forget mode). "
-              f"Background retry will handle any failures.")
+    if not cancel_submitted:
+        print(f"   ❌ [Sage] No cancel RPCs succeeded — aborting")
         return results
 
-    # --- Confirmation polling: verify cancels actually happened ON-CHAIN ---
-    # CRITICAL: Sage wallet may optimistically remove cancelled offers from its
-    # local active list BEFORE the on-chain cancel transaction confirms. This
-    # means checking "not in active list" is NOT reliable. We use TWO methods:
-    #
-    # 1. Status check: get_all_offers(include_completed=True) and look for
-    #    explicit CANCELLED status (not just "absent from active list")
-    # 2. Coin check: count spendable coins — if cancel worked on-chain, the
-    #    coins locked by those offers should now be free (count increases)
-    #
-    # An offer is only confirmed cancelled if:
-    #   - It shows explicit CANCELLED/CONFIRMED status in the wallet, OR
-    #   - Spendable coin count increased by at least the number of cancelled offers
+    # ── 3. Skip confirmation if requested (requote fire-and-forget) ──
+    if skip_confirmation:
+        print(f"   📨 [Sage] Skipping confirmation (fire-and-forget mode)")
+        return results
 
-    # Chia TradeStatus numeric: 0=PENDING_ACCEPT, 1=PENDING_CONFIRM,
-    # 2=PENDING_CANCEL, 3=CANCELLED, 4=CONFIRMED (filled), 5=FAILED
-    CANCELLED_STATUSES = {"CANCELLED", "CANCELED", "3", "CONFIRMED_CANCEL"}
-    IN_PROGRESS_CANCEL_STATUSES = {"PENDING_CANCEL", "2"}  # 2/PENDING_CANCEL = en route, NOT terminal
-    ACTIVE_STATUSES = {"ACTIVE", "OPEN", "PENDING_ACCEPT", "PENDING",
-                       "PENDING_CONFIRM", "IN_PROGRESS", "0", "1"}
-    TERMINAL_NON_CANCEL = {"CONFIRMED", "COMPLETED", "SUCCESS", "FAILED", "4", "5"}
+    # ── 4. Wait for coins to return ──
+    # When cancels confirm on-chain the locked coins are released back as
+    # new spendable coins (new IDs, same values). We just poll the total
+    # spendable count and wait for it to increase — that's the definitive
+    # signal that the cancel TX landed in a block.
+    try:
+        from config import cfg as _cfg
+        poll_interval = max(3, min(int(getattr(_cfg, "CANCEL_POLL_INTERVAL_SECS", 10) or 10), 30))
+        max_wait = max(30, min(int(getattr(_cfg, "CANCEL_MAX_WAIT_SECS", 120) or 120), 600))
+    except Exception:
+        poll_interval, max_wait = 10, 120
 
-    # Snapshot which TIDs had a successful SUBMIT call before verification
-    # starts. The sequential cancel loop above populates results[tid] with
-    # success=True when the wallet accepted the cancel RPC. Sage often does
-    # not flip the offer's status to PENDING_CANCEL while the cancel TX is
-    # in the mempool — the offer keeps its old PENDING_ACCEPT/ACTIVE status
-    # until the cancel TX confirms on-chain. Without this snapshot, the
-    # verification phase below treats those offers as STILL_ACTIVE failures
-    # and overwrites the submit-level success — which is exactly what
-    # caused "Cancel All" to report 0/49 succeeded while every cancel TX
-    # was actually sitting in the mempool.
-    submitted_tids = {tid for tid in trade_ids
-                      if results.get(tid, {}).get("success")}
+    print(f"🔄 [Sage] Waiting for coins to return (poll every {poll_interval}s, "
+          f"max {max_wait}s)...")
 
-    if len(trade_ids) > 0:
-        print(f"🔄 [Sage] Confirming cancellations ON-CHAIN (2-layer verification)...")
-        # F51 (2026-04-09): POLL + RETRY flow.
-        #
-        # Previous design: single fast-path window of 25s at 3s poll interval.
-        # When the mempool was congested (multiple cancel batches in flight),
-        # 25s was never enough — cancels would sit pending and the function
-        # would return `submitted_pending_confirm` which the caller treated
-        # as "cancelled". Operators then saw stale state for minutes.
-        #
-        # New design: operator-tunable poll-and-retry.
-        #   Phase 1: poll every CANCEL_POLL_INTERVAL_SECS (default 10) up
-        #            to CANCEL_MAX_WAIT_SECS (default 90). Covers 3-5 blocks
-        #            at Chia's target rate.
-        #   Phase 2: any offers still `ACTIVE` (not even in PENDING_CANCEL)
-        #            get their cancel RPC resubmitted. This handles the
-        #            mempool-conflict case where Sage accepted the cancel
-        #            RPC but the spend bundle never made it into a block
-        #            due to fee competition or duplicate-coin conflicts.
-        #   Phase 3: second polling window for CANCEL_RETRY_WAIT_SECS
-        #            (default 60) at the same interval. Covers another
-        #            2-3 blocks after the retry.
-        #
-        # Max total wait = MAX_WAIT + RETRY_WAIT = 150s default. The
-        # caller (offer_manager.cancel_all) runs in its own thread, so
-        # this doesn't block the bot loop.
+    start_time = time.time()
+    confirmed = False
+    last_count = pre_coins
+
+    while (time.time() - start_time) < max_wait:
+        time.sleep(poll_interval)
+        elapsed = int(time.time() - start_time)
         try:
-            from config import cfg as _cfg
-            poll_interval = int(getattr(_cfg, "CANCEL_POLL_INTERVAL_SECS", 10) or 10)
-            max_wait = int(getattr(_cfg, "CANCEL_MAX_WAIT_SECS", 90) or 90)
-            retry_wait = int(getattr(_cfg, "CANCEL_RETRY_WAIT_SECS", 60) or 60)
-        except Exception:
-            poll_interval, max_wait, retry_wait = 10, 90, 60
-        # Safety clamps
-        poll_interval = max(2, min(poll_interval, 30))
-        max_wait = max(poll_interval * 2, min(max_wait, 600))
-        retry_wait = max(0, min(retry_wait, 300))
+            current_coins = _total_spendable()
+            if current_coins is None:
+                print(f"   🔄 [{elapsed}s] spendable=? (RPC error, retrying)")
+                continue
 
-        start_time = time.time()
-        confirmed = False
-        retry_attempted = False
-
-        while (time.time() - start_time) < max_wait:
-            time.sleep(poll_interval)
+            delta = (current_coins - pre_coins) if pre_coins is not None else 0
+            # Also check how many open offers remain
+            open_remaining = 0
             try:
-                # Layer 1: Check offer statuses WITH completed offers included
-                current_offers = get_all_offers(include_completed=True, start=0, end=500)
-                if current_offers is None:
-                    print(f"   ⚠️ [Sage] Confirm poll: wallet returned None, retrying...")
-                    continue
-
-                # Categorize each target offer
-                explicitly_cancelled = set()
-                still_active = set()
-                in_progress_cancel = set()
-                vanished = set(trade_id_set)  # start assuming all vanished
-
-                for o in current_offers:
-                    tid = o.get("trade_id", "") or o.get("offer_id", "")
-                    if tid not in trade_id_set:
-                        continue
-
-                    status = str(o.get("status", "")).upper()
-                    vanished.discard(tid)  # found it, so it didn't vanish
-
-                    if status in CANCELLED_STATUSES:
-                        explicitly_cancelled.add(tid)
-                    elif status in IN_PROGRESS_CANCEL_STATUSES:
-                        in_progress_cancel.add(tid)
-                    elif status in ACTIVE_STATUSES:
-                        still_active.add(tid)
-                    elif status in TERMINAL_NON_CANCEL:
-                        # Offer was FILLED (or FAILED) before cancel completed —
-                        # treat as a definitive non-cancel terminal state.
-                        results[tid] = {"success": False,
-                                        "error": f"Offer reached terminal non-cancel status "
-                                                 f"({o.get('status')}) — likely filled before cancel",
-                                        "method": "terminal_non_cancel"}
-                        vanished.discard(tid)
-                    # Other unknown statuses = in-progress, keep waiting
-
-                # Layer 2: Spendable coin count and exact offer-lock state
-                post_cancel_coin_count = None
-                coin_delta = None
-                pending_count = None
-                still_locked = set()
-                lock_state_known = False
-                try:
-                    post_cancel_coin_count = _total_spendable()
-                    if post_cancel_coin_count is not None and pre_cancel_coin_count is not None:
-                        coin_delta = post_cancel_coin_count - pre_cancel_coin_count
-                except Exception:
-                    pass
-                try:
-                    pending_list = get_pending_transactions()
-                    if pending_list is not None:
-                        pending_count = len(pending_list)
-                except Exception:
-                    pass
-                try:
-                    owned_coin_map = _merged_owned_coins()
-                    if owned_coin_map is not None:
-                        still_locked = _get_still_locked_trade_ids(
-                            trade_id_set, owned_coin_map
-                        )
-                        lock_state_known = True
-                except Exception:
-                    still_locked = set()
-                    lock_state_known = False
-
-                elapsed = int(time.time() - start_time)
-                print(f"   🔄 [Sage] Confirm [{elapsed}s]: "
-                      f"cancelled={len(explicitly_cancelled)}, "
-                      f"active={len(still_active)}, "
-                      f"vanished={len(vanished)}, "
-                      f"locked={'?' if not lock_state_known else len(still_locked)}, "
-                      f"pending={'?' if pending_count is None else pending_count}, "
-                      f"coin_delta={'?' if coin_delta is None else f'+{coin_delta}'}")
-
-                # Success criteria: all offers either explicitly cancelled OR
-                # gone from list AND coins freed on-chain
-                if explicitly_cancelled == trade_id_set:
-                    # All offers are terminally cancelled by status — best case
-                    print(f"   ✅ [Sage] All {len(trade_ids)} cancellations "
-                          f"confirmed by status!")
-                    confirmed = True
-                    for tid in trade_ids:
-                        results[tid] = {"success": True, "method": "confirmed_by_status"}
-                    break
-
-                # When pending_count or coin_delta are None (RPC failed),
-                # we can't use them for confirmation — only accept if lock
-                # state alone is definitive.
-                _pending_ok = (pending_count is not None and pre_pending_count is not None
-                               and pending_count <= pre_pending_count)
-                _coins_ok = (coin_delta is not None and coin_delta > 0)
-                if len(still_active) == 0 and not in_progress_cancel and lock_state_known and len(still_locked) == 0 and (
-                    _pending_ok or _coins_ok
-                ):
-                    # Offers no longer active, no owned coins remain locked to
-                    # those offer_ids, and either the pending queue is back to
-                    # baseline or spendable coins have already increased.
-                    print(f"   ✅ [Sage] All {len(trade_ids)} cancellations "
-                          f"confirmed by unlock state "
-                          f"(pending={pending_count}, coin_delta=+{coin_delta})!")
-                    confirmed = True
-                    for tid in explicitly_cancelled:
-                        results[tid] = {"success": True, "method": "confirmed_by_status"}
-                    for tid in (trade_id_set - explicitly_cancelled):
-                        results[tid] = {
-                            "success": True,
-                            "method": "confirmed_by_unlock",
-                            "note": (
-                                "Offer no longer active, no owned coins remain locked "
-                                f"to that offer_id, pending={pending_count}, "
-                                f"coin_delta=+{coin_delta}"
-                            ),
-                        }
-                    break
-
-                if (len(still_active) == 0 and lock_state_known and len(still_locked) == 0
-                        and pending_count is not None and pre_pending_count is not None
-                        and pending_count > pre_pending_count):
-                    print(f"   ⏳ [Sage] Offers are unlocked but {pending_count} pending "
-                          f"txs remain (baseline {pre_pending_count}) — waiting...")
-                elif len(still_active) == 0 and lock_state_known and len(still_locked) > 0:
-                    print(f"   ⏳ [Sage] Offers vanished from the list but "
-                          f"{len(still_locked)} still have locked owned coins — waiting...")
-
-            except Exception as e:
-                print(f"   ⚠️ [Sage] Confirm poll error: {e}")
-
-        # --- Phase 2: RETRY any offers that are still ACTIVE (not yet in
-        # PENDING_CANCEL state, meaning Sage never submitted a cancel TX
-        # for them or the TX was dropped due to mempool conflict). ---
-        #
-        # F51 (2026-04-09): after the first polling window expires, re-query
-        # Sage one more time and try to resubmit cancels for anything still
-        # stuck in ACTIVE status. This handles the exact scenario the user
-        # hit: a large batch of cancels where some made it into blocks and
-        # others got rejected for mempool-conflict, leaving 20+ offers still
-        # showing ACTIVE after 90s. A re-submit with a fresh spend bundle
-        # almost always succeeds because the conflicting bundle has
-        # resolved (either confirmed or dropped) by now.
-        if not confirmed and retry_wait > 0 and not retry_attempted:
-            retry_attempted = True
-            try:
-                current_offers = get_all_offers(include_completed=True, start=0, end=500)
-                if current_offers is not None:
-                    stuck_active = []
-                    for o in current_offers:
+                open_offers = get_all_offers(include_completed=False, end=500)
+                if open_offers and isinstance(open_offers, list):
+                    target_set = set(trade_ids)
+                    for o in open_offers:
                         tid = o.get("trade_id", "") or o.get("offer_id", "")
-                        if tid not in trade_id_set:
-                            continue
-                        status = str(o.get("status", "")).upper()
-                        if status in ACTIVE_STATUSES:
-                            stuck_active.append(tid)
+                        if tid in target_set:
+                            raw_status = o.get("status")
+                            if _is_open_status(raw_status, o):
+                                open_remaining += 1
+            except Exception:
+                open_remaining = -1  # unknown
 
-                    if stuck_active:
-                        print(f"   🔁 [Sage] RETRY phase: {len(stuck_active)} offers "
-                              f"still ACTIVE after {int(time.time() - start_time)}s — "
-                              f"resubmitting cancels")
-                        for tid in stuck_active:
-                            try:
-                                retry_result = cancel_offer(
-                                    tid, secure, timeout=15, fee_mojos=resolved_fee
-                                )
-                                if retry_result and retry_result.get("success"):
-                                    print(f"      ✅ [Sage] Retry submit OK for {tid[:16]}...")
-                                else:
-                                    err = (retry_result or {}).get("error", "unknown")
-                                    print(f"      ⚠️ [Sage] Retry submit failed for "
-                                          f"{tid[:16]}...: {err}")
-                                time.sleep(0.3)
-                            except Exception as _retry_err:
-                                print(f"      ❌ [Sage] Retry cancel error for "
-                                      f"{tid[:16]}...: {_retry_err}")
+            print(f"   🔄 [{elapsed}s] spendable={current_coins} "
+                  f"(delta=+{delta}), open_remaining={open_remaining}")
 
-                        # Phase 3: second polling window for retried cancels
-                        retry_start = time.time()
-                        print(f"   🔄 [Sage] Post-retry polling for up to {retry_wait}s...")
-                        while (time.time() - retry_start) < retry_wait:
-                            time.sleep(poll_interval)
-                            try:
-                                current_offers = get_all_offers(
-                                    include_completed=True, start=0, end=500
-                                )
-                                if current_offers is None:
-                                    continue
-                                still_active_now = set()
-                                cancelled_now = set()
-                                in_progress_now = set()
-                                for o in current_offers:
-                                    tid = o.get("trade_id", "") or o.get("offer_id", "")
-                                    if tid not in trade_id_set:
-                                        continue
-                                    status = str(o.get("status", "")).upper()
-                                    if status in CANCELLED_STATUSES:
-                                        cancelled_now.add(tid)
-                                    elif status in IN_PROGRESS_CANCEL_STATUSES:
-                                        in_progress_now.add(tid)
-                                    elif status in ACTIVE_STATUSES:
-                                        still_active_now.add(tid)
-                                elapsed_retry = int(time.time() - retry_start)
-                                print(f"   🔄 [Sage] Retry confirm [{elapsed_retry}s]: "
-                                      f"cancelled={len(cancelled_now)}, "
-                                      f"in_progress={len(in_progress_now)}, "
-                                      f"still_active={len(still_active_now)}")
-                                if cancelled_now == trade_id_set:
-                                    print(f"   ✅ [Sage] All {len(trade_ids)} cancellations "
-                                          f"confirmed after retry!")
-                                    confirmed = True
-                                    for tid in trade_ids:
-                                        results[tid] = {
-                                            "success": True,
-                                            "method": "confirmed_by_status",
-                                            "note": "confirmed after retry phase",
-                                        }
-                                    break
-                            except Exception as _retry_poll_err:
-                                print(f"   ⚠️ [Sage] Retry poll error: {_retry_poll_err}")
-                    else:
-                        print(f"   [Sage] No retry needed — 0 offers stuck in ACTIVE "
-                              f"(remaining are in PENDING_CANCEL / mempool)")
-            except Exception as _retry_phase_err:
-                print(f"   ⚠️ [Sage] Retry phase error: {_retry_phase_err}")
-
-        # --- Final verdict ---
-        if not confirmed:
-            elapsed = int(time.time() - start_time)
-
-            # One final check with both layers
-            try:
-                current_offers = get_all_offers(include_completed=True, start=0, end=500)
-                post_coin_count = 0
-                final_pending_count = pre_pending_count
-                final_still_locked = set()
-                final_lock_state_known = False
-                try:
-                    post_coin_count = _total_spendable()
-                except Exception:
-                    post_coin_count = 0
-                # Guard against None — pre_cancel_coin_count/post_coin_count
-                # can be None if the spendable-count RPC failed.  Treat None
-                # as "unknown" and force a zero delta rather than crashing
-                # the cancel verification path.
-                if pre_cancel_coin_count is None or post_coin_count is None:
-                    final_coin_delta = 0
-                else:
-                    final_coin_delta = post_coin_count - pre_cancel_coin_count
-                try:
-                    final_pending_count = len(get_pending_transactions() or [])
-                except Exception:
-                    pass
-                try:
-                    owned_coin_map = _merged_owned_coins()
-                    if owned_coin_map is not None:
-                        final_still_locked = _get_still_locked_trade_ids(
-                            trade_id_set, owned_coin_map
-                        )
-                        final_lock_state_known = True
-                except Exception:
-                    final_still_locked = set()
-                    final_lock_state_known = False
-
-                if current_offers is not None:
-                    final_still_active = set()
-                    final_cancelled = set()
-                    final_in_progress_cancel = set()
-                    final_vanished = set(trade_id_set)
-
-                    for o in current_offers:
-                        tid = o.get("trade_id", "") or o.get("offer_id", "")
-                        if tid not in trade_id_set:
-                            continue
-                        final_vanished.discard(tid)
-                        status = str(o.get("status", "")).upper()
-                        if status in CANCELLED_STATUSES:
-                            final_cancelled.add(tid)
-                        elif status in IN_PROGRESS_CANCEL_STATUSES:
-                            final_in_progress_cancel.add(tid)
-                        elif status in ACTIVE_STATUSES:
-                            final_still_active.add(tid)
-
-                    # Mark results based on final state.
-                    #
-                    # IMPORTANT: After the fast-path window expires, "still in
-                    # the mempool" is the EXPECTED case for cancels submitted
-                    # in the last few seconds. Treating it as a failure here
-                    # was the root cause of the requote storm cascade — it
-                    # made the bot abort requote rounds, leave new+old offers
-                    # both live, and starve coin pre-selection. We now return
-                    # success="submitted_pending_confirm" for in-flight cancels
-                    # so the requote loop can move on; retry_failed_cancels()
-                    # plus the next wallet sync will reconcile any cancels
-                    # that genuinely fail to confirm.
-                    for tid in final_cancelled:
-                        results[tid] = {"success": True, "method": "confirmed_by_status"}
-                    for tid in final_in_progress_cancel:
-                        results[tid] = {
-                            "success": True,
-                            "method": "submitted_pending_confirm",
-                            "note": "Cancel TX in mempool (PENDING_CANCEL) — "
-                                    "will reconcile on next wallet sync",
-                        }
-                        print(f"   📨 [Sage] PENDING CANCEL for {tid[:16]}... — "
-                              f"submitted, awaiting on-chain confirm")
-                    # Heuristic: how many in-flight cancel TXs can we
-                    # account for via the mempool/coin signals? If the
-                    # pending queue rose, every extra pending TX is almost
-                    # certainly one of OUR cancels (the bot is the only
-                    # writer to the wallet during a batch cancel). Same
-                    # for coins: every coin that disappeared from spendable
-                    # is locked into a pending cancel TX.
-                    _pending_delta = (
-                        (final_pending_count - pre_pending_count)
-                        if (final_pending_count is not None
-                            and pre_pending_count is not None)
-                        else 0
-                    )
-                    _coins_locked_into_cancels = (
-                        max(0, -final_coin_delta)
-                        if final_coin_delta is not None
-                        else 0
-                    )
-                    _inflight_signal = max(_pending_delta, _coins_locked_into_cancels)
-
-                    for tid in final_still_active:
-                        # STILL_ACTIVE by status doesn't necessarily mean the
-                        # cancel failed. Sage routinely keeps offers in their
-                        # pre-cancel status until the cancel TX confirms on-
-                        # chain. Two cases:
-                        #
-                        # (A) The wallet accepted our cancel RPC (tid is in
-                        #     submitted_tids) AND we have evidence of in-flight
-                        #     cancel TXs (pending queue grew or coins moved
-                        #     into pending state) → treat as in-flight, NOT
-                        #     a failure. retry_failed_cancels() and the next
-                        #     wallet sync will reconcile.
-                        #
-                        # (B) Otherwise → genuine failure (RPC issue, malformed
-                        #     offer, Sage didn't pick it up at all).
-                        if tid in submitted_tids and _inflight_signal > 0:
-                            results[tid] = {
-                                "success": True,
-                                "method": "submitted_pending_confirm",
-                                "note": ("Status still ACTIVE but cancel TX in "
-                                         f"mempool (pending_delta={_pending_delta}, "
-                                         f"coins_locked_into_cancels="
-                                         f"{_coins_locked_into_cancels}) — Sage "
-                                         "has not yet flipped status to "
-                                         "PENDING_CANCEL; will reconcile on "
-                                         "next wallet sync"),
-                            }
-                            print(f"   📨 [Sage] PENDING cancel for {tid[:16]}... — "
-                                  f"submit OK + cancel TX in flight, awaiting "
-                                  f"on-chain confirm")
-                            # Decrement the in-flight budget so we don't
-                            # double-count it for the next still_active tid.
-                            _inflight_signal -= 1
-                        else:
-                            results[tid] = {"success": False,
-                                            "error": "STILL ACTIVE after cancel — "
-                                                     "on-chain cancel FAILED",
-                                            "method": "on_chain_verification"}
-                            print(f"   ❌ [Sage] CANCEL FAILED for {tid[:16]}... — "
-                                  f"offer is STILL ACTIVE on-chain!")
-                    for tid in final_vanished:
-                        if final_lock_state_known and tid not in final_still_locked and (
-                            final_pending_count <= pre_pending_count or final_coin_delta > 0
-                        ):
-                            results[tid] = {"success": True,
-                                            "method": "confirmed_by_unlock",
-                                            "note": ("Vanished, no owned coins remain locked, "
-                                                     f"pending={final_pending_count}, "
-                                                     f"coin_delta=+{final_coin_delta}")}
-                        else:
-                            # Vanished from active list but lock/pending state
-                            # is uncertain. Most likely this is a cancel TX in
-                            # the mempool — treat as submitted-pending-confirm
-                            # and let the next wallet sync reconcile.
-                            results[tid] = {
-                                "success": True,
-                                "method": "submitted_pending_confirm",
-                                "note": ("Offer vanished from active list; "
-                                         f"locked={tid in final_still_locked}, "
-                                         f"pending={final_pending_count}, "
-                                         f"coin_delta=+{final_coin_delta} — "
-                                         "treating as in-flight cancel"),
-                            }
-                            print(f"   📨 [Sage] PENDING cancel for {tid[:16]}... — "
-                                  f"vanished, locked={tid in final_still_locked}, "
-                                  f"pending={final_pending_count}, "
-                                  f"coin_delta=+{final_coin_delta}")
-
-                    failed_count = len(final_still_active)
-                    success_count = (len(final_cancelled) + len(final_in_progress_cancel)
-                                     + sum(1 for tid in final_vanished
-                                           if results.get(tid, {}).get("success")))
-                    print(f"   ⚠️ [Sage] Cancel verification after {elapsed}s: "
-                          f"{success_count} confirmed, {failed_count} FAILED "
-                          f"(locked={'?' if not final_lock_state_known else len(final_still_locked)}, "
-                          f"pending={final_pending_count}, "
-                          f"coin_delta=+{final_coin_delta})")
-            except Exception as e:
-                print(f"   ⚠️ [Sage] Final verification error: {e}")
-                # If we can't verify, mark RPC-failed ones as failed
+            # Success: no more open offers from our batch
+            if open_remaining == 0:
+                print(f"   ✅ [Sage] All offers cancelled — coins returned "
+                      f"(spendable={current_coins}, delta=+{delta})")
+                confirmed = True
                 for tid in trade_ids:
-                    if not results.get(tid, {}).get("success"):
-                        results[tid] = {"success": False,
-                                        "error": "Could not verify on-chain",
-                                        "method": "verification_failed"}
+                    if tid not in results or not results[tid].get("success"):
+                        results[tid] = {"success": True, "method": "confirmed_coins_returned"}
+                break
+
+            # Secondary: coin count jumped significantly even if status is lagging
+            if pre_coins is not None and delta >= num_offers and open_remaining <= 0:
+                print(f"   ✅ [Sage] Coin count confirms cancels "
+                      f"(+{delta} coins, expected ~{num_offers})")
+                confirmed = True
+                for tid in trade_ids:
+                    results[tid] = {"success": True, "method": "confirmed_by_coin_delta"}
+                break
+
+            last_count = current_coins
+
+        except Exception as e:
+            print(f"   ⚠️ [{elapsed}s] Poll error: {e}")
+
+    # ── 5. Final result ──
+    elapsed = int(time.time() - start_time)
+    if not confirmed:
+        # Check one last time
+        try:
+            final_coins = _total_spendable()
+            final_delta = (final_coins - pre_coins) if (final_coins and pre_coins) else 0
+            print(f"   ⏱️ [Sage] Timeout after {elapsed}s — spendable={final_coins}, "
+                  f"delta=+{final_delta}")
+            # Even on timeout, if the RPC was accepted treat as "submitted"
+            # — the cancel TX is likely in the mempool and will confirm soon.
+            for tid in trade_ids:
+                if tid not in results:
+                    results[tid] = {"success": True,
+                                    "method": "submitted_pending_confirm",
+                                    "note": f"Cancel submitted, awaiting on-chain confirm "
+                                            f"(timed out after {elapsed}s)"}
+        except Exception:
+            for tid in trade_ids:
+                if tid not in results:
+                    results[tid] = {"success": False, "error": f"Timed out after {elapsed}s"}
+    else:
+        print(f"   ✅ [Sage] Cancel batch complete in {elapsed}s")
 
     return results
 

@@ -256,6 +256,19 @@ def validate_config(cfg) -> ValidationReport:
         if sniper_size <= Decimal("0"):
             warn("SNIPER_SIZE_XCH", f"SNIPER_ENABLED=True but SNIPER_SIZE_XCH={sniper_size}")
 
+    # ---- Fee coin must be smaller than sniper coin ----
+    # Sage auto-picks the smallest available coin for fees.  If fee coins
+    # are the same size or bigger than sniper coins, Sage may grab a sniper
+    # coin for a fee — burning a more expensive coin and leaving fees short.
+    fee_coin_size = getattr(cfg, "FEE_COIN_SIZE_XCH", Decimal("0"))
+    sniper_size_check = getattr(cfg, "SNIPER_SIZE_XCH", Decimal("0"))
+    if (fee_coin_size > Decimal("0") and sniper_size_check > Decimal("0")
+            and fee_coin_size >= sniper_size_check):
+        warn("FEE_COIN_SIZE_XCH",
+             f"FEE_COIN_SIZE_XCH ({fee_coin_size}) must be smaller than "
+             f"SNIPER_SIZE_XCH ({sniper_size_check}) — Sage auto-picks the "
+             f"smallest coin for fees, so fee coins must be the smallest tier")
+
     # ---- Ladder parallelism ----
     parallelism = getattr(cfg, "LADDER_CREATE_PARALLELISM", 5)
     if parallelism > 20:

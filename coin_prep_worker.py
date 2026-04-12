@@ -640,8 +640,9 @@ class CoinPrepWorker:
         Snapshot the wallet and designate ALL current coins.
 
         Used after splits when we know every coin in this wallet belongs
-        to a specific role. For the reserve coin, it detects the largest
-        coin that doesn't match any tier size and tags it as reserve.
+        to a specific role. For the topup pool coin (the large leftover
+        after tier splits), it detects the largest non-tier coin and tags
+        it as the topup source (internally 'reserve').
         """
         if not self._db_ready:
             return
@@ -675,8 +676,8 @@ class CoinPrepWorker:
 
         The coins that existed before but vanished are marked gone.
         The coins that are new get designated with their tier.
-        The leftover (reserve/change) coin is the one NOT matching
-        tier size — we tag it as reserve.
+        The leftover (topup pool / change) coin is the one NOT matching
+        any tier size — we tag it as the topup pool source.
         """
         if not self._db_ready:
             return
@@ -710,13 +711,13 @@ class CoinPrepWorker:
                 upsert_coin(cid, wallet_type, amount)
 
                 # If amount matches tier size (exact) → tier_spare
-                # If amount doesn't match → it's likely the reserve/change
+                # If amount doesn't match → it's the topup pool change coin
                 if expected_mojos > 0 and amount == expected_mojos:
                     set_coin_designation(cid, "tier_spare",
                                         assigned_tier=tier_name)
                     tier_count += 1
                 else:
-                    # Could be reserve change — track the largest one
+                    # Likely the topup pool change coin — track the largest one
                     if reserve_coin is None or amount > reserve_coin[1]:
                         reserve_coin = (cid, amount)
             except Exception as e:
@@ -725,20 +726,22 @@ class CoinPrepWorker:
         if tier_count > 0:
             self.log(f"   DB: {tier_count} new {wallet_type} coins → tier_spare/{tier_name}")
 
-        # Designate the largest non-tier coin as reserve
+        # Designate the largest non-tier coin as the topup pool source
+        # (internally stored as 'reserve' in the DB; displayed as 'topup pool' in logs)
         if reserve_coin:
             try:
                 designate_reserve(reserve_coin[0], wallet_type, reserve_coin[1])
-                self.log(f"   DB: reserve {wallet_type} → {reserve_coin[0][:16]}... "
+                self.log(f"   DB: topup pool coin {wallet_type} → {reserve_coin[0][:16]}... "
                          f"({reserve_coin[1]:,} mojos)")
             except Exception as e:
-                self.log(f"   DB: reserve designation failed: {e}")
+                self.log(f"   DB: topup pool designation failed: {e}")
 
     def _designate_reserve_after_consolidation(self, wallet_id: int,
                                                 wallet_type: str):
         """
         After consolidation, there's exactly 1 coin per wallet.
-        Tag it as reserve — it'll get consumed by pool creation next.
+        Tag it as the topup pool source (internally 'reserve') — it will
+        be split into trading coins by the topup worker during live trading.
         """
         if not self._db_ready:
             return
@@ -754,10 +757,10 @@ class CoinPrepWorker:
                 try:
                     upsert_coin(coin_id, wallet_type, amount)
                     designate_reserve(coin_id, wallet_type, amount)
-                    self.log(f"   DB: post-consolidation {wallet_type} reserve → "
+                    self.log(f"   DB: post-consolidation {wallet_type} topup pool coin → "
                              f"{coin_id[:16]}... ({amount:,} mojos)")
                 except Exception as e:
-                    self.log(f"   DB: consolidation designation failed: {e}")
+                    self.log(f"   DB: topup pool designation failed: {e}")
 
     def _build_tier_amount_plan(self, wallet_type: str):
         """Build exact per-amount tier expectations for the current prep mode."""

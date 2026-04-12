@@ -149,7 +149,11 @@ class DexieManager:
                 else:
                     failed += 1
                     self._total_failed += 1
-                    # Re-queue for next cycle if under retry limit
+                    # Permanent failures (HTTP 4xx) — don't requeue, the
+                    # offer blob is invalid and will never succeed.
+                    if result.get("permanent"):
+                        return
+                    # Re-queue transient failures for next cycle if under retry limit
                     retries = item.get("_dexie_retries", 0)
                     if retries < _MAX_DEXIE_RETRIES:
                         item["_dexie_retries"] = retries + 1
@@ -232,6 +236,7 @@ class DexieManager:
         }
 
         last_err = None
+        _permanent = False  # Set True for HTTP 4xx — don't requeue
         for attempt in range(cfg.DEXIE_POST_RETRIES + 1):
             try:
                 r = requests.post(
@@ -291,6 +296,14 @@ class DexieManager:
                               f"Dexie returned 429 — backing off {retry_after}s")
                     break  # Don't burn remaining retries
 
+                # 4xx (except 429) — permanent client error, don't retry.
+                # "Invalid Offer" (400) means the offer blob references spent
+                # coins or is otherwise un-takeable.  Retrying won't help.
+                if 400 <= r.status_code < 500:
+                    last_err = f"HTTP {r.status_code}: {r.text[:200]}"
+                    _permanent = True
+                    break
+
                 last_err = f"HTTP {r.status_code}: {r.text[:200]}"
 
             except requests.Timeout:
@@ -304,9 +317,11 @@ class DexieManager:
             if attempt < cfg.DEXIE_POST_RETRIES:
                 time.sleep(cfg.DEXIE_POST_RETRY_SLEEP)
 
-        log_event("error", "dexie_post_failed",
-                  f"Failed to post to Dexie after {cfg.DEXIE_POST_RETRIES + 1} attempts: {last_err}")
-        return {"success": False, "error": last_err}
+        _level = "warning" if _permanent else "error"
+        _retries_text = "1 attempt (permanent 4xx)" if _permanent else f"{cfg.DEXIE_POST_RETRIES + 1} attempts"
+        log_event(_level, "dexie_post_failed",
+                  f"Failed to post to Dexie after {_retries_text}: {last_err}")
+        return {"success": False, "error": last_err, "permanent": _permanent}
 
     # -------------------------------------------------------------------
     # Repost active offers (recovery after outage)
