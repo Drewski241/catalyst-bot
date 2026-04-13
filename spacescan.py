@@ -283,6 +283,15 @@ def is_coin_spent(coin_id: str) -> Optional[Dict]:
         "amount": coin.get("amount", coin.get("amount_value", "")),
         "amount_mojo": coin.get("amount_mojo", ""),
         "sender_address": sender_addr,
+        # offer_info contains the canonical offer status directly from Spacescan.
+        # More reliable than receiver_address for CAT coins where the settlement
+        # puzzle always returns sender==receiver==maker (our own address), making
+        # it impossible to distinguish a fill from a cancel via receiver alone.
+        "offer_info": coin.get("offer_info") or [],
+        # child_coins are the UTXOs created when this coin was spent.
+        # For offer settlement, child coins reveal the taker's address even
+        # when the top-level receiver field is misleading.
+        "child_coins": data.get("coins") or [],
     }
 
 
@@ -341,11 +350,73 @@ def verify_fill(coin_id: str, our_address: str,
                   f"Phantom fill prevented!")
         return False
 
-    # Coin IS spent — check if it went to us (cancel) or external (fill)
-    receiver = result["receiver_address"]
+    # -----------------------------------------------------------------------
+    # Priority 1: Use Spacescan's offer_info — the most reliable signal.
+    #
+    # For CAT offer coins, the top-level `receiver` field always shows the
+    # MAKER's own address (the settlement puzzle is "owned" by the maker),
+    # making it impossible to distinguish a fill from a cancel via receiver
+    # alone. offer_info is populated directly from the spend bundle and
+    # unambiguously tells us whether the offer was completed or cancelled.
+    #
+    # Observed status codes (cross-referenced with Dexie):
+    #   4 = completed / filled   → return True
+    #   3 = cancelled / expired  → return False
+    #   1 = active / open        → coin may still be live; fall through
+    # -----------------------------------------------------------------------
+    offer_info = result.get("offer_info") or []
+    for oi in offer_info:
+        oi_status = oi.get("offer_status")
+        oi_hash = str(oi.get("hash_base_58") or "")[:16]
+        if oi_status == 4:
+            log_event("success", "spacescan_fill_via_offer_info",
+                      f"Coin {coin_id[:16]}... offer_info reports status=4 "
+                      f"(COMPLETED, offer {oi_hash}...) — confirmed fill.")
+            return True
+        elif oi_status == 3:
+            log_event("info", "spacescan_cancel_via_offer_info",
+                      f"Coin {coin_id[:16]}... offer_info reports status=3 "
+                      f"(CANCELLED, offer {oi_hash}...) — not a fill.")
+            return False
+        # status=1 (active) or unknown: fall through to child-coin / receiver logic
+
+    # -----------------------------------------------------------------------
+    # Priority 2: Child coin analysis.
+    #
+    # When the offer coin is spent in a settlement, the child coins show
+    # the actual destinations. If ANY child coin went to an external
+    # (non-wallet) address, the offer was genuinely filled.
+    #
+    # This catches cases where offer_info is absent (e.g. non-offer spends)
+    # and handles partial fills correctly (some CAT to taker + change to us).
+    # -----------------------------------------------------------------------
     known_wallet_addresses = set(explicit_addresses or set())
     if our_address:
         known_wallet_addresses.add(our_address)
+
+    child_coins = result.get("child_coins") or []
+    child_coin_entries = [c for c in child_coins if c.get("cointype") == "child"]
+    if child_coin_entries:
+        for child in child_coin_entries:
+            owner = str(child.get("owner_address") or "").strip()
+            if owner and not is_known_wallet_address(owner, known_wallet_addresses):
+                log_event("success", "spacescan_fill_via_child_coin",
+                          f"Coin {coin_id[:16]}... child coin went to external "
+                          f"address {owner[:16]}... — confirmed fill.")
+                return True
+        # All children went to our own addresses = self-spend (cancel or internal tx)
+        log_event("info", "spacescan_cancel_via_child_coins",
+                  f"Coin {coin_id[:16]}... all {len(child_coin_entries)} child "
+                  f"coin(s) owned by our wallet — not a fill.")
+        return False
+
+    # -----------------------------------------------------------------------
+    # Priority 3: Fall back to top-level receiver field.
+    #
+    # Reliable for standard XCH coins but NOT for CAT offer coins.
+    # Only reached when offer_info and child coins are both unavailable.
+    # -----------------------------------------------------------------------
+    receiver = result["receiver_address"]
 
     if receiver and is_known_wallet_address(receiver, known_wallet_addresses):
         log_event("info", "spacescan_self_spend",
@@ -356,13 +427,14 @@ def verify_fill(coin_id: str, our_address: str,
     if (getattr(cfg, "WALLET_TYPE", "") == "sage" and
             not getattr(cfg, "SAGE_SET_CHANGE_ADDRESS", False)):
         log_event("warning", "spacescan_fill_ambiguous",
-                  f"Coin {coin_id[:16]}... spent to {receiver[:16]}..., but "
-                  f"Sage change-address pinning is off. Treating as unverified.")
+                  f"Coin {coin_id[:16]}... spent to {receiver[:16] if receiver else 'unknown'}..., "
+                  f"but Sage change-address pinning is off. Treating as unverified.")
         return None
 
     # Coin spent to external address = CONFIRMED FILL
     log_event("success", "spacescan_fill_confirmed",
-              f"CONFIRMED: Coin {coin_id[:16]}... spent to {receiver[:16]}... "
+              f"CONFIRMED: Coin {coin_id[:16]}... spent to "
+              f"{receiver[:16] if receiver else 'unknown'}... "
               f"in block {result['spent_block']}. Real fill!")
     return True
 
