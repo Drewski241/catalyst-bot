@@ -665,10 +665,56 @@ class FillTracker:
                               f"{trade_id[:16]}... (batch settlement via own address). "
                               f"Recording fill.")
                     return "filled"
+
+                # Sage also non-confirmatory — try Dexie as a final tiebreaker.
+                # Dexie independently verifies the on-chain spend bundle;
+                # its status=4 is authoritative even when Spacescan + Sage disagree.
+                try:
+                    _dexie_id_false = (db_offer or {}).get("dexie_id")
+                    if _dexie_id_false:
+                        from dexie_manager import get_offer_detail
+                        _detail_f = get_offer_detail(_dexie_id_false, cache_ttl_secs=0, timeout=5)
+                        if _detail_f and isinstance(_detail_f, dict):
+                            _dexie_trade_f = str(_detail_f.get("trade_id") or "").lower().replace("0x", "")
+                            _our_trade_f = str(trade_id).lower().replace("0x", "")
+                            _match_f = (_dexie_trade_f == _our_trade_f or not _dexie_trade_f)
+                            if _detail_f.get("status") == 4 and _match_f:
+                                log_event("success", "fill_dexie_override_false_path",
+                                          f"Spacescan self-spend AND Sage non-confirm BUT "
+                                          f"Dexie status=4 confirms FILL for "
+                                          f"{trade_id[:16]}... — recording fill.")
+                                return "filled"
+                except Exception as _dexie_err_f:
+                    log_event("debug", "fill_dexie_fallback_failed_false_path",
+                              f"Dexie fallback (false path) failed for "
+                              f"{trade_id[:16]}...: {_dexie_err_f}")
+
                 log_event("info", "fill_rejected_sage_checked",
-                          f"Spacescan self-spend AND Sage does NOT confirm fill for "
+                          f"Spacescan self-spend AND Sage+Dexie do NOT confirm fill for "
                           f"{trade_id[:16]}... — rejected (likely a cancel).")
                 return "rejected"
+
+            # SAGE_SET_CHANGE_ADDRESS not active — Spacescan false-positive is
+            # still possible (e.g. CAT change back to own address in offer settlement).
+            # Give Dexie a chance to override before hard-rejecting.
+            try:
+                _dexie_id_rej = (db_offer or {}).get("dexie_id")
+                if _dexie_id_rej:
+                    from dexie_manager import get_offer_detail
+                    _detail_r = get_offer_detail(_dexie_id_rej, cache_ttl_secs=0, timeout=5)
+                    if _detail_r and isinstance(_detail_r, dict):
+                        _dexie_trade_r = str(_detail_r.get("trade_id") or "").lower().replace("0x", "")
+                        _our_trade_r = str(trade_id).lower().replace("0x", "")
+                        _match_r = (_dexie_trade_r == _our_trade_r or not _dexie_trade_r)
+                        if _detail_r.get("status") == 4 and _match_r:
+                            log_event("success", "fill_dexie_override_rejected_path",
+                                      f"Spacescan REJECTED but Dexie status=4 confirms "
+                                      f"FILL for {trade_id[:16]}... — recording fill.")
+                            return "filled"
+            except Exception as _dexie_err_r:
+                log_event("debug", "fill_dexie_fallback_failed_rejected_path",
+                          f"Dexie fallback (rejected path) failed for "
+                          f"{trade_id[:16]}...: {_dexie_err_r}")
 
             log_event("info", "fill_rejected",
                       f"Spacescan REJECTED {side} fill for {trade_id[:16]}... "
@@ -755,7 +801,11 @@ class FillTracker:
                 from wallet_sage import rpc as _sage_rpc_direct
                 _single = _sage_rpc_direct("get_offer", {"offer_id": trade_id}, timeout=8)
                 if _single and isinstance(_single, dict):
-                    status_val = _single.get("status")
+                    # Sage wraps offer details inside a "trade_record" key.
+                    # Check both top-level (legacy) and nested (current) positions.
+                    status_val = _single.get("status") or (
+                        (_single.get("trade_record") or {}).get("status")
+                    )
                     CONFIRMED_STATUSES = {"confirmed", "completed", "success", "taken"}
                     CONFIRMED_INT = {4}  # Chia TradeStatus: 3=CANCELLED, 4=CONFIRMED
                     if isinstance(status_val, int) and status_val in CONFIRMED_INT:

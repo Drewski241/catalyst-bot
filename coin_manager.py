@@ -4369,6 +4369,70 @@ class CoinManager:
                           f"{len(small_coins)} small {name} coins total {total_str} "
                           f"(need at least {need_str} to consolidate)")
 
+        # ---- Strategy 3: Reconstitute topup pool from excess tier_spare coins ----
+        #
+        # Triggered when: (a) no reserve / pool coin exists, and (b) not enough
+        # small coins to consolidate via Strategy 2.
+        #
+        # Root cause: the topup pool coin (a large "reserve" coin) was consumed to
+        # split coins for a tier (e.g. extreme), leaving no funding source for future
+        # splits. Coins that return from filled / cancelled / expired offers land in
+        # tier buckets at exactly trading-size — too large for Strategy 2's "small"
+        # threshold and too small to be classified as "reserve" on their own.
+        #
+        # Fix: collect all tier_spare coins across every tier bucket, keep a small
+        # safety buffer (POOL_REBUILD_KEEP_PER_TIER) so existing offers can settle,
+        # then consolidate the remainder into one large coin. That coin will be
+        # classified as "reserve" on the next inventory scan and Strategy 1 can
+        # split it for whichever tier is low.
+        _POOL_REBUILD_KEEP = 1   # spare coins to leave in each tier bucket
+        _POOL_REBUILD_MIN  = 2   # minimum excess coins required to attempt rebuild
+
+        _pool_candidates = []
+        for _tname in ["inner", "mid", "outer", "extreme", "sniper"]:
+            _bucket = inventory.get(_tname, [])
+            if not _bucket:
+                continue
+            # Keep the safety buffer; collect the remainder for the new pool
+            _take = max(0, len(_bucket) - _POOL_REBUILD_KEEP)
+            _pool_candidates.extend(_bucket[:_take])
+
+        if len(_pool_candidates) >= _POOL_REBUILD_MIN:
+            _pool_total = sum(_coin_amount(r) for r in _pool_candidates)
+            # Only worth consolidating if the result would be at least 2× a
+            # trading coin (otherwise it can't fund even a single split next cycle)
+            if _pool_total >= trading_size_mojos * 2:
+                if is_cat:
+                    _pool_str = _format_amount_cat(_pool_total, cfg.CAT_DECIMALS)
+                else:
+                    _pool_str = _format_amount_xch(_pool_total)
+
+                log_event("info", f"topup_{name.lower()}_pool_rebuild",
+                          f"No {name} reserve coin — rebuilding topup pool from "
+                          f"{len(_pool_candidates)} excess spare coins "
+                          f"({_pool_str} total). Pool will be available after "
+                          f"on-chain confirmation.")
+
+                _rebuild_ok = self._consolidate_coins(name, wallet_id, _pool_total, is_cat)
+                if _rebuild_ok:
+                    log_event("success", f"topup_{name.lower()}_pool_rebuild_ok",
+                              f"{name} topup pool rebuild submitted — new reserve coin "
+                              f"will be classified and split on the next topup cycle.")
+                    return True
+                else:
+                    log_event("warning", f"topup_{name.lower()}_pool_rebuild_fail",
+                              f"{name} topup pool rebuild consolidation failed")
+            else:
+                if is_cat:
+                    _pool_str = _format_amount_cat(_pool_total, cfg.CAT_DECIMALS)
+                    _need_str = _format_amount_cat(trading_size_mojos * 2, cfg.CAT_DECIMALS)
+                else:
+                    _pool_str = _format_amount_xch(_pool_total)
+                    _need_str = _format_amount_xch(trading_size_mojos * 2)
+                log_event("info", f"topup_{name.lower()}_pool_rebuild_insufficient",
+                          f"{len(_pool_candidates)} candidate coins total {_pool_str} "
+                          f"(need at least {_need_str} to rebuild pool)")
+
         log_event("info", f"topup_{name.lower()}_none",
                   f"No {name} reserve or consolidatable coins available")
         return False
