@@ -33,8 +33,16 @@ import subprocess
 # Forces UTF-8 on stdout/stderr (including sys.__stdout__/__stderr__ used by
 # super_log's slog() function).
 # ---------------------------------------------------------------------------
+_under_pythonw = (
+    sys.platform == "win32"
+    and os.path.basename(sys.executable or "").lower() == "pythonw.exe"
+)
+
 if sys.platform == "win32":
-    # stdout and __stdout__ share a buffer, so detach old wrapper first
+    # stdout and __stdout__ share a buffer, so detach old wrapper first.
+    # Under pythonw.exe both are None — redirect to a startup log so that
+    # print() calls don't crash and startup errors are captured on disk.
+    _pythonw_log = None  # opened lazily below
     for _pair in [("stdout", "__stdout__"), ("stderr", "__stderr__")]:
         _st = getattr(sys, _pair[0], None)
         if _st is not None and hasattr(_st, "buffer"):
@@ -45,6 +53,23 @@ if sys.platform == "win32":
             )
             setattr(sys, _pair[0], _wrapped)
             setattr(sys, _pair[1], _wrapped)
+        elif _st is None and _under_pythonw:
+            # pythonw.exe — open a startup log file so print() works
+            if _pythonw_log is None:
+                try:
+                    _log_dir = os.path.join(
+                        os.environ.get("APPDATA", os.path.expanduser("~")),
+                        "ChiaMarketMaker",
+                    )
+                    os.makedirs(_log_dir, exist_ok=True)
+                    _pythonw_log = open(
+                        os.path.join(_log_dir, "startup.log"),
+                        "w", encoding="utf-8", errors="replace",
+                    )
+                except Exception:
+                    _pythonw_log = open(os.devnull, "w", encoding="utf-8")
+            setattr(sys, _pair[0], _pythonw_log)
+            setattr(sys, _pair[1], _pythonw_log)
 
 # ---------------------------------------------------------------------------
 # Early path setup â€” make sure we can import everything from our directory
@@ -82,7 +107,10 @@ WINDOW_WIDTH = 1600
 WINDOW_HEIGHT = 1000
 WINDOW_MIN_WIDTH = 1000
 WINDOW_MIN_HEIGHT = 700
-_CONSOLE_HIDDEN = False
+# True when the app is running without a visible console (pythonw.exe or
+# after _hide_windows_console() is called).  The crash handler uses this to
+# decide whether to show a native dialog instead of printing to the terminal.
+_CONSOLE_HIDDEN = _under_pythonw
 _RESPAWN_ENV = "BOT_GUI_RESPAWNED_UNDER_PYTHONW"
 
 # Window geometry persistence — lives in the user data directory so
@@ -442,11 +470,20 @@ def run_desktop_mode(dev_mode: bool = False):
     print(f"\n  {APP_NAME} v{APP_VERSION}")
     print(f"  {'=' * 40}")
 
-    # Check port
+    # Check port — if our app is already running, open it in the browser
+    # instead of showing an error and quitting.
     if not check_port_free(FLASK_PORT):
-        print(f"\n  Port {FLASK_PORT} is already in use!")
-        print(f"  Close the other instance first.")
-        sys.exit(1)
+        _app_url = f"http://{FLASK_HOST}:{FLASK_PORT}/"
+        print(f"\n  {APP_NAME} is already running — opening {_app_url}")
+        try:
+            import webbrowser
+            webbrowser.open(_app_url)
+        except Exception:
+            pass
+        if _CONSOLE_HIDDEN or _under_pythonw:
+            # Only show dialog if browser open fails silently (edge case)
+            pass
+        sys.exit(0)
 
     # Start Flask in background thread
     print(f"  Starting Flask server on port {FLASK_PORT}...")

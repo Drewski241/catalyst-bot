@@ -226,40 +226,41 @@ class OfferManager:
         return sum(1 for k in self._suspended_slots if k.startswith(prefix))
 
     def unsuspend_slots_if_coins_available(self, side: str):
-        """Unsuspend slots for a side if spare coins have become available.
+        """Unsuspend slots for a side if spare tier coins have become available.
 
         Called by bot_loop at the start of each cycle to check whether
         previously exhausted coin pools have been replenished.
+
+        Uses the DB coin tracking (which knows tier designations) rather than
+        the raw wallet RPC to avoid counting fee/sniper/reserve coins that
+        cannot be used for offer creation — those would cause an endless
+        suspend → unsuspend → fail cycle.
         """
         prefix = f"{side}_"
         suspended_for_side = [k for k in self._suspended_slots if k.startswith(prefix)]
         if not suspended_for_side:
             return
 
-        # Check if any coins are now available
-        wallet_id = cfg.CAT_WALLET_ID if side == "sell" else cfg.WALLET_ID_XCH
+        wallet_type = "cat" if side == "sell" else "xch"
         try:
-            coins_resp = get_exact_spendable_coins_rpc(wallet_id)
-            if not coins_resp:
-                return
-            coins_list = (coins_resp.get("confirmed_records",
-                          coins_resp.get("coin_records",
-                          coins_resp.get("records", []))))
-            spare_count = len(coins_list) if coins_list else 0
-            if get_wallet_type() != "sage":
-                try:
-                    open_count = len(get_open_offers(side=side,
-                                                     cat_asset_id=cfg.CAT_ASSET_ID))
-                    spare_count = max(0, spare_count - open_count)
-                except Exception:
-                    pass
+            # Count only tier-designated trading coins (excludes fee, sniper,
+            # reserve, dust and unknown coins which cannot fill offer slots).
+            from database import get_free_coins
+            db_free = get_free_coins(wallet_type)
+            _TRADING_DESIGS = {"tier_spare", "tier_active"}
+            _SKIP_TIERS = {"none", "sniper", "reserve", "fee"}
+            spare_count = sum(
+                1 for c in db_free
+                if c.get("designation", "") in _TRADING_DESIGS
+                and c.get("assigned_tier", "none") not in _SKIP_TIERS
+            )
             if spare_count > 0:
                 for key in suspended_for_side:
                     self._suspended_slots.discard(key)
                     self._slot_fail_counts.pop(key, None)
                 log_event("info", "slots_unsuspended",
                           f"Unsuspended {len(suspended_for_side)} {side} slots — "
-                          f"{spare_count} spare coins now available")
+                          f"{spare_count} spare tier coins now available")
         except Exception as e:
             log_event("debug", "slot_unsuspend_check_failed",
                       f"Could not check coins for slot unsuspension: {e}")
@@ -1379,11 +1380,7 @@ class OfferManager:
                 try:
                     buffer_ok = self.amm_monitor.check_amm_buffer(price, side)
                     if buffer_ok is False:
-                        continue  # Inside AMM arb band
-                    if buffer_ok is None:
-                        log_event("warning", "amm_buffer_unknown",
-                                  f"Skipping {side} slot: AMM buffer data unavailable")
-                        continue  # Fail closed — no data
+                        continue  # Inside AMM arb band — skip slot
                 except Exception:
                     log_event("warning", "amm_buffer_error",
                               f"AMM buffer check failed for {side} — skipping slot")
@@ -2080,32 +2077,45 @@ class OfferManager:
             }
 
         # ── Count spare coins ──
-        wallet_id = (cfg.CAT_WALLET_ID if side == "sell"
-                     else cfg.WALLET_ID_XCH)
+        # Use DB coin tracking (which knows tier designations) rather than the
+        # raw wallet RPC so that fee/sniper/reserve coins are not counted as
+        # usable — they fail preselection and produce wasted RPC round-trips.
+        wallet_type_str = "cat" if side == "sell" else "xch"
         spare_count = 0
         try:
-            _resp = get_exact_spendable_coins_rpc(wallet_id)
-            if _resp:
-                _coins = (_resp.get("confirmed_records",
-                          _resp.get("coin_records",
-                          _resp.get("records", []))))
-                spare_count = len(_coins) if _coins else 0
-                # On Chia wallet, spendable includes locked coins —
-                # subtract open offers.  Sage's "selectable" filter
-                # already excludes locked coins.
-                if get_wallet_type() != "sage":
-                    try:
-                        _open = len(get_open_offers(
-                            side=side,
-                            cat_asset_id=cfg.CAT_ASSET_ID))
-                        spare_count = max(0, spare_count - _open)
-                    except Exception:
-                        pass
+            from database import get_free_coins
+            _db_free = get_free_coins(wallet_type_str)
+            _TRADING_DESIGS = {"tier_spare", "tier_active"}
+            _SKIP_TIERS = {"none", "sniper", "reserve", "fee"}
+            spare_count = sum(
+                1 for c in _db_free
+                if c.get("designation", "") in _TRADING_DESIGS
+                and c.get("assigned_tier", "none") not in _SKIP_TIERS
+            )
         except Exception:
-            pass
+            # Fallback to raw RPC count if DB query fails
+            try:
+                wallet_id = (cfg.CAT_WALLET_ID if side == "sell"
+                             else cfg.WALLET_ID_XCH)
+                _resp = get_exact_spendable_coins_rpc(wallet_id)
+                if _resp:
+                    _coins = (_resp.get("confirmed_records",
+                              _resp.get("coin_records",
+                              _resp.get("records", []))))
+                    spare_count = len(_coins) if _coins else 0
+                    if get_wallet_type() != "sage":
+                        try:
+                            _open = len(get_open_offers(
+                                side=side,
+                                cat_asset_id=cfg.CAT_ASSET_ID))
+                            spare_count = max(0, spare_count - _open)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
 
         log_event("info", "requote_spare_coins",
-                  f"Spare {side} coins: {spare_count}")
+                  f"Spare {side} coins: {spare_count} (tier-designated)")
 
         if spare_count == 0:
             log_event("info", "requote_no_spares",
