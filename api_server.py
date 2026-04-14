@@ -9706,6 +9706,10 @@ def api_check_resume():
 
     Returns can_resume + offer details so the GUI can show a resume modal.
     """
+    # If the bot is already running (page refresh mid-session), nothing to resume.
+    if bot and getattr(bot, "_loop_count", 0) > 0:
+        return jsonify({"can_resume": False, "has_session": True,
+                        "buy_count": 0, "sell_count": 0, "reason": "bot_already_running"})
     # If the user already chose "Start Fresh" this process lifetime, don't
     # re-show the resume modal on subsequent page loads (e.g. hot-reload in
     # --dev mode).  The flag is cleared when the bot actually starts.

@@ -13660,6 +13660,8 @@
                     return 'Open Live Controls';
                 case 'openSettings':
                     return 'Fix price rail in Settings';
+                case 'reserveFloor':
+                    return 'Reserve floor active — bot paused';
                 default:
                     return 'Review advisor recommendation';
             }
@@ -13943,7 +13945,7 @@
                         icon: '+/-',
                         msg: `Your XCH spendable balance (${xchSpendable.toFixed(3)} XCH) is at or below your reserve floor (${xchReserveAmt.toFixed(3)} XCH). The bot will stop placing buy offers to protect your reserve. To resume: either lower the XCH Reserve in Settings, add more XCH to the wallet, or wait for some sell offers to fill and return XCH.`,
                         action: 'Open Settings',
-                        actionType: 'openSettings',
+                        actionType: 'reserveFloor',
                         actionValue: 'safety'
                     });
                 }
@@ -13956,7 +13958,7 @@
                         icon: '+/-',
                         msg: `Your CAT spendable balance (${catSpendable.toFixed(3)}) is at or below your reserve floor (${catReserveAmt.toFixed(3)}). The bot will stop placing sell offers to protect your reserve. To resume: either lower the CAT Reserve in Settings, add more CAT to the wallet, or wait for buy offers to fill.`,
                         action: 'Open Settings',
-                        actionType: 'openSettings',
+                        actionType: 'reserveFloor',
                         actionValue: 'safety'
                     });
                 }
@@ -23860,16 +23862,21 @@
                 const data = await response.json();
                 
                 if (!data.can_resume) {
-                    try {
-                        await apiFetch(`${API_URL}/session/fresh-start`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' }
-                        });
-                    } catch (resetErr) {
-                        console.warn('[RESUME] Failed to auto-start fresh session on no-resume path:', resetErr);
+                    // Don't touch session state when the bot is already mid-run
+                    // (page refresh).  The running state is correct — no "fresh start"
+                    // needed and we must not overwrite the .fresh_start_chosen flag.
+                    if (data.reason !== 'bot_already_running') {
+                        try {
+                            await apiFetch(`${API_URL}/session/fresh-start`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' }
+                            });
+                        } catch (resetErr) {
+                            console.warn('[RESUME] Failed to auto-start fresh session on no-resume path:', resetErr);
+                        }
+                        clearResumeSessionSummary();
+                        setFreshStartTemplateState(true);
                     }
-                    clearResumeSessionSummary();
-                    setFreshStartTemplateState(true);
                     console.log('[RESUME] No session to resume:', data.reason || 'no offers');
                     return false;
                 }
@@ -29061,8 +29068,28 @@ function startupPollUntilReady() {
 document.addEventListener('DOMContentLoaded', async () => {
     console.log('[INIT] Page loading...');
 
-    // Show the startup disclosure before any wallet login starts.
-    startupShowRiskDisclosure();
+    // If the bot is already running (page reload mid-session), skip the startup
+    // wizard entirely and go straight to the dashboard.
+    let _botAlreadyRunning = false;
+    try {
+        const _statusResp = await apiFetch(`${API_URL}/status`,
+            { signal: AbortSignal.timeout(2000) });
+        const _statusData = await _statusResp.json();
+        if ((_statusData.stats?.loop_count || 0) > 0) {
+            _botAlreadyRunning = true;
+            console.log('[INIT] Bot already running — skipping startup wizard');
+            const _overlay = document.getElementById('startupOverlay');
+            if (_overlay) { _overlay.classList.add('hidden'); _overlay.style.display = 'none'; }
+            finalDismiss();
+        }
+    } catch(_e) {
+        console.log('[INIT] Bot status probe failed — showing startup wizard:', _e.message);
+    }
+
+    if (!_botAlreadyRunning) {
+        // Show the startup disclosure before any wallet login starts.
+        startupShowRiskDisclosure();
+    }
 
     // Then fetch fingerprint
     setTimeout(() => {
