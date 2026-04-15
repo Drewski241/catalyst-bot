@@ -386,11 +386,17 @@ db = os.path.join(os.environ['APPDATA'], 'ChiaMarketMaker', 'bot.db')
 # Read monitor.log to find the last event ts we consumed
 # Then:
 conn = sqlite3.connect(db)
+# CORRECT SCHEMA (confirmed 2026-04-15):
+# events table columns: id, timestamp, event_type, severity, message, data, event_category
+# NOT: level, created_at — those don't exist. Use `severity` for level filtering and
+# `timestamp` for time comparisons (timestamp is stored as 'YYYY-MM-DD HH:MM:SS' TEXT
+# in local time, not ISO8601 — compare against datetime('now','-N minutes') which
+# returns the same TEXT format).
 cur = conn.execute("""
-  SELECT timestamp, level, event_type, message
+  SELECT timestamp, severity, event_type, message
   FROM events
   WHERE timestamp > ?
-    AND (level IN ('warning','error','critical') OR event_type IN (
+    AND (severity IN ('warning','error','critical') OR event_type IN (
          'db_wallet_divergence','dexie_visibility_gap','coin_headroom_low',
          'position_hard_guard_blocked','sweep_protection','api_error',
          'cancel_storm_blocked','fill_verification_failed'))
@@ -1642,6 +1648,8 @@ Soft cap: **10 Codex invocations per day**. At ~20k tokens each = ~200k tokens/d
 | DB open status value | `'open'` (NOT `'active'`) |
 | Sage offer_id = DB trade_id | Yes, 64-char hex |
 | Dexie offer id format | base58, ~43 chars |
+| Bot DB `events` table columns | `id, timestamp, event_type, severity, message, data, event_category` — use `severity` NOT `level` |
+| Bot DB `events.timestamp` format | `'YYYY-MM-DD HH:MM:SS'` local time TEXT (NOT ISO8601). Compare with `datetime('now','-N minutes')`. |
 
 ---
 

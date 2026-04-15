@@ -15,7 +15,8 @@
 - **Buy ladder reversed**: `BUY_LADDER_REVERSED=True` — buy position-tiers map inversely to coin-size tiers
 - **Base spread**: 700 bps with dynamic range 420-1400 bps
 - **Position limit**: `MAX_POSITION_XCH=40`
-- **Correct reserves (as of 2026-04-15)**: `XCH_RESERVE=15`, `CAT_RESERVE=50000`
+- **Correct reserves (as of 2026-04-15)**: `XCH_RESERVE=15`, `CAT_RESERVE=50000` (Note: user may also run with `XCH_RESERVE=0`/`CAT_RESERVE=0` successfully — watch for `pool_exceeds_avail` but don't auto-correct)
+- **Bot DB `events` table schema**: columns are `id, timestamp, event_type, severity, message, data, event_category`. Use `severity` for level filtering (NOT `level`). Use `timestamp` for time (stored as local-time TEXT `'YYYY-MM-DD HH:MM:SS'`, NOT ISO8601 — compare with `datetime('now','-N minutes')`).
 
 ---
 
