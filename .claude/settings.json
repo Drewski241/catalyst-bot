@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Edit(.claude/monitor/**)",
+      "Write(.claude/monitor/**)",
+      "Edit(.claude/monitor/backups/**)",
+      "Write(.claude/monitor/backups/**)",
+      "Edit(.claude/monitor/dashboard/**)",
+      "Write(.claude/monitor/dashboard/**)"
+    ]
+  }
+}
