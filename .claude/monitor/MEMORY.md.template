@@ -82,6 +82,113 @@ These findings are informational and resolve on their own. Don't waste cycles in
 
 ---
 
+## Novel Pattern Staging (Part 11)
+
+Entries here are novel issues that have been successfully auto-fixed at least once. When an entry reaches **3 hits with the same working fix**, the monitor promotes it to a full Part 5.N pattern via code commit.
+
+```
+# Template — append entries like this
+### STAGE: <short-summary>
+- Hits: 1
+- First seen: <iso-ts>
+- Last seen: <iso-ts>
+- Symptoms observed:
+- Diagnosis approach that worked:
+- Fix applied: <command or steps>
+- Verification: <what assertion confirmed success>
+- Promotion blocker (if any): <e.g., "fix involves cancel-all — manual review required">
+```
+
+---
+
+## Promoted Patterns (Part 11)
+
+| Date | Staged summary | Hits at promotion | Commit | New pattern # |
+|---|---|---|---|---|
+| - | - | - | - | - |
+
+---
+
+## Pattern Telemetry
+
+Running totals of how often each Part 5 pattern fires. Updated by every sweep that applies a fix. Reset yearly (or when the monitor is re-initialized).
+
+| Pattern | Lifetime hits | Last 7d | Last 24h | Last 1h | Last seen |
+|---|---|---|---|---|---|
+| 5.1 zombie offers | 1 | 1 | 1 | 1 | 2026-04-15 |
+| 5.2 bech32 missing | 1 | 1 | 1 | 1 | 2026-04-15 |
+| 5.3 DB/wallet divergence | 1 | 1 | 1 | 1 | 2026-04-15 |
+| 5.4 coin headroom low | 1 | 1 | 1 | 1 | 2026-04-15 |
+| 5.5 position hard guard | 1 | 1 | 1 | 1 | 2026-04-15 |
+| 5.6 coin prep pool_exceeds_avail | 2 | 2 | 2 | 2 | 2026-04-15 |
+| 5.7 Sage 404 on cancel | 0 | 0 | 0 | 0 | — |
+| 5.8 Dexie 429 | 0 | 0 | 0 | 0 | — |
+| 5.9 mid price stale | 0 | 0 | 0 | 0 | — |
+| 5.10 fill not detected | 0 | 0 | 0 | 0 | — |
+| 5.11 orphaned locked coins | 0 | 0 | 0 | 0 | — |
+| 5.12 sweep protection stuck | 0 | 0 | 0 | 0 | — |
+| 5.13 requote loop | 0 | 0 | 0 | 0 | — |
+| 5.14 novel issue | 0 | 0 | 0 | 0 | — |
+| 5.15 bot/Sage down | 0 | 0 | 0 | 0 | — |
+| 5.16 API error | 0 | 0 | 0 | 0 | — |
+
+---
+
+## Pending Fixes (cross-sweep confirm state)
+
+For fixes that need 2-sweep confirmation (cancel-all, architectural), the monitor stages them here between sweeps. Next sweep reads this section; if anomaly still present, proceeds with fix; otherwise removes entry.
+
+```
+# Template — append entries like this
+### PENDING: <trade_id or summary>
+- Observed in sweep: <iso-ts>
+- Pattern: <5.N>
+- Fix plan: <description>
+- Require 2nd confirm before: <iso-ts + next_sweep_interval>
+```
+
+---
+
+## Pre-flight History (Part 1A)
+
+Record of codebase health at each onboarding. Helps identify slow-decaying test failures.
+
+| Date | Pass? | Failing tests | Action taken |
+|---|---|---|---|
+| - | - | - | - |
+
+---
+
+## Missed-cron Detection Log (Part 4 preamble)
+
+When sweeps detect gaps (laptop asleep, Claude Code closed). Cluster analysis in Tier 3.
+
+| Date range | Tier | Detected gap | Catch-up action |
+|---|---|---|---|
+| - | - | - | - |
+
+---
+
+## API Cost & Activity Telemetry (Part 4 Tier 3 step 9)
+
+Weekly rollup of API call counts. Identifies rate limit risk.
+
+| Week | Dexie calls | Spacescan calls | Sage RPC calls | Bot API calls | Monitor tokens (est.) |
+|---|---|---|---|---|---|
+| - | - | - | - | - | - |
+
+---
+
+## Network Outage Log (Part 13)
+
+Sustained outages (>3 sweeps in a row).
+
+| Start | End | Affected | Action taken |
+|---|---|---|---|
+| - | - | - | - |
+
+---
+
 ## Code-fix candidates awaiting recurrence data
 
 1. **`coin_manager.runtime_coin_health`** — add periodic bech32 repair sweep (Pattern 5.2). Trigger threshold: 3 occurrences in 7 days.

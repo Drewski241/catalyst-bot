@@ -65,6 +65,33 @@ You run in TWO kinds of sessions:
 
 ---
 
+## Part 1A — Pre-flight (before any onboarding work)
+
+**Only run this in the onboarding session, not spawned sweeps.** Takes 1-3 minutes. Ensures the codebase itself is healthy before the monitor starts watching it.
+
+```bash
+cd C:\chia_liquidity_bot_v2_v4_tauri
+
+# 1. Syntax check key modules — fast sanity
+for f in bot_loop.py offer_manager.py coin_manager.py wallet_sage.py risk_manager.py dexie_manager.py market_intel.py price_engine.py fill_tracker.py database.py api_server.py config.py; do
+  python -c "import ast; ast.parse(open('$f', encoding='utf-8').read())" || echo "SYNTAX FAIL: $f"
+done
+
+# 2. Run the bot's test suite (fast subset — tb=line, q, no parallel)
+cd tests
+python -m pytest --tb=line -q -x --timeout=60 2>&1 | tail -40
+cd ..
+```
+
+**What to do with results**:
+- All green → log `{"event":"preflight_pass","tests_run":N}` and proceed to Part 2.
+- Syntax failures → the codebase is broken. Log CRITICAL, fix if within playbook authority (e.g., obvious typo), otherwise skip and proceed anyway (monitor can still run against a bot that has some broken tests). Do NOT halt onboarding.
+- Test failures → log `{"event":"preflight_fail","failing":[...]}` with the test names. If any are in `risk_manager`, `wallet_sage`, `fill_tracker`, or `offer_manager` → these are safety-critical. Log CRITICAL. Otherwise continue.
+
+**Rationale**: the monitor is responsible for fixing bugs. If the codebase itself is broken on arrival, that's useful context — but doesn't prevent the monitor from being useful.
+
+---
+
 ## Part 2 — Onboarding (First-Run Checklist)
 
 On every fresh session start, execute this sequence. Record completion in `monitor.log` as event type `onboarding_complete`.
@@ -180,11 +207,69 @@ Finish:
 - Exit the session immediately. Do not idle.
 ```
 
+### Step 5.5 — Subscribe to bot's SSE event stream (for real-time detection)
+
+The bot emits Server-Sent Events on `http://127.0.0.1:5000/api/events`. This gives real-time signal (seconds) vs 2-minute polling. Launch a background SSE listener that writes events to `monitor.log.sse`:
+
+```bash
+TOKEN=$(grep BOT_LOCAL_WRITE_TOKEN C:/Users/t_you/AppData/Roaming/ChiaMarketMaker/.env | cut -d= -f2 | tr -d "'")
+python -c "
+import sys, io, requests, json, time, os
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+log = r'C:\chia_liquidity_bot_v2_v4_tauri\.claude\monitor\monitor.log.sse'
+url = 'http://127.0.0.1:5000/api/events'
+while True:
+    try:
+        r = requests.get(url, headers={'X-Bot-Local-Token': '$TOKEN', 'Accept': 'text/event-stream'}, stream=True, timeout=None)
+        for line in r.iter_lines(decode_unicode=True):
+            if line and line.startswith('data:'):
+                try:
+                    evt = json.loads(line[5:].strip())
+                    # Filter: only warning/error/critical go to .sse file
+                    if evt.get('level') in ('warning','error','critical') or 'fail' in evt.get('event','').lower():
+                        with open(log, 'a', encoding='utf-8') as f:
+                            f.write(json.dumps({'sse_ts': time.time(), **evt}) + '\n')
+                except Exception:
+                    pass
+    except Exception as e:
+        time.sleep(10)  # brief backoff on disconnect
+" &
+# Note: this runs in the onboarding session only. A spawned T1/T2/T3 session
+# reads monitor.log.sse to see what happened between its last cron run and now.
+```
+
+**Important**: The SSE listener dies when the onboarding session exits. That's OK — Tier 1 sweeps re-read `/api/events?since=<last_ts>` themselves (or poll the bot's events SQL table) for catch-up. The primary benefit here is immediate detection during the onboarding window. If you want a persistent SSE listener, schedule it as a separate background task in Windows Task Scheduler (outside this playbook's scope).
+
 ### Step 6 — Run first Tier 1 sweep inline (in this onboarding session)
 Don't wait for cron. Run Tier 1 now (follow Part 4 Tier 1 procedure). Apply fixes. Log findings. This validates the full monitoring pipeline end-to-end.
 
+### Step 6A — Self-test (before exiting)
+
+Before posting the final readiness message, verify the pipeline end-to-end:
+
+```bash
+# 1. Write a test entry to monitor.log
+TEST_MARKER=$(date +%s)
+echo "{\"ts\":\"$(date -Iseconds)\",\"event\":\"self_test_marker\",\"marker\":\"$TEST_MARKER\"}" >> C:/chia_liquidity_bot_v2_v4_tauri/.claude/monitor/monitor.log
+
+# 2. Verify monitor.log is readable + writable
+tail -1 C:/chia_liquidity_bot_v2_v4_tauri/.claude/monitor/monitor.log | grep "$TEST_MARKER" || echo "SELF-TEST FAILED: log round-trip"
+
+# 3. Verify MEMORY.md is readable (use its current size as a checksum)
+test -s C:/chia_liquidity_bot_v2_v4_tauri/.claude/monitor/MEMORY.md || echo "SELF-TEST FAILED: MEMORY.md missing"
+
+# 4. Verify scheduled tasks are registered
+# Use mcp__scheduled-tasks__list_scheduled_tasks and confirm all three (catalyst-monitor-tier-1/2/3) exist and are enabled.
+
+# 5. Verify lock file mechanism — write + read + delete
+echo "self-test" > C:/chia_liquidity_bot_v2_v4_tauri/.claude/monitor/monitor.lock
+cat C:/chia_liquidity_bot_v2_v4_tauri/.claude/monitor/monitor.lock | grep -q "self-test" && rm C:/chia_liquidity_bot_v2_v4_tauri/.claude/monitor/monitor.lock || echo "SELF-TEST FAILED: lock round-trip"
+```
+
+If any self-test step fails → log CRITICAL + post chat line. Do NOT halt; the scheduled sweeps can still run even if self-test had a minor failure (e.g., MEMORY.md might be regenerated by first sweep).
+
 ### Step 7 — Exit cleanly
-Post: `✅ Monitor scheduled. T1(2m) / T2(15m) / T3(1h). Baseline in monitor.log.` Then stop — no further work in this session. The scheduled tasks take over.
+Post: `✅ Monitor scheduled. T1(2m) / T2(15m) / T3(1h). Pre-flight: <pass/fail>. Self-test: <pass/fail>. Baseline in monitor.log.` Then stop — no further work in this session. The scheduled tasks take over.
 
 ---
 
@@ -271,6 +356,53 @@ Every sweep follows the same structure:
 4. For each anomaly: match against Part 5 patterns → diagnose → 2-observation confirm (except critical) → fix → verify.
 5. Write all events to `monitor.log`.
 6. Release lock.
+
+### Sweep preamble (run at the start of EVERY tier sweep)
+
+#### 1. Missed-cron detection
+```bash
+# Compare now to last sweep completion time in monitor.log
+LAST=$(tail -200 C:/chia_liquidity_bot_v2_v4_tauri/.claude/monitor/monitor.log 2>/dev/null | grep -o '"sweep_complete[^"]*"[^}]*' | tail -1 | grep -oP '"ts":"[^"]*"' | head -1)
+# If gap > 2× tier cadence → missed cron (laptop asleep, Claude Code not running, etc.)
+# For T1, gap > 4 min. For T2, gap > 30 min. For T3, gap > 2 hours.
+```
+
+If a gap is detected, log `{"event":"missed_cron_detected","gap_secs":N}`. Then escalate this sweep: run with the scope of the NEXT higher tier to re-establish truth. E.g., if T1 detects a long gap → run a full T2 in this session. If T2 detects a gap → run T3. This makes gaps self-healing.
+
+#### 2. Performance budget timer (start)
+Record `sweep_start_ts = now()`. At exit, compare `now() - sweep_start_ts` to the budget:
+- T1 budget: **30s**. Anything over = log `slow_sweep`.
+- T2 budget: **2 min**.
+- T3 budget: **10 min**.
+
+Slow sweeps aren't a fix target in themselves, but 3+ slow sweeps in a row → create a T3 investigation task in `MEMORY.md`.
+
+#### 3. Pull runtime_monitor events
+The bot's own `runtime_monitor.py` fires `db_wallet_divergence`, `dexie_visibility_gap`, `coin_headroom_low`, etc. into `diagnostics.recent_findings`. Also into the events SQL table. Fetch unseen entries once at the start — don't rederive state the bot already computed:
+
+```python
+import sqlite3, os, json, time
+db = os.path.join(os.environ['APPDATA'], 'ChiaMarketMaker', 'bot.db')
+# Read monitor.log to find the last event ts we consumed
+# Then:
+conn = sqlite3.connect(db)
+cur = conn.execute("""
+  SELECT timestamp, level, event_type, message
+  FROM events
+  WHERE timestamp > ?
+    AND (level IN ('warning','error','critical') OR event_type IN (
+         'db_wallet_divergence','dexie_visibility_gap','coin_headroom_low',
+         'position_hard_guard_blocked','sweep_protection','api_error',
+         'cancel_storm_blocked','fill_verification_failed'))
+  ORDER BY timestamp
+""", (last_consumed_ts,))
+runtime_findings = cur.fetchall()
+conn.close()
+```
+
+Classify each: known-benign (per MEMORY.md) → skip; known-pattern (Part 5) → add to this sweep's fix queue; novel → Pattern 5.14.
+
+---
 
 ### Tier 1 — Every 2 minutes (lightweight critical checks)
 
@@ -392,9 +524,28 @@ Goal: ground-truth reconciliation and trend analysis.
 7. Log file rotation:
    - If monitor.log > 50MB → rotate to monitor.log.1, start fresh.
 
-8. Weekly rollup (on Sunday 23:00 only):
-   - Summary: fixes applied this week, novel issues, patterns added to MEMORY.md.
-   - Post to user chat.
+8. Backup rotation (Part 6A):
+   - For each backup dir (`backups/env`, `backups/cancels`, `backups/db`, `backups/git`), keep newest 30 entries. Delete older.
+
+9. Cost + activity telemetry:
+   - API call counters: Dexie (per endpoint), Spacescan, Sage RPC, bot API.
+   - Estimated tokens consumed by all monitor sessions this hour (rough: sum `total_tokens` from scheduled-task history if accessible).
+   - Pattern hit-rate: count of each Part 5 pattern fired this hour. Persist running totals in `MEMORY.md` → section "Pattern Telemetry".
+
+10. Cross-referenced sanity checks (catch silent drift):
+    - XCH balance from Sage API == XCH balance from bot coin_tracking → within 0.0001 XCH tolerance
+    - CAT balance from Sage == coin_tracking CAT total (both in mojos) → exact match
+    - Sum of `offers.size_xch WHERE status='filled'` (historical) matches sum of XCH locked released over history (from fills table)
+    - Sum of open offers' locked coins = wallet locked coin count from Sage
+    - Any drift > 1% → log as `sanity_drift`, diagnose per Pattern 5.16 (if API) or 5.3 (if DB)
+
+11. Weekly rollup (on Sunday, dow=0, hour=23 only):
+    - Summary: fixes applied this week (count + pattern breakdown), novel issues (count + brief list), patterns added to MEMORY.md, bot uptime %, sweep success rate (T1 passes / T1 runs × 100), sweep slow-rate.
+    - Post short chat digest (format in Part 8).
+    - Also generate the HTML dashboard (Part 14).
+
+12. Playbook evolution check (Part 11):
+    - Review MEMORY.md's "Code-fix candidates" and "Pattern Telemetry". If any pattern fired 3+ times this week → promote it with a code fix (Part 11 procedure).
 ```
 
 ---
@@ -837,7 +988,18 @@ For every fix — whether runtime or code — execute this 10-step process. **Ne
 8. **Verify** — re-check the exact condition that triggered. Also check adjacent state for regressions:
    - Cancelled an offer? → verify coin freed in DB AND in Sage wallet lock.
    - Edited .env? → `grep` the file for the exact line you intended to change.
-   - Code fix? → run `cd tests && python -m pytest <related_test_files> -q` (only if tests exist for this module). If tests fail → roll back commit (Part 6A), log FAILED, continue next anomaly.
+   - **Code fix? HARD GATE — must pass before commit**:
+     ```bash
+     # 1. Syntax check — blocks commit on failure
+     python -c "import ast; ast.parse(open('<changed_file>', encoding='utf-8').read())" || echo "FAIL"
+     # 2. Related tests (blocks commit on failure)
+     cd tests
+     python -m pytest -k "<module_name>" --tb=line -q -x --timeout=120 || echo "FAIL"
+     cd ..
+     # 3. Bot syntax import test (blocks commit on failure for modules that import heavy deps)
+     python -c "import <module_name>; print('OK')" || echo "FAIL"
+     ```
+     If ANY step fails → **do not commit**. Auto-rollback the edit via `git checkout -- <file>`, log as `code_fix_test_failed`, try an alternate fix from the pattern OR tag as UNCERTAIN and move on.
 9. **Log** — append to `monitor.log` as JSON:
    ```json
    {
@@ -866,16 +1028,27 @@ Before any of these actions, snapshot the target:
 | DB mass update/delete | Dump affected rows → `backups\db\<iso-ts>-<table>.jsonl` |
 | Code revert | `git log --oneline -1` before the revert → `backups\git\<iso-ts>.txt` |
 
-Keep the last 30 backups per category; rotate older ones automatically in Tier 3.
+Keep the last 30 backups per category; rotate older ones automatically in Tier 3 step 8.
 
 **Rollback on regression**:
 - If post-fix verification fails OR tests fail → immediately revert:
-  - `.env`: restore from latest backup.
-  - Code: `git revert HEAD --no-edit && git push github master`.
-  - DB: replay the snapshot rows (INSERT OR REPLACE).
-  - Cancel-all can't be un-done → log as `unrevertable_fix`, move on.
-- Log the rollback as `{"event":"fix_rolled_back","reason":"<what failed>"}`.
+  - `.env`: `Copy-Item backups\env\<latest>.env <env_path> -Force`
+  - Code (pre-commit revert): `git checkout -- <file>`
+  - Code (post-commit revert): `git revert HEAD --no-edit && git push github master`
+  - DB: replay the snapshot rows (`INSERT OR REPLACE INTO <table> VALUES (...)` from the JSONL dump)
+  - Cancel-all can't be un-done → log as `unrevertable_fix`, move on
+- Log the rollback as `{"event":"fix_rolled_back","reason":"<what failed>","backup_used":"<path>"}`.
 - Mark the pattern attempt as failed in `MEMORY.md` — next sweep will try a different approach or tag as `UNCERTAIN`.
+
+**Manual restore command (for the user, if the monitor misbehaves)**:
+```powershell
+# List backups
+Get-ChildItem C:\chia_liquidity_bot_v2_v4_tauri\.claude\monitor\backups -Recurse | Sort-Object LastWriteTime -Descending | Select-Object -First 20
+
+# Restore specific file
+# Example .env restore:
+Copy-Item "C:\chia_liquidity_bot_v2_v4_tauri\.claude\monitor\backups\env\2026-04-15T10-30-00.env" "$env:APPDATA\ChiaMarketMaker\.env" -Force
+```
 
 ---
 
@@ -1105,6 +1278,184 @@ Step 7: Post to user: "✅ Monitor session active."
 
 Then: remain idle until your next scheduled firing or until a user message arrives.
 ```
+
+---
+
+## Part 11 — Pattern auto-evolution (the playbook learns)
+
+Every time a novel issue (Pattern 5.14) gets a working best-effort fix, increment it in `MEMORY.md`'s "Novel Pattern Staging" section. Once the same staging entry hits **3 hits with the same fix working**, PROMOTE it:
+
+1. Generate a new playbook Part 5.N entry with:
+   - Symptoms (from observed data)
+   - Diagnose (the approach that worked)
+   - Fix (the exact command sequence)
+   - Verify (the assertion that confirmed success)
+   - MEMORY notes
+
+2. Edit `MONITOR_PLAYBOOK.md` to add the new pattern after the last existing 5.N. Use Edit tool; renumber no existing entries.
+
+3. Syntax check the playbook (it's markdown, not Python, so skip ast.parse — but verify you didn't corrupt structure: `grep -c "^### 5\." MONITOR_PLAYBOOK.md` should show one more than before).
+
+4. Commit: `feat(monitor): add Pattern 5.N — <summary>. Promoted from staging after 3 hits.`
+
+5. Push. Update `MEMORY.md`: move the staging entry to "Promoted patterns", stamp with commit hash.
+
+**Rollback**: if a promoted pattern causes a regression (false positives, failing fixes), revert the commit AND move the entry back to staging for more observation. Do not delete the pattern entirely — re-promote once you have better data.
+
+**Safety rails for auto-evolution**:
+- Never promote a pattern whose fix involves `cancel-all`, `fresh-start`, or bot/Sage restarts. Those are too high-impact to auto-promote. Staging keeps them forever; the user reviews them manually.
+- Never auto-promote a pattern whose fix reads >3 files. Complex diagnostics likely need human insight.
+- If staging accumulates >20 entries without promotion → log as `staging_backlog`, investigate in next T3.
+
+---
+
+## Part 12 — Graceful degradation map
+
+Not every check requires every source. If one source is unavailable, proceed with the rest. This map defines dependencies.
+
+| Check | Required sources | Optional sources | If required source down |
+|---|---|---|---|
+| Bot heartbeat | Bot API | — | → Pattern 5.15 (auto-restart) |
+| Offer count sync | Sage + Bot DB | Dexie | If Dexie down: skip dexie compare, compare Sage↔DB only |
+| Mid price sanity | Bot API OR TibetSwap | Spacescan | If both primary down: skip check, log `price_check_unavailable` |
+| Coin inventory | Sage + Bot DB | — | If Sage down: Pattern 5.15 auto-restart |
+| Balance reconciliation | Sage + Bot DB | — | If either down: skip, retry next sweep |
+| Dexie reconciliation | Dexie + Sage + Bot DB | — | If Dexie down: skip this check only |
+| Spacescan trends (T3) | Spacescan | — | If Spacescan down: skip (low priority) |
+| Runtime_monitor events | Bot DB (events table) | — | If DB locked: retry with `BEGIN IMMEDIATE` fallback or skip |
+
+**Universal rule**: no single source failure halts the sweep. Skip that check, log the skip, continue with remaining checks.
+
+**Cascade rule**: if 3+ sources are down simultaneously → the machine likely has network problems. Run Part 13 (network health probing) instead of continuing checks.
+
+---
+
+## Part 13 — Network health probing
+
+Before blaming the bot for API failures, verify the network path works:
+
+```bash
+# 1. DNS resolution
+nslookup api.dexie.space 2>&1 | grep -q "Address" || echo "DNS FAIL: api.dexie.space"
+nslookup api.spacescan.io 2>&1 | grep -q "Address" || echo "DNS FAIL: api.spacescan.io"
+
+# 2. TCP reachability (quick, 5s timeout)
+python -c "
+import socket
+for host, port in [('api.dexie.space', 443), ('api.spacescan.io', 443), ('api.v2.tibetswap.io', 443)]:
+    try:
+        s = socket.create_connection((host, port), timeout=5)
+        s.close()
+        print(f'OK: {host}:{port}')
+    except Exception as e:
+        print(f'FAIL: {host}:{port} -> {e}')
+"
+
+# 3. HTTPS handshake + trivial GET (cost ~1 req per target)
+for host in api.dexie.space api.spacescan.io; do
+    curl -s -o /dev/null -w "%{http_code} %{time_total}s\n" "https://$host/" --max-time 10
+done
+
+# 4. Local services
+# Sage RPC
+curl -s --cert "$env:APPDATA/com.rigidnetwork.sage/ssl/wallet.crt" \
+     --key "$env:APPDATA/com.rigidnetwork.sage/ssl/wallet.key" \
+     -k -X POST "https://127.0.0.1:9257/get_peers" -o /dev/null -w "%{http_code}\n"
+# Bot API
+curl -s -o /dev/null -w "%{http_code}\n" "http://127.0.0.1:5000/api/status"
+```
+
+Classify the outcome:
+
+- **All green → APIs are really failing**. Continue with Pattern 5.16 diagnosis.
+- **DNS only fails → ISP/DNS issue**. Back off, log, skip this sweep, continue.
+- **TCP fails for external hosts → firewall or routing issue**. Log `network_external_down`, skip external checks for this sweep.
+- **Local services fail (127.0.0.1) → bot/Sage issue**. Pattern 5.15 (auto-restart).
+- **Everything fails → machine networking is broken**. Log CRITICAL, skip all checks, retry next sweep. Don't try to fix network issues (out of scope).
+
+If network is fully broken 3 sweeps in a row → log CRITICAL with `network_outage_sustained`. The user reviews when they notice.
+
+---
+
+## Part 14 — Weekly HTML dashboard
+
+Tier 3 generates this on Sundays at 23:00 (check `dow==0 && hour==23`).
+
+Output: `C:\chia_liquidity_bot_v2_v4_tauri\.claude\monitor\dashboard\week-<iso-week>.html`
+
+```python
+# Pseudocode — Tier 3 runs this
+import json, os, glob
+from datetime import datetime, timedelta
+
+log = r'C:\chia_liquidity_bot_v2_v4_tauri\.claude\monitor\monitor.log'
+now = datetime.utcnow()
+week_start = (now - timedelta(days=7)).isoformat()
+
+# Parse monitor.log (JSONL) and aggregate last 7 days
+events = []
+with open(log, 'r', encoding='utf-8') as f:
+    for line in f:
+        try:
+            e = json.loads(line)
+            if e.get('ts', '') >= week_start:
+                events.append(e)
+        except Exception:
+            continue
+
+# Summarize
+stats = {
+    'sweeps_total': sum(1 for e in events if e['event'] in ('sweep_complete','sweep_skipped')),
+    'sweeps_pass': sum(1 for e in events if e['event']=='sweep_complete' and e.get('result')=='pass'),
+    'fixes_applied': sum(1 for e in events if e['event']=='fix_applied'),
+    'critical_events': sum(1 for e in events if e.get('tag')=='CRITICAL'),
+    'novel_events': sum(1 for e in events if e.get('tag')=='NOVEL'),
+    'patterns_fired': {},  # fill from pattern events
+    'uptime_pct': 100.0 - (critical_bot_down_minutes / (7*24*60)) * 100,
+}
+
+# Generate HTML (simple, no JS deps)
+html = f"""
+<!DOCTYPE html>
+<html><head>
+<title>CATalyst Monitor — Week of {week_start[:10]}</title>
+<style>
+body {{ font-family: -apple-system, sans-serif; padding: 2em; max-width: 900px; margin: auto; }}
+h1 {{ color: #333; }}
+.metric {{ display: inline-block; background: #f5f5f5; padding: 1em; margin: 0.5em; border-radius: 8px; min-width: 160px; }}
+.metric .val {{ font-size: 2em; font-weight: bold; }}
+.metric .label {{ font-size: 0.9em; color: #666; }}
+.ok {{ color: #28a745; }}
+.warn {{ color: #ffc107; }}
+.crit {{ color: #dc3545; }}
+table {{ border-collapse: collapse; margin: 1em 0; }}
+td, th {{ padding: 0.5em 1em; border-bottom: 1px solid #ddd; }}
+</style>
+</head><body>
+<h1>CATalyst Monitor — Week of {week_start[:10]}</h1>
+<div>
+  <div class="metric"><div class="val ok">{stats['uptime_pct']:.1f}%</div><div class="label">Bot uptime</div></div>
+  <div class="metric"><div class="val">{stats['sweeps_total']}</div><div class="label">Sweeps run</div></div>
+  <div class="metric"><div class="val">{stats['fixes_applied']}</div><div class="label">Fixes applied</div></div>
+  <div class="metric"><div class="val {'crit' if stats['critical_events'] else 'ok'}">{stats['critical_events']}</div><div class="label">Critical events</div></div>
+  <div class="metric"><div class="val {'warn' if stats['novel_events'] else 'ok'}">{stats['novel_events']}</div><div class="label">Novel issues</div></div>
+</div>
+<h2>Pattern hit-rate this week</h2>
+<table>... </table>
+<h2>Recent critical events</h2>
+<table>...</table>
+<p style="color:#999; font-size:0.85em;">Generated by CATalyst monitor. monitor.log: {os.path.getsize(log)/1024/1024:.1f} MB</p>
+</body></html>
+"""
+
+os.makedirs(os.path.dirname(out_path), exist_ok=True)
+with open(out_path, 'w', encoding='utf-8') as f:
+    f.write(html)
+
+# Post chat: "📊 Weekly dashboard: <path> — <key stats summary>"
+```
+
+Keep dashboards for 13 weeks (one quarter); delete older in Tier 3 step 8 rotation.
 
 ---
 
