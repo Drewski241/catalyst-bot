@@ -23,7 +23,17 @@
       "Bash(ls -la .claude/monitor/*)",
       "Bash(stat .claude/monitor/*)",
       "Bash(cp .claude/monitor/* .claude/monitor/*)",
-      "Bash(cp .claude/monitor/MEMORY.md.template .claude/monitor/MEMORY.md*)"
+      "Bash(cp .claude/monitor/MEMORY.md.template .claude/monitor/MEMORY.md*)",
+      "Bash(timeout * C:/Users/t_you/.codex/.sandbox-bin/codex.exe*)",
+      "Bash(timeout * \"C:/Users/t_you/.codex/.sandbox-bin/codex.exe\"*)",
+      "Bash(C:/Users/t_you/.codex/.sandbox-bin/codex.exe*)",
+      "Bash(\"C:/Users/t_you/.codex/.sandbox-bin/codex.exe\"*)",
+      "Bash(git diff*)",
+      "Bash(git diff -- *)",
+      "Bash(git checkout -- *)",
+      "Bash(grep * /tmp/codex_review*)",
+      "Bash(grep * /tmp/candidate_fix*)",
+      "Bash(tee /tmp/codex_review*)"
     ]
   }
 }

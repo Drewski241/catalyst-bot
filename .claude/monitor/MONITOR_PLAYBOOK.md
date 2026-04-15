@@ -829,10 +829,13 @@ print('MAX_POSITION_XCH:', cfg.MAX_POSITION_XCH)
 Steps:
 1. Capture full context to `monitor.log` as `{"event":"novel_issue","tag":"NOVEL",...}` with full snapshots, logs, and your current hypothesis.
 2. Post a SHORT chat line: `⚠️ NOVEL: <3-word summary>. Details in monitor.log#<entry>.`
-3. Apply the best-effort fix you can formulate from first principles (don't invent risky operations — prefer safe fallbacks like "skip and log" over "cancel-all and hope").
-4. Verify with a re-read of state. If your fix worked → update `MEMORY.md` with a new Pattern 5.17+, increment pattern count, ADD procedure steps to this playbook in a future code commit.
-5. If your fix didn't work → log `{"verify":"failed"}` and SKIP this sweep. Next cron firing will see the same anomaly and try again (or accumulate enough observations to match a known pattern).
-6. Never halt the sweep waiting for user approval.
+3. **Assess confidence** in your diagnosis:
+   - If confidence ≥80%: proceed to step 4.
+   - If confidence <80%: **invoke Codex cross-check** per Part 15 before applying any fix. Use the decision matrix in Part 15 to determine action based on combined monitor+Codex verdict.
+4. Apply the best-effort fix you can formulate from first principles (don't invent risky operations — prefer safe fallbacks like "skip and log" over "cancel-all and hope").
+5. Verify with a re-read of state. If your fix worked → update `MEMORY.md` with a new Pattern 5.17+, increment pattern count, ADD procedure steps to this playbook in a future code commit.
+6. If your fix didn't work → log `{"verify":"failed"}` and SKIP this sweep. Next cron firing will see the same anomaly and try again (or accumulate enough observations to match a known pattern).
+7. Never halt the sweep waiting for user approval.
 
 ### 5.15 Bot or Sage process down
 
@@ -1020,8 +1023,15 @@ For every fix — whether runtime or code — execute this 10-step process. **Ne
      cd ..
      # 3. Bot syntax import test (blocks commit on failure for modules that import heavy deps)
      python -c "import <module_name>; print('OK')" || echo "FAIL"
+     # 4. If the changed file is safety-critical (risk_manager, wallet_sage, fill_tracker,
+     #    coin_manager, database), ALSO invoke Codex review per Part 15:
+     git diff -- <changed_file> > /tmp/candidate_fix.patch
+     timeout 90 "C:/Users/t_you/.codex/.sandbox-bin/codex.exe" review /tmp/candidate_fix.patch 2>&1 | tee /tmp/codex_review.txt
+     if grep -qiE "critical|bug|unsafe|race condition|data loss|security" /tmp/codex_review.txt; then
+         echo "CODEX_FLAGGED_FAIL"
+     fi
      ```
-     If ANY step fails → **do not commit**. Auto-rollback the edit via `git checkout -- <file>`, log as `code_fix_test_failed`, try an alternate fix from the pattern OR tag as UNCERTAIN and move on.
+     If ANY step fails → **do not commit**. Auto-rollback the edit via `git checkout -- <file>`, log as `code_fix_test_failed` (or `code_fix_codex_flagged`), try an alternate fix from the pattern OR tag as UNCERTAIN and move on.
 9. **Log** — append to `monitor.log` as JSON:
    ```json
    {
@@ -1307,20 +1317,22 @@ Then: remain idle until your next scheduled firing or until a user message arriv
 
 Every time a novel issue (Pattern 5.14) gets a working best-effort fix, increment it in `MEMORY.md`'s "Novel Pattern Staging" section. Once the same staging entry hits **3 hits with the same fix working**, PROMOTE it:
 
-1. Generate a new playbook Part 5.N entry with:
+1. **Codex cross-check (MANDATORY for promotion — Part 15)**: invoke `codex exec` with the staged pattern, symptoms, fix procedure, and ask whether it's safe to promote as a permanent rule. If Codex disagrees or flags safety concerns → do NOT promote. Keep in staging, require 5 hits before retrying. Log both opinions.
+
+2. Generate a new playbook Part 5.N entry with:
    - Symptoms (from observed data)
    - Diagnose (the approach that worked)
    - Fix (the exact command sequence)
    - Verify (the assertion that confirmed success)
    - MEMORY notes
 
-2. Edit `MONITOR_PLAYBOOK.md` to add the new pattern after the last existing 5.N. Use Edit tool; renumber no existing entries.
+3. Edit `MONITOR_PLAYBOOK.md` to add the new pattern after the last existing 5.N. Use Edit tool; renumber no existing entries.
 
-3. Syntax check the playbook (it's markdown, not Python, so skip ast.parse — but verify you didn't corrupt structure: `grep -c "^### 5\." MONITOR_PLAYBOOK.md` should show one more than before).
+4. Syntax check the playbook (it's markdown, not Python, so skip ast.parse — but verify you didn't corrupt structure: `grep -c "^### 5\." MONITOR_PLAYBOOK.md` should show one more than before).
 
-4. Commit: `feat(monitor): add Pattern 5.N — <summary>. Promoted from staging after 3 hits.`
+5. Commit: `feat(monitor): add Pattern 5.N — <summary>. Promoted from staging after 3 hits. codex_verdict: AGREE.`
 
-5. Push. Update `MEMORY.md`: move the staging entry to "Promoted patterns", stamp with commit hash.
+6. Push. Update `MEMORY.md`: move the staging entry to "Promoted patterns", stamp with commit hash.
 
 **Rollback**: if a promoted pattern causes a regression (false positives, failing fixes), revert the commit AND move the entry back to staging for more observation. Do not delete the pattern entirely — re-promote once you have better data.
 
@@ -1478,6 +1490,140 @@ with open(out_path, 'w', encoding='utf-8') as f:
 ```
 
 Keep dashboards for 13 weeks (one quarter); delete older in Tier 3 step 8 rotation.
+
+---
+
+## Part 15 — External validators (Codex cross-check)
+
+For a small set of high-stakes decisions, the monitor invokes **OpenAI Codex CLI** as a second-opinion reviewer. This is a safety net — Codex agreeing with the monitor's diagnosis raises confidence before the monitor takes destructive or irreversible actions.
+
+### Where Codex lives on this system
+```
+Executable: C:\Users\t_you\.codex\.sandbox-bin\codex.exe
+Subcommands used:
+  codex exec "<prompt>"    — non-interactive Q&A (for diagnostic second opinions)
+  codex review <file>      — non-interactive code review (for diff review before commit)
+Auth: pre-authenticated; approval mode "never" (no prompts); sandbox full-access
+Cost: ~15-20k tokens per invocation — use sparingly
+```
+
+### When to invoke Codex (ONLY these cases)
+
+| Trigger | Why Codex | Action if Codex disagrees |
+|---|---|---|
+| Pattern 5.14 novel issue AND monitor confidence <80% | Two AIs agreeing = higher confidence on unknown territory | Log both opinions, apply the SAFER of the two fixes, tag UNCERTAIN |
+| Pattern 11 auto-promotion (3-hit threshold reached, about to commit new playbook pattern) | Second-eyes on a permanent rule change | Don't promote. Keep in staging, require 5 hits before retry |
+| Code fix touches safety-critical modules: `risk_manager.py`, `wallet_sage.py`, `fill_tracker.py`, `coin_manager.py` (tier logic), `database.py` (schema) | Blast radius — a bad fix here kills the bot | Revert the edit, tag UNCERTAIN, leave fix unapplied |
+| Cancel-all decision during CRITICAL event (wallet stuck, balance drop >10%) | The most destructive runtime action | Don't cancel. Log CRITICAL with both opinions. User reviews. |
+
+**Do NOT invoke Codex for**:
+- Routine sweep checks (too expensive)
+- Known Part 5 patterns (procedure is already documented)
+- Benign findings (no decision to cross-check)
+- Cosmetic refactors (not safety-relevant)
+
+### Invocation pattern
+
+```bash
+# Diagnostic second opinion
+TIMEOUT=60  # seconds — Codex can hang; timeout prevents sweep stalling
+CODEX="C:/Users/t_you/.codex/.sandbox-bin/codex.exe"
+
+# Build context as a single prompt string
+read -r -d '' PROMPT <<'EOF'
+I am the CATalyst bot monitor diagnosing an anomaly. Here is the state:
+
+OBSERVED:
+- wallet_sell=24, db_sell=24, dexie_sell=20
+- 4 offers appear in wallet+DB but not on Dexie for 12+ minutes
+- Affected trade_ids: [list]
+- bech32 is NULL for all 4 in DB
+
+MY DIAGNOSIS: Pattern 5.1 (zombie offers — bech32 missing from DB, Dexie POST never happened)
+MY PROPOSED FIX: Fetch bech32 from Sage get_offer, POST to Dexie, update DB with dexie_id.
+
+QUESTIONS:
+1. Do you agree with the diagnosis? If not, what's the more likely cause?
+2. Any risk in the proposed fix I'm missing?
+3. Is there a better fix?
+
+Reply format:
+DIAGNOSIS_AGREE: yes/no
+RISK_FLAGGED: <brief>
+ALTERNATIVE_FIX: <brief or "none">
+CONFIDENCE: high/medium/low
+EOF
+
+# Invoke with timeout to prevent sweep stalling
+CODEX_OUT=$(timeout $TIMEOUT "$CODEX" exec "$PROMPT" 2>&1)
+CODEX_EXIT=$?
+
+if [ $CODEX_EXIT -eq 124 ]; then
+    # Timed out — proceed with monitor's own diagnosis, log the timeout
+    echo '{"event":"codex_timeout","context":"...", "pattern":"5.14"}' >> monitor.log
+elif [ $CODEX_EXIT -ne 0 ]; then
+    # Codex errored — proceed conservatively, log the error
+    echo '{"event":"codex_error","exit":'$CODEX_EXIT'}' >> monitor.log
+else
+    # Parse Codex response and factor into decision
+    # Look for "DIAGNOSIS_AGREE: yes" → proceed; "DIAGNOSIS_AGREE: no" → stay conservative
+fi
+```
+
+### Code review before commit (for safety-critical file fixes)
+
+```bash
+# Write the candidate diff to a file first
+git diff > /tmp/candidate_fix.patch
+
+# Ask Codex to review
+REVIEW=$(timeout 90 "$CODEX" review /tmp/candidate_fix.patch 2>&1)
+
+# If Codex flags issues (contains "ISSUE" / "CRITICAL" / "BUG" in output), don't commit
+if echo "$REVIEW" | grep -qiE "critical|bug|unsafe|race condition|data loss"; then
+    git checkout -- .  # discard changes
+    echo '{"event":"codex_review_flagged","revert":true,"review":"..."}' >> monitor.log
+else
+    # Proceed with commit+push per Part 6 step 9
+fi
+```
+
+### Decision matrix: what to do based on Codex + monitor agreement
+
+| Monitor confidence | Codex verdict | Action |
+|---|---|---|
+| High (>90%) | Agrees | Apply fix, normal logging |
+| High (>90%) | Disagrees | **Don't apply**. Log both. User reviews. |
+| Medium (60-90%) | Agrees | Apply fix, tag `CODEX_CONFIRMED` |
+| Medium (60-90%) | Disagrees | Apply the SAFER option (usually Codex's alternative, or no-op) |
+| Low (<60%) | Agrees | Apply with caution, tag UNCERTAIN |
+| Low (<60%) | Disagrees | **No-op**. Log both opinions. Wait for 2nd observation next sweep. |
+| Any | Timeout or error | Proceed with monitor's diagnosis alone. Log the Codex failure. |
+
+### Logging format
+
+Every Codex invocation writes to `monitor.log`:
+
+```json
+{
+  "ts": "<iso>",
+  "event": "codex_consulted",
+  "trigger": "pattern_5_14 | pattern_11_promote | safety_critical_edit | cancel_all",
+  "monitor_diagnosis": "...",
+  "monitor_confidence": 0.75,
+  "codex_verdict": "AGREE | DISAGREE | UNCLEAR",
+  "codex_tokens": 18234,
+  "decision": "applied | reverted | deferred",
+  "reasoning": "..."
+}
+```
+
+### Budget
+
+Soft cap: **10 Codex invocations per day**. At ~20k tokens each = ~200k tokens/day. If the monitor is about to exceed this, it:
+1. Logs `codex_budget_exhausted`
+2. Falls back to monitor-only decisions for the rest of the day
+3. Resets counter at UTC midnight
 
 ---
 

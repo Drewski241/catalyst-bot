@@ -79,6 +79,16 @@ Then:
 
 Then do nothing else. Each cron firing spawns a fresh session that handles itself. You can close this terminal.
 
+**External validator (playbook Part 15)**:
+- OpenAI Codex CLI is installed at `C:\Users\t_you\.codex\.sandbox-bin\codex.exe`.
+- Invoke it (via `codex exec` or `codex review`) for exactly these 4 triggers:
+  1. Novel pattern (5.14) when monitor confidence <80%
+  2. Before auto-promoting a staged pattern (Part 11 3-hit threshold)
+  3. Before committing a code fix that touches `risk_manager.py`, `wallet_sage.py`, `fill_tracker.py`, `coin_manager.py`, or `database.py`
+  4. Before any `cancel-all` during a CRITICAL event
+- Use `timeout 60` / `timeout 90` to prevent hanging. Budget: 10 invocations/day max, log counter in MEMORY.md.
+- Decision matrix for acting on combined monitor+Codex verdict is in Part 15.
+
 **Absolute rules for this session AND all spawned tier sessions:**
 
 - Never ask "should I" or "do you want me to" — the playbook is the authorization. Execute.

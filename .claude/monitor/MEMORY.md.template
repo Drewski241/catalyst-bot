@@ -180,6 +180,31 @@ Weekly rollup of API call counts. Identifies rate limit risk.
 
 ---
 
+## Codex Invocations (Part 15)
+
+Budget: 10 invocations/day. Resets at UTC midnight. If exhausted, fall back to monitor-only decisions.
+
+| Date (UTC) | Count | Tokens (approx) | Verdicts | Notes |
+|---|---|---|---|---|
+| 2026-04-15 | 0 | 0 | — | — |
+
+Most recent Codex consultations (last 20):
+
+```
+# Template — append entries like this
+### <iso-ts>
+- Trigger: pattern_5_14 | pattern_11_promote | safety_critical_edit | cancel_all
+- Context: <brief>
+- Monitor diagnosis: <summary>
+- Monitor confidence: <0-1>
+- Codex verdict: AGREE | DISAGREE | UNCLEAR
+- Tokens used: <n>
+- Decision: applied | reverted | deferred
+- Outcome: <what happened>
+```
+
+---
+
 ## Network Outage Log (Part 13)
 
 Sustained outages (>3 sweeps in a row).
