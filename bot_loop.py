@@ -1672,10 +1672,29 @@ class BotLoop:
         except Exception:
             xch_locked = cat_locked = 0
 
-        # Reverse-ladder config: when toggle ON, both sides taper large→small
-        # from inner to extreme. When OFF, small→large. BUY_LADDER_REVERSED
-        # env var is the authoritative flag (GUI toggle writes it).
-        reversed_flag = bool(getattr(cfg, "BUY_LADDER_REVERSED", False))
+        # Per-side layout detection. The watchdog's "reversed" mode expects
+        # inner to be the LARGEST tier; "standard" expects inner SMALLEST.
+        # Smart Defaults + config don't always produce symmetric layouts:
+        #   - Sell is typically natural (inner LARGEST, extreme SMALLEST) →
+        #     watchdog-"reversed".
+        #   - Buy is typically standard (inner SMALLEST, extreme LARGEST) →
+        #     watchdog-"standard" — unless the user flipped BUY_LADDER_REVERSED.
+        # Using one flag for both fires spurious inversion ERRORs on sell.
+        # Derive per-side orientation from the actual configured sizes.
+        def _is_reversed(tier_sizes: Dict[str, Decimal]) -> bool:
+            """True when inner tier is bigger than extreme (watchdog 'reversed')."""
+            try:
+                inner = tier_sizes.get("inner", Decimal("0")) or Decimal("0")
+                extreme = tier_sizes.get("extreme", Decimal("0")) or Decimal("0")
+                if inner <= 0 or extreme <= 0:
+                    # Missing data — fall back to the legacy config flag.
+                    return bool(getattr(cfg, "BUY_LADDER_REVERSED", False))
+                return inner > extreme
+            except Exception:
+                return bool(getattr(cfg, "BUY_LADDER_REVERSED", False))
+
+        buy_reversed = _is_reversed(buy_sizes)
+        sell_reversed = _is_reversed(sell_sizes)
 
         issues = run_periodic_audit(
             offers_buy=offers_buy,
@@ -1684,8 +1703,8 @@ class BotLoop:
             sell_tier_sizes_xch=sell_sizes,
             buy_tier_counts=buy_counts,
             sell_tier_counts=sell_counts,
-            buy_reversed=reversed_flag,
-            sell_reversed=reversed_flag,
+            buy_reversed=buy_reversed,
+            sell_reversed=sell_reversed,
             wallet_totals=wallet_totals,
             inventory=inventory_dict,
             db_locked_count={"xch": xch_locked, "cat": cat_locked},

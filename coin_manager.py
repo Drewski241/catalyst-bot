@@ -475,24 +475,59 @@ def get_tier_sizes_mojos_from_cfg(is_cat: bool = False) -> Dict[str, int]:
 
     if is_cat:
         # Need a price to convert XCH-denominated tier sizes to CAT mojos.
-        # Try bot_state / live dashboard endpoint; fall back to a synthetic
-        # price derived from cfg if live price isn't available.
+        # Priority:
+        #   1. bot.price_engine cached last_price (live weighted Tibet+Dexie mid).
+        #   2. bot._bot_state["mid_price"] (last published by cycle).
+        #   3. Fresh price_engine.get_price() call (computes weighted mid).
+        #   4. 0.0001 placeholder as an absolute last resort.
+        # The old implementation looked for `api_server.bot_state` as a
+        # MODULE-level attribute, which never existed (the real attribute
+        # lives on the BotLoop INSTANCE as `bot._bot_state`). Every lookup
+        # fell through to 0.0001, producing wrong CAT tier sizes and causing
+        # F70 to reject legitimate extreme-sized CAT coins as misfits.
         price = None
         try:
-            from flask import current_app  # optional
-        except Exception:
-            current_app = None  # noqa: F841
-        try:
-            # Read directly from bot_state if available via api_server module
             import api_server as _api
-            bs = getattr(_api, "bot_state", None) or {}
-            if bs and "mid_price" in bs:
-                price = Decimal(str(bs.get("mid_price") or 0))
+            _bot = getattr(_api, "bot", None)
+            if _bot is not None:
+                pe = getattr(_bot, "price_engine", None)
+                if pe is not None:
+                    try:
+                        last = pe.get_last_price()
+                        if last and last > 0:
+                            price = Decimal(str(last))
+                    except Exception:
+                        pass
+                if price is None or price <= 0:
+                    bs = getattr(_bot, "_bot_state", None) or {}
+                    mid = bs.get("mid_price")
+                    if mid:
+                        try:
+                            price = Decimal(str(mid))
+                            if price <= 0:
+                                price = None
+                        except Exception:
+                            price = None
+                if (price is None or price <= 0) and pe is not None:
+                    try:
+                        fresh = pe.get_price()
+                        if isinstance(fresh, dict):
+                            p = fresh.get("mid_price") or fresh.get("mid") or fresh.get("price")
+                        else:
+                            p = fresh
+                        if p:
+                            price = Decimal(str(p))
+                            if price <= 0:
+                                price = None
+                    except Exception:
+                        price = None
         except Exception:
             price = None
         if price is None or price <= 0:
-            # Fall back to a placeholder — will be approximate but
-            # classify_coin's 0.98/1.5 bounds are generous enough to tolerate.
+            # Last-resort placeholder. Only happens before the bot is wired
+            # up or when the price engine is completely unavailable. Note:
+            # this produces wrong sizes that cause F70 misfit false
+            # positives — avoid by keeping the price engine reachable.
             price = Decimal("0.0001")
         cat_scale = Decimal(10) ** Decimal(cfg.CAT_DECIMALS)
         out = {}
