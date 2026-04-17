@@ -22443,6 +22443,8 @@
                 return { icon: '🛑', msg: 'Circuit breaker tripped!', cls: 'la-error' };
             if (eventType === 'position_limit')
                 return { icon: '🛑', msg: 'Position limit reached', cls: 'la-warning' };
+            if (eventType === 'position_hard_guard_blocked')
+                return { icon: '⛔', msg: 'Ladder rebuild deferred — position cap (fills will unwind)', cls: 'la-warning' };
             if (eventType === 'emergency_requote')
                 return { icon: '🚨', msg: 'Emergency requote — price spike', cls: 'la-error' };
             if (eventType === 'emergency_requote_done')
@@ -22627,6 +22629,13 @@
             // misfit-backed. rawValue is a comma-separated list of
             // trade_ids supplied by bot_loop when it raised the alert.
             // Option (a): cancel + let normal requote path rebuild.
+            //
+            // Progressive UX (addresses "nothing happened" feedback):
+            //   t=0   — toast "Cancelling N…" + button flips to spinner text
+            //   t+~5s — toast "Cancel submitted, waiting for chain to confirm"
+            //   t+60-90s — toast "Cancelled N. Ladder rebuilds on next cycle."
+            // The backend endpoint is synchronous (waits for coins to
+            // return) so the final toast lands when the fetch resolves.
             cancel_mismatched_offers: async (rawValue) => {
                 const tradeIds = String(rawValue || '')
                     .split(',').map(s => s.trim()).filter(Boolean);
@@ -22634,6 +22643,39 @@
                     showToast('No offers were tagged to cancel.', 'warning');
                     return;
                 }
+
+                // Disable the button(s) so the user can't double-click
+                // and flip the label to a "Cancelling…" state. We target
+                // by action name — there's normally only one such button
+                // visible at a time.
+                const actionBtns = Array.from(document.querySelectorAll(
+                    '.alert-action-btn[data-action="cancel_mismatched_offers"]'));
+                const originalLabels = actionBtns.map(b => b.textContent);
+                for (const b of actionBtns) {
+                    b.disabled = true;
+                    b.style.opacity = '0.6';
+                    b.style.cursor = 'wait';
+                    b.textContent = `Cancelling ${tradeIds.length}…`;
+                }
+
+                // Immediate feedback — sticks long enough to bridge the
+                // ~60-90s the backend spends waiting for the cancel to
+                // confirm. Use 'warning' because 'info' auto-dismisses in
+                // ~3s and users missed it.
+                showToast(
+                    `Cancelling ${tradeIds.length} mismatched offer(s)… `
+                    + 'This takes 60-90s while the cancel confirms on-chain.',
+                    'warning');
+
+                // Secondary toast after 5s to reassure the user that the
+                // request is still in flight and not stuck.
+                const reassureTimer = setTimeout(() => {
+                    showToast(
+                        'Cancel submitted — waiting for the chain to '
+                        + 'confirm. You can keep using the dashboard.',
+                        'info');
+                }, 5000);
+
                 // Find the alert that triggered this action so we can
                 // clear it server-side after a successful cancel.
                 const sourceAlert = Object.values(_activeAlerts || {}).find(
@@ -22641,6 +22683,17 @@
                         && String(a.action || '') === 'cancel_mismatched_offers'
                         && String(a.action_value || '') === String(rawValue || ''));
                 const alertId = sourceAlert ? sourceAlert.id : '';
+
+                const restoreButtons = () => {
+                    for (let i = 0; i < actionBtns.length; i++) {
+                        const b = actionBtns[i];
+                        b.disabled = false;
+                        b.style.opacity = '';
+                        b.style.cursor = '';
+                        b.textContent = originalLabels[i] || 'Cancel mismatched offers';
+                    }
+                };
+
                 try {
                     const resp = await apiFetch(
                         `${API_URL}/watchdog/cancel-mismatched-offers`,
@@ -22652,6 +22705,7 @@
                                 alert_id: alertId,
                             })
                         });
+                    clearTimeout(reassureTimer);
                     const data = await resp.json().catch(() => ({}));
                     if (data && data.success) {
                         const n = data.cancelled_count || 0;
@@ -22659,12 +22713,25 @@
                         if (f > 0) {
                             showToast(
                                 `Cancelled ${n} offer(s), ${f} failed. `
-                                + 'The ladder will rebuild on the next cycle.',
+                                + 'Watch the Activity ticker for ladder rebuild.',
                                 'warning');
                         } else {
+                            // The returned coins may be the WRONG size
+                            // (that's why we cancelled them in the first
+                            // place). Topup will consolidate / reshape
+                            // them into tier-correct sizes before the
+                            // ladder rebuilds, which takes a few cycles.
+                            // Separately, the position circuit breaker
+                            // can hold up the rebuild if current exposure
+                            // is near the hard limit — in that case the
+                            // rebuild waits for the opposite side to fill
+                            // and unwind before it resumes.
                             showToast(
-                                `Cancelled ${n} mismatched offer(s). `
-                                + 'The ladder will rebuild with correctly-sized coins.',
+                                `✅ Cancelled ${n} offer(s). `
+                                + 'Returned coins will be reshaped by topup; '
+                                + 'the ladder rebuilds over the next few '
+                                + 'cycles. Watch the Activity ticker for '
+                                + 'topup + offer-creation events.',
                                 'success');
                         }
                         if (alertId) {
@@ -22674,11 +22741,15 @@
                             }
                             renderAlerts();
                         }
+                        // Buttons vanish with the alert; no restore needed.
                     } else {
+                        restoreButtons();
                         const err = (data && data.error) || 'Cancel request failed';
                         showToast(`Cancel failed: ${err}`, 'error');
                     }
                 } catch (e) {
+                    clearTimeout(reassureTimer);
+                    restoreButtons();
                     showToast('Cancel request failed: ' + formatError(e), 'error');
                 }
             }
