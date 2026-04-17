@@ -1048,6 +1048,15 @@ def create_bot() -> BotLoop:
     # This avoids a circular import: api_server → bot_loop is the import direction,
     # so we inject the callable after construction instead.
     bot._spacescan_context_getter = _get_spacescan_market_context
+    # F74: shape-fix recovery orchestrator. Attached after the event
+    # bus is wired so flows can emit SSE progress events.
+    try:
+        from shape_fix_orchestrator import ShapeFixOrchestrator
+        bot.shape_fix_orchestrator = ShapeFixOrchestrator(bot, events)
+    except Exception as _sf_err:
+        # Non-fatal — dashboard simply won't have the modal experience
+        print(f"  [SHAPE-FIX] ⚠️  Could not init orchestrator: {_sf_err}", flush=True)
+        bot.shape_fix_orchestrator = None
     bot.runtime_monitor.start()
     return bot
 
@@ -5356,20 +5365,21 @@ def api_dismiss_alert():
 
 @app.route("/api/watchdog/cancel-mismatched-offers", methods=["POST"])
 def api_watchdog_cancel_mismatched_offers():
-    """F72-UI: cancel the specific offers the watchdog flagged as misfit-
-    backed.
+    """F72/F74 Cancel-Recovery: delegate the watchdog-flagged cancel to
+    the ShapeFixOrchestrator so the UI gets progressive status updates.
 
-    Body: ``{"trade_ids": [...], "alert_id": "...optional..."}``
+    Body: ``{"trade_ids": [...], "alert_id": "...optional...", "side": "buy"|"sell"}``
 
-    Behaviour (option (a) from the audit): cancel the flagged offers and
-    let the normal requote path rebuild them with correctly-sized coins.
-    No force-requote is issued — the next cycle's create_ladder will see
-    missing slots and fill them via F70 strict selection.
+    Returns 202 Accepted with ``{"success": True, "flow_id": "..."}``
+    immediately — the actual cancel + wait + rebuild run on a dedicated
+    thread. The frontend subscribes to ``shape_fix_progress`` SSE events
+    (keyed by ``flow_id``) to follow the flow.
 
-    Returns ``{"success": True, "cancelled_count": N}`` on success, or
-    ``{"success": False, "error": ...}`` on failure. The storm-protection
-    inside ``offer_manager.cancel_offers`` applies; this endpoint does not
-    pass ``force_storm=True``.
+    If the orchestrator is busy with another flow (one side at a time
+    per user requirement), returns 409 with an explanatory error.
+
+    The storm-protection inside ``offer_manager.cancel_offers`` still
+    applies; this endpoint never passes ``force_storm=True``.
     """
     if not bot:
         return jsonify({"success": False, "error": "Bot not initialised"}), 500
@@ -5394,39 +5404,122 @@ def api_watchdog_cancel_mismatched_offers():
             seen.add(t)
             unique_tids.append(t)
 
-    try:
-        result = bot.offer_manager.cancel_offers(
-            unique_tids, reason="watchdog_shape_fix")
-    except Exception as e:
-        log_event("error", "watchdog_cancel_failed",
-                  f"Watchdog-triggered cancel failed: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
-
-    cancelled = [tid for tid, r in (result or {}).items()
-                 if isinstance(r, dict) and r.get("success")]
-    failed = [tid for tid in unique_tids if tid not in cancelled]
-
-    log_event("info", "watchdog_cancel_triggered",
-              f"Watchdog cancel action cancelled {len(cancelled)} of "
-              f"{len(unique_tids)} flagged offers "
-              f"(failed={len(failed)})",
-              data={"cancelled": cancelled, "failed": failed})
-
-    # Clear the originating alert so the recommendation card goes away.
     alert_id = str(data.get("alert_id") or "").strip()
-    if alert_id:
+
+    # Infer side from the alert_id when caller didn't pass it explicitly.
+    # Alert IDs follow `watchdog_<code>_<side>` convention.
+    side = str(data.get("side") or "").strip().lower()
+    if side not in ("buy", "sell"):
+        if alert_id.endswith("_buy"):
+            side = "buy"
+        elif alert_id.endswith("_sell"):
+            side = "sell"
+        else:
+            side = "sell"   # Default — most shape violations seen on sell
+
+    orchestrator = getattr(bot, "shape_fix_orchestrator", None)
+    if orchestrator is None:
+        # Fallback — orchestrator failed to init. Fall back to the
+        # older synchronous path so the button still does something.
+        log_event("warning", "watchdog_cancel_fallback_sync",
+                  "Orchestrator unavailable — falling back to sync cancel")
         try:
-            alerts.clear(alert_id)
-        except Exception:
-            pass
+            result = bot.offer_manager.cancel_offers(
+                unique_tids, reason="watchdog_shape_fix")
+        except Exception as e:
+            log_event("error", "watchdog_cancel_failed",
+                      f"Watchdog-triggered cancel failed: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
+        cancelled = [tid for tid, r in (result or {}).items()
+                     if isinstance(r, dict) and r.get("success")]
+        failed = [tid for tid in unique_tids if tid not in cancelled]
+        if alert_id:
+            try:
+                alerts.clear(alert_id)
+            except Exception:
+                pass
+        return jsonify({
+            "success": True,
+            "fallback": "sync",
+            "cancelled_count": len(cancelled),
+            "failed_count": len(failed),
+        })
+
+    # Happy path — delegate to the orchestrator.
+    outcome = orchestrator.start_flow(
+        side=side, trade_ids=unique_tids, alert_id=alert_id)
+    if not outcome.get("accepted"):
+        return jsonify({
+            "success": False,
+            "error": outcome.get("error") or "Orchestrator rejected flow",
+        }), 409
+
+    log_event("info", "shape_fix_flow_started",
+              f"Shape-fix flow started for {side} side "
+              f"({len(unique_tids)} offers)",
+              data={
+                  "flow_id": outcome["flow_id"],
+                  "side": side,
+                  "trade_id_count": len(unique_tids),
+                  "alert_id": alert_id,
+              })
 
     return jsonify({
         "success": True,
-        "cancelled_count": len(cancelled),
-        "failed_count": len(failed),
-        "cancelled": cancelled,
-        "failed": failed,
-    })
+        "flow_id": outcome["flow_id"],
+        "side": side,
+        "total_requested": len(unique_tids),
+    }), 202
+
+
+@app.route("/api/watchdog/shape-fix-status")
+def api_watchdog_shape_fix_status():
+    """Snapshot of any in-flight shape-fix recovery flow.
+
+    Returns ``{"active": False}`` when idle, or the current
+    :class:`FlowState` rendered as a dict when a flow is running.
+
+    The frontend uses this as a fallback for the initial render (since
+    SSE events only fire on state *change* — a subscriber that connects
+    mid-flow needs to fetch the current state to bootstrap its UI).
+    """
+    if not bot:
+        return jsonify({"active": False, "error": "Bot not initialised"}), 200
+    orch = getattr(bot, "shape_fix_orchestrator", None)
+    if orch is None:
+        return jsonify({"active": False, "error": "Orchestrator unavailable"}), 200
+    flow = orch.current_flow()
+    if flow is None:
+        return jsonify({"active": False}), 200
+    return jsonify({"active": True, "flow": flow.to_dict()})
+
+
+@app.route("/api/watchdog/shape-fix-abort", methods=["POST"])
+def api_watchdog_shape_fix_abort():
+    """Request abort of the running shape-fix flow (if any).
+
+    Body: ``{"side": "buy"|"sell"}`` (optional — defaults to the only
+    running side).
+
+    Abort is advisory — the flow rolls forward to its next checkpoint
+    and halts cleanly. On-chain cancels already submitted will confirm
+    regardless of the abort.
+    """
+    if not bot:
+        return jsonify({"success": False, "error": "Bot not initialised"}), 500
+    orch = getattr(bot, "shape_fix_orchestrator", None)
+    if orch is None:
+        return jsonify({"success": False, "error": "Orchestrator unavailable"}), 404
+    data = request.get_json(silent=True) or {}
+    side = str(data.get("side") or "").strip().lower()
+    if side not in ("buy", "sell"):
+        # Abort whichever side is running
+        flow = orch.current_flow()
+        if flow is None:
+            return jsonify({"success": False, "error": "No flow running"}), 404
+        side = flow.side
+    ok = orch.abort_flow(side)
+    return jsonify({"success": ok, "side": side})
 
 
 # ---------------------------------------------------------------------------

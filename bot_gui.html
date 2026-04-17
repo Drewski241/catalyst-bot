@@ -22222,6 +22222,14 @@
                 delete _activeAlerts[data.id];
                 renderAlerts();
             }
+            // F74: shape-fix recovery progress events. The modal (if
+            // open) updates its stage list live as the orchestrator
+            // walks through cancelling → waiting_for_confirmation → …
+            if (type === 'shape_fix_progress') {
+                if (typeof handleShapeFixProgress === 'function') {
+                    handleShapeFixProgress(data);
+                }
+            }
         }
 
         // =================================================================
@@ -22625,17 +22633,12 @@
             },
             run_doctor: () => showDoctorReport(),
             show_api_stats: () => showApiStatsReport(),
-            // F72-UI: cancel the specific offers the watchdog flagged as
-            // misfit-backed. rawValue is a comma-separated list of
-            // trade_ids supplied by bot_loop when it raised the alert.
-            // Option (a): cancel + let normal requote path rebuild.
-            //
-            // Progressive UX (addresses "nothing happened" feedback):
-            //   t=0   — toast "Cancelling N…" + button flips to spinner text
-            //   t+~5s — toast "Cancel submitted, waiting for chain to confirm"
-            //   t+60-90s — toast "Cancelled N. Ladder rebuilds on next cycle."
-            // The backend endpoint is synchronous (waits for coins to
-            // return) so the final toast lands when the fetch resolves.
+            // F72/F74 Cancel-Recovery: delegate to the ShapeFixOrchestrator
+            // via /api/watchdog/cancel-mismatched-offers. The endpoint
+            // returns immediately with a flow_id; progress arrives via
+            // the SSE `shape_fix_progress` stream and updates the modal
+            // live. rawValue is a comma-separated list of trade_ids
+            // supplied by bot_loop when it raised the alert.
             cancel_mismatched_offers: async (rawValue) => {
                 const tradeIds = String(rawValue || '')
                     .split(',').map(s => s.trim()).filter(Boolean);
@@ -22644,10 +22647,9 @@
                     return;
                 }
 
-                // Disable the button(s) so the user can't double-click
-                // and flip the label to a "Cancelling…" state. We target
-                // by action name — there's normally only one such button
-                // visible at a time.
+                // Prevent double-click: disable the button while the
+                // request is in flight. Once the modal is up, the user
+                // has explicit Abort/Close controls instead.
                 const actionBtns = Array.from(document.querySelectorAll(
                     '.alert-action-btn[data-action="cancel_mismatched_offers"]'));
                 const originalLabels = actionBtns.map(b => b.textContent);
@@ -22655,44 +22657,29 @@
                     b.disabled = true;
                     b.style.opacity = '0.6';
                     b.style.cursor = 'wait';
-                    b.textContent = `Cancelling ${tradeIds.length}…`;
+                    b.textContent = 'Starting…';
                 }
-
-                // Immediate feedback — sticks long enough to bridge the
-                // ~60-90s the backend spends waiting for the cancel to
-                // confirm. Use 'warning' because 'info' auto-dismisses in
-                // ~3s and users missed it.
-                showToast(
-                    `Cancelling ${tradeIds.length} mismatched offer(s)… `
-                    + 'This takes 60-90s while the cancel confirms on-chain.',
-                    'warning');
-
-                // Secondary toast after 5s to reassure the user that the
-                // request is still in flight and not stuck.
-                const reassureTimer = setTimeout(() => {
-                    showToast(
-                        'Cancel submitted — waiting for the chain to '
-                        + 'confirm. You can keep using the dashboard.',
-                        'info');
-                }, 5000);
-
-                // Find the alert that triggered this action so we can
-                // clear it server-side after a successful cancel.
-                const sourceAlert = Object.values(_activeAlerts || {}).find(
-                    (a) => a && !a.dismissed
-                        && String(a.action || '') === 'cancel_mismatched_offers'
-                        && String(a.action_value || '') === String(rawValue || ''));
-                const alertId = sourceAlert ? sourceAlert.id : '';
-
                 const restoreButtons = () => {
                     for (let i = 0; i < actionBtns.length; i++) {
                         const b = actionBtns[i];
                         b.disabled = false;
                         b.style.opacity = '';
                         b.style.cursor = '';
-                        b.textContent = originalLabels[i] || 'Cancel mismatched offers';
+                        b.textContent = originalLabels[i] || 'Cancel recovery';
                     }
                 };
+
+                // Find the originating alert so we can pass its id to
+                // the server (used to infer side + clear on success).
+                const sourceAlert = Object.values(_activeAlerts || {}).find(
+                    (a) => a && !a.dismissed
+                        && String(a.action || '') === 'cancel_mismatched_offers'
+                        && String(a.action_value || '') === String(rawValue || ''));
+                const alertId = sourceAlert ? sourceAlert.id : '';
+                // Infer side from the alert_id (ends with _buy or _sell)
+                let side = 'sell';
+                if (alertId.endsWith('_buy')) side = 'buy';
+                else if (alertId.endsWith('_sell')) side = 'sell';
 
                 try {
                     const resp = await apiFetch(
@@ -22703,52 +22690,53 @@
                             body: JSON.stringify({
                                 trade_ids: tradeIds,
                                 alert_id: alertId,
+                                side: side,
                             })
                         });
-                    clearTimeout(reassureTimer);
                     const data = await resp.json().catch(() => ({}));
-                    if (data && data.success) {
+
+                    // 202 Accepted → orchestrator started. Open modal
+                    // and subscribe to shape_fix_progress.
+                    if (data && data.success && data.flow_id) {
+                        openShapeFixModal({
+                            flowId: data.flow_id,
+                            side: data.side || side,
+                            totalRequested: data.total_requested || tradeIds.length,
+                        });
+                        // The alert goes away when the orchestrator
+                        // clears it on completion — keep the button
+                        // disabled state for a moment so the user
+                        // doesn't re-click, then restore in case the
+                        // flow is later resurrected (shouldn't happen
+                        // in P1 but defensive).
+                        setTimeout(restoreButtons, 2000);
+                        return;
+                    }
+
+                    // Fallback for the legacy sync path (orchestrator
+                    // couldn't init). Keep the old toasts so the button
+                    // still does something visible.
+                    if (data && data.success && data.fallback === 'sync') {
                         const n = data.cancelled_count || 0;
                         const f = data.failed_count || 0;
-                        if (f > 0) {
-                            showToast(
-                                `Cancelled ${n} offer(s), ${f} failed. `
-                                + 'Watch the Activity ticker for ladder rebuild.',
-                                'warning');
-                        } else {
-                            // The returned coins may be the WRONG size
-                            // (that's why we cancelled them in the first
-                            // place). Topup will consolidate / reshape
-                            // them into tier-correct sizes before the
-                            // ladder rebuilds, which takes a few cycles.
-                            // Separately, the position circuit breaker
-                            // can hold up the rebuild if current exposure
-                            // is near the hard limit — in that case the
-                            // rebuild waits for the opposite side to fill
-                            // and unwind before it resumes.
-                            showToast(
-                                `✅ Cancelled ${n} offer(s). `
-                                + 'Returned coins will be reshaped by topup; '
-                                + 'the ladder rebuilds over the next few '
-                                + 'cycles. Watch the Activity ticker for '
-                                + 'topup + offer-creation events.',
-                                'success');
-                        }
-                        if (alertId) {
-                            // Local clear — SSE alert_cleared will also arrive.
-                            if (_activeAlerts[alertId]) {
-                                _activeAlerts[alertId].dismissed = true;
-                            }
+                        showToast(
+                            `✅ Cancelled ${n} offer(s)${f ? ` (${f} failed)` : ''}. `
+                            + 'Ladder will rebuild over the next few cycles.',
+                            f > 0 ? 'warning' : 'success');
+                        if (alertId && _activeAlerts[alertId]) {
+                            _activeAlerts[alertId].dismissed = true;
                             renderAlerts();
                         }
-                        // Buttons vanish with the alert; no restore needed.
-                    } else {
                         restoreButtons();
-                        const err = (data && data.error) || 'Cancel request failed';
-                        showToast(`Cancel failed: ${err}`, 'error');
+                        return;
                     }
+
+                    // Orchestrator rejected (e.g. another flow running)
+                    // or generic failure.
+                    restoreButtons();
+                    const err = (data && data.error) || 'Cancel request failed';
+                    showToast(`Could not start recovery: ${err}`, 'error');
                 } catch (e) {
-                    clearTimeout(reassureTimer);
                     restoreButtons();
                     showToast('Cancel request failed: ' + formatError(e), 'error');
                 }
@@ -22987,6 +22975,272 @@
             };
             document.addEventListener('keydown', escHandler);
             return closeFn;
+        }
+
+        // =================================================================
+        // F74 Shape-fix recovery modal
+        // =================================================================
+        // Opened when the user clicks "Cancel N mismatched offer(s)" on a
+        // watchdog Recommendation. Shows live progress from the
+        // ShapeFixOrchestrator via the SSE `shape_fix_progress` event.
+        //
+        // Lifecycle:
+        //   1. Button click → POST → 202 + flow_id
+        //   2. openShapeFixModal({flowId, side, totalRequested})
+        //   3. SSE events stream in → handleShapeFixProgress updates body
+        //   4. Flow reaches 'complete' or 'halted' → Abort disabled, Close enabled
+        //   5. User clicks Close → modal removed, state cleared
+        // =================================================================
+
+        let _shapeFixModalState = null; // { flowId, overlay, closeFn, ... }
+
+        // Human-readable labels + icons for each stage. Used by the
+        // renderer to draw the stage list.
+        const SHAPE_FIX_STAGE_LABELS = {
+            cancelling: 'Cancelling offers',
+            waiting_for_confirmation: 'Waiting for on-chain confirmation',
+            checking_coins: 'Checking available tier coins',
+            reshaping: 'Reshaping coins',
+            rebuilding: 'Rebuilding ladder',
+            complete: 'Complete',
+            halted: 'Halted',
+        };
+
+        const SHAPE_FIX_HALT_LABELS = {
+            user_aborted: 'Aborted by user',
+            timeout_waiting_for_confirmation: 'Timed out waiting for chain confirmation',
+            timeout_reshape: 'Timed out waiting for coin reshape',
+            position_guard_blocked: 'Position limit reached — waiting for opposite-side fills',
+            no_tier_correct_coins_possible: 'Could not produce tier-correct coins (run coin prep)',
+            cancel_rejected: 'Cancel rejected by storm protection',
+            internal_error: 'Internal error — see logs',
+        };
+
+        function openShapeFixModal({ flowId, side, totalRequested }) {
+            // Tear down any previous modal (shouldn't happen — only one
+            // orchestrator flow at a time — but defensive).
+            if (_shapeFixModalState && _shapeFixModalState.closeFn) {
+                _shapeFixModalState.closeFn();
+            }
+
+            const overlay = document.createElement('div');
+            overlay.className = 'modal active';
+            overlay.style.zIndex = '10010';
+            overlay.setAttribute('role', 'dialog');
+            overlay.setAttribute('aria-labelledby', '_sf_title');
+            const sideLabel = String(side || 'sell').toUpperCase();
+            overlay.innerHTML = `
+                <div class="v4-modal-shell v4-modal-shell--violet v4-modal-shell--lg">
+                    <div class="v4-modal-inner">
+                        <button class="v4-modal-close _sf_close_x" type="button" aria-label="Close" style="display:none;">&times;</button>
+                        <div class="v4-modal-hero">
+                            <div class="v4-modal-icon">🔧</div>
+                            <div>
+                                <div class="v4-modal-kicker">Cancel recovery</div>
+                                <h3 class="v4-modal-title" id="_sf_title">Fixing ${escapeHtml(sideLabel)} ladder shape</h3>
+                                <p class="v4-modal-copy" id="_sf_copy">Starting recovery for ${escapeHtml(String(totalRequested || 0))} offer(s)…</p>
+                            </div>
+                        </div>
+                        <div class="v4-modal-panel">
+                            <div id="_sf_stages" aria-live="polite" style="display:flex; flex-direction:column; gap:8px; font-size:14px;"></div>
+                        </div>
+                        <div id="_sf_detail" style="color: var(--text-secondary); font-size: 13px; padding: 10px 4px 4px; min-height: 18px;" aria-live="polite">
+                            Starting…
+                        </div>
+                        <div id="_sf_elapsed" style="color: var(--text-tertiary); font-size: 11px; padding: 0 4px 4px;">
+                            Elapsed: 0s
+                        </div>
+                        <div class="v4-modal-actions v4-modal-actions--center">
+                            <button class="btn btn-config btn-secondary _sf_abort" type="button">Cancel recovery</button>
+                            <button class="btn btn-config btn-primary _sf_close" type="button" style="display:none;">Close</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(overlay);
+
+            const closeFn = () => {
+                if (_shapeFixModalState && _shapeFixModalState.elapsedTimer) {
+                    clearInterval(_shapeFixModalState.elapsedTimer);
+                }
+                if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+                _shapeFixModalState = null;
+            };
+
+            // X and Close buttons both dismiss (only available post-terminal)
+            overlay.querySelector('._sf_close_x')?.addEventListener('click', closeFn);
+            overlay.querySelector('._sf_close')?.addEventListener('click', closeFn);
+
+            // Abort button sends the abort request, flow halts on next checkpoint
+            overlay.querySelector('._sf_abort')?.addEventListener('click', async () => {
+                const btn = overlay.querySelector('._sf_abort');
+                if (btn) {
+                    btn.disabled = true;
+                    btn.textContent = 'Aborting…';
+                }
+                try {
+                    await apiFetch(`${API_URL}/watchdog/shape-fix-abort`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ side: side }),
+                    });
+                } catch (e) { /* non-fatal — flow will halt on its own if server unreachable */ }
+            });
+
+            // Escape closes ONLY when the flow is terminal (prevents
+            // accidental dismissal during the cancel phase).
+            const escHandler = (e) => {
+                if (e.key === 'Escape' && _shapeFixModalState
+                    && _shapeFixModalState.lastStatus !== 'running') {
+                    document.removeEventListener('keydown', escHandler);
+                    closeFn();
+                }
+            };
+            document.addEventListener('keydown', escHandler);
+
+            // Elapsed-time tick so the user sees liveness while waiting
+            // for chain confirmation (~60s of not much to show).
+            const startedAt = Date.now();
+            const elapsedTimer = setInterval(() => {
+                const el = overlay.querySelector('#_sf_elapsed');
+                if (el) {
+                    const sec = Math.floor((Date.now() - startedAt) / 1000);
+                    const m = Math.floor(sec / 60), s = sec % 60;
+                    el.textContent = 'Elapsed: '
+                        + (m > 0 ? `${m}m ${s}s` : `${s}s`);
+                }
+            }, 1000);
+
+            _shapeFixModalState = {
+                flowId: flowId,
+                side: side,
+                overlay: overlay,
+                closeFn: closeFn,
+                elapsedTimer: elapsedTimer,
+                lastStatus: 'running',
+            };
+
+            // Render an initial "starting" state so the modal shows
+            // something immediately — the first SSE event may take a
+            // moment to arrive.
+            _renderShapeFixBody({
+                flow_id: flowId,
+                side: side,
+                stage: 'cancelling',
+                status: 'running',
+                detail: `Starting recovery for ${totalRequested || 0} offer(s)…`,
+                pipeline: ['cancelling', 'waiting_for_confirmation'],
+                stages_completed: [],
+                halt_reason: null,
+                summary: { total_requested: totalRequested || 0, cancelled_count: 0, new_offer_count: 0 },
+            });
+
+            // Also fetch current status in case the flow has advanced
+            // past this point already (race: modal opens after first
+            // SSE event fired).
+            (async () => {
+                try {
+                    const res = await apiFetch(`${API_URL}/watchdog/shape-fix-status`);
+                    const data = await res.json();
+                    if (data && data.active && data.flow && data.flow.flow_id === flowId) {
+                        _renderShapeFixBody(data.flow);
+                    }
+                } catch (e) { /* best effort */ }
+            })();
+        }
+
+        function handleShapeFixProgress(data) {
+            if (!_shapeFixModalState || !data) return;
+            if (data.flow_id !== _shapeFixModalState.flowId) return;
+            _renderShapeFixBody(data);
+        }
+
+        function _renderShapeFixBody(flow) {
+            const overlay = _shapeFixModalState && _shapeFixModalState.overlay;
+            if (!overlay) return;
+
+            // Stage list — tick past stages, highlight the current one,
+            // grey pending ones, show halted state with reason.
+            const stagesEl = overlay.querySelector('#_sf_stages');
+            const detailEl = overlay.querySelector('#_sf_detail');
+            const copyEl = overlay.querySelector('#_sf_copy');
+
+            const pipeline = Array.isArray(flow.pipeline) && flow.pipeline.length
+                ? flow.pipeline
+                : ['cancelling', 'waiting_for_confirmation'];
+            const completed = new Set(flow.stages_completed || []);
+            const currentStage = String(flow.stage || '');
+            const isHalted = flow.status === 'halted';
+            const isComplete = flow.status === 'complete';
+
+            let html = '';
+            for (const stage of pipeline) {
+                let icon, color, weight;
+                if (completed.has(stage)) {
+                    icon = '✓'; color = 'var(--status-success)'; weight = '500';
+                } else if (stage === currentStage && !isHalted && !isComplete) {
+                    icon = '→'; color = 'var(--accent-primary)'; weight = '600';
+                } else if (isHalted && stage === currentStage) {
+                    icon = '✕'; color = 'var(--status-danger)'; weight = '600';
+                } else {
+                    icon = '·'; color = 'var(--text-tertiary)'; weight = '400';
+                }
+                const label = SHAPE_FIX_STAGE_LABELS[stage] || stage;
+                html += `<div style="display:flex; align-items:center; gap:10px; color:${color}; font-weight:${weight};">`
+                    + `<span style="display:inline-block; width:16px; text-align:center;">${icon}</span>`
+                    + `<span>${escapeHtml(label)}</span>`
+                    + `</div>`;
+            }
+            stagesEl.innerHTML = html;
+
+            // Detail line — current activity or halt reason
+            let detailText = flow.detail || '';
+            if (isHalted && flow.halt_reason) {
+                const reasonLabel = SHAPE_FIX_HALT_LABELS[flow.halt_reason] || flow.halt_reason;
+                detailText = `Halted: ${reasonLabel}. ${flow.detail || ''}`;
+                detailEl.style.color = 'var(--status-danger)';
+            } else if (isComplete) {
+                detailEl.style.color = 'var(--status-success)';
+            } else {
+                detailEl.style.color = 'var(--text-secondary)';
+            }
+            detailEl.textContent = detailText;
+
+            // Copy (hero subtitle) reflects lifecycle
+            if (isComplete) {
+                copyEl.textContent = 'Recovery complete.';
+            } else if (isHalted) {
+                copyEl.textContent = 'Recovery halted.';
+            } else {
+                const n = (flow.summary && flow.summary.total_requested) || 0;
+                copyEl.textContent = `Recovery in progress — ${n} offer(s) being processed…`;
+            }
+
+            // Toggle buttons when flow terminates
+            const abortBtn = overlay.querySelector('._sf_abort');
+            const closeBtn = overlay.querySelector('._sf_close');
+            const closeX = overlay.querySelector('._sf_close_x');
+            if (isComplete || isHalted) {
+                if (abortBtn) {
+                    abortBtn.style.display = 'none';
+                }
+                if (closeBtn) {
+                    closeBtn.style.display = '';
+                    closeBtn.textContent = isComplete ? 'Close' : 'Close';
+                }
+                if (closeX) closeX.style.display = '';
+                _shapeFixModalState.lastStatus = flow.status;
+                // Stop the elapsed ticker — time stops when flow terminates
+                if (_shapeFixModalState.elapsedTimer) {
+                    clearInterval(_shapeFixModalState.elapsedTimer);
+                    _shapeFixModalState.elapsedTimer = null;
+                }
+            } else {
+                if (abortBtn) abortBtn.style.display = '';
+                if (closeBtn) closeBtn.style.display = 'none';
+                if (closeX) closeX.style.display = 'none';
+                _shapeFixModalState.lastStatus = 'running';
+            }
         }
 
         function canRunDashboardAction(actionId) {
