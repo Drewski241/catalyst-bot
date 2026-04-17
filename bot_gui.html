@@ -8796,6 +8796,25 @@
                     </div>
                 </div>
 
+                <!-- Gross Volume Breakdown Row — bought vs sold vs net flow -->
+                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-3); margin-bottom: var(--space-5);">
+                    <div class="v4-hero-card">
+                        <div class="v4-hero-label">Bought <span class="cc-help">?<span class="cc-tooltip">Gross XCH we paid out across all buy fills this session, and the CAT received in return. These are raw amounts (not round-trip pairs).</span></span></div>
+                        <div class="v4-hero-value" id="pnlBuyVolumeXch" style="font-size: var(--text-xl); color: var(--status-danger);">0.0000</div>
+                        <div class="v4-hero-sub" id="pnlBuyVolumeCat">0 CAT received</div>
+                    </div>
+                    <div class="v4-hero-card">
+                        <div class="v4-hero-label">Sold <span class="cc-help">?<span class="cc-tooltip">Gross XCH we received across all sell fills this session, and the CAT delivered in return. These are raw amounts (not round-trip pairs).</span></span></div>
+                        <div class="v4-hero-value" id="pnlSellVolumeXch" style="font-size: var(--text-xl); color: var(--status-success);">0.0000</div>
+                        <div class="v4-hero-sub" id="pnlSellVolumeCat">0 CAT delivered</div>
+                    </div>
+                    <div class="v4-hero-card">
+                        <div class="v4-hero-label">Net Flow <span class="cc-help">?<span class="cc-tooltip">Raw XCH gain/loss: sold XCH minus bought XCH. Positive = wallet ended the session with more XCH than it started. Different from Realised PnL, which matches buys and sells into round trips.</span></span></div>
+                        <div class="v4-hero-value" id="pnlNetXchFlow" style="font-size: var(--text-xl);">0.0000</div>
+                        <div class="v4-hero-sub" id="pnlNetCatFlow">0 CAT net</div>
+                    </div>
+                </div>
+
                 <!-- Cumulative PnL Chart Area -->
                 <div style="background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: var(--space-4); margin-bottom: var(--space-5);">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-3);">
@@ -11341,30 +11360,44 @@
             // .v4-view.active container and clientWidth returns the real
             // pixel width instead of 0.
             if (viewName === 'dashboard') {
+                // Double-rAF — see the offers-view comment below.
                 requestAnimationFrame(() => {
-                    try { v4RenderPriceHistoryChart && v4RenderPriceHistoryChart(); } catch (_) {}
-                    try { v4RenderPriceSparkline && v4RenderPriceSparkline(); } catch (_) {}
-                    try { v4RenderInventoryChart && v4RenderInventoryChart(); } catch (_) {}
-                    try {
-                        if (window._v4LastOrderbookBuys || window._v4LastOrderbookSells) {
-                            v4UpdateOrderbook(window._v4LastOrderbookBuys, window._v4LastOrderbookSells);
-                        }
-                    } catch (_) {}
+                    requestAnimationFrame(() => {
+                        try { v4RenderPriceHistoryChart && v4RenderPriceHistoryChart(); } catch (_) {}
+                        try { v4RenderPriceSparkline && v4RenderPriceSparkline(); } catch (_) {}
+                        try { v4RenderInventoryChart && v4RenderInventoryChart(); } catch (_) {}
+                        try {
+                            if (window._v4LastOrderbookBuys || window._v4LastOrderbookSells) {
+                                v4UpdateOrderbook(window._v4LastOrderbookBuys, window._v4LastOrderbookSells);
+                            }
+                        } catch (_) {}
+                    });
                 });
             } else if (viewName === 'pnl') {
                 requestAnimationFrame(() => {
-                    try { v4RenderPnlChart && v4RenderPnlChart(); } catch (_) {}
-                    // Position Drift (session) — same inventory chart instance
-                    // that the dashboard uses, but lives inside the pnl view.
-                    try { v4RenderInventoryChart && v4RenderInventoryChart(); } catch (_) {}
+                    requestAnimationFrame(() => {
+                        try { v4RenderPnlChart && v4RenderPnlChart(); } catch (_) {}
+                        // Position Drift (session) — same inventory chart instance
+                        // that the dashboard uses, but lives inside the pnl view.
+                        try { v4RenderInventoryChart && v4RenderInventoryChart(); } catch (_) {}
+                    });
                 });
             } else if (viewName === 'offers') {
+                // Double-rAF: the first frame paints the .active class change
+                // (which removes display:none from the offers view), the second
+                // guarantees clientWidth/offsetParent now reflect the visible
+                // state. Without this, v4DrawOrderbookDepth's visibility guard
+                // (offsetParent === null) early-returns and the depth chart
+                // stays stuck on the "Start the bot to see your order book"
+                // placeholder even after the bot is running.
                 requestAnimationFrame(() => {
-                    try {
-                        if (window._v4LastOrderbookBuys || window._v4LastOrderbookSells) {
-                            v4UpdateOrderbook(window._v4LastOrderbookBuys, window._v4LastOrderbookSells);
-                        }
-                    } catch (_) {}
+                    requestAnimationFrame(() => {
+                        try {
+                            if (window._v4LastOrderbookBuys || window._v4LastOrderbookSells) {
+                                v4UpdateOrderbook(window._v4LastOrderbookBuys, window._v4LastOrderbookSells);
+                            }
+                        } catch (_) {}
+                    });
                 });
             }
             // If switching to Settings, load config from API into form fields
@@ -20761,6 +20794,31 @@
             const volCat = parseFloat(data.volume_cat || 0);
             if (el('pnlVolumeXch')) el('pnlVolumeXch').textContent = formatXchAmount(volXch);
             if (el('pnlVolumeCat')) el('pnlVolumeCat').textContent = volCat.toFixed(2) + ' CAT';
+
+            // Gross volume breakdown row — bought vs sold vs net flow.
+            // Fields come from /api/pnl's new buy_volume_* / sell_volume_* /
+            // net_*_flow keys (added 2026-04-16). Older backends that don't
+            // emit these show zero/null, so we render 0.0000 gracefully.
+            const buyVolXch = parseFloat(data.buy_volume_xch || 0);
+            const buyVolCat = parseFloat(data.buy_volume_cat || 0);
+            const sellVolXch = parseFloat(data.sell_volume_xch || 0);
+            const sellVolCat = parseFloat(data.sell_volume_cat || 0);
+            const netXchFlow = parseFloat(data.net_xch_flow || 0);
+            const netCatFlow = parseFloat(data.net_cat_flow || 0);
+            if (el('pnlBuyVolumeXch')) el('pnlBuyVolumeXch').textContent = formatXchAmount(buyVolXch);
+            if (el('pnlBuyVolumeCat')) el('pnlBuyVolumeCat').textContent = buyVolCat.toFixed(2) + ' CAT received';
+            if (el('pnlSellVolumeXch')) el('pnlSellVolumeXch').textContent = formatXchAmount(sellVolXch);
+            if (el('pnlSellVolumeCat')) el('pnlSellVolumeCat').textContent = sellVolCat.toFixed(2) + ' CAT delivered';
+            if (el('pnlNetXchFlow')) {
+                const netEl = el('pnlNetXchFlow');
+                // Show sign explicitly so + vs - reads at a glance.
+                netEl.textContent = (netXchFlow > 0 ? '+' : netXchFlow < 0 ? '-' : '') + formatXchAmount(Math.abs(netXchFlow));
+                netEl.style.color = netXchFlow > 0 ? 'var(--status-success)' : netXchFlow < 0 ? 'var(--status-danger)' : 'var(--text-primary)';
+            }
+            if (el('pnlNetCatFlow')) {
+                const sign = netCatFlow > 0 ? '+' : '';
+                el('pnlNetCatFlow').textContent = sign + netCatFlow.toFixed(2) + ' CAT net';
+            }
 
             const avgTripPnl = parseFloat(data.avg_pnl_per_trip_xch || 0);
             if (el('pnlAvgTripPnl')) {

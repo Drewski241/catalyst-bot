@@ -4621,6 +4621,19 @@ def api_pnl():
             "unmatched_sell_fills": stats.get("unmatched_sell_fills", 0),
             "volume_xch": stats.get("volume_xch", "0"),
             "volume_cat": stats.get("volume_cat", "0"),
+            # Per-side gross volumes (new) — what the user actually traded:
+            # buy_volume_xch = XCH we paid out to buy CAT
+            # buy_volume_cat = CAT we received from those buys
+            # sell_volume_xch = XCH we received from selling CAT
+            # sell_volume_cat = CAT we delivered on those sells
+            # net_xch_flow = sell_volume_xch - buy_volume_xch (gross XCH gain/loss)
+            # net_cat_flow = buy_volume_cat - sell_volume_cat (inventory delta)
+            "buy_volume_xch": stats.get("buy_volume_xch", "0"),
+            "buy_volume_cat": stats.get("buy_volume_cat", "0"),
+            "sell_volume_xch": stats.get("sell_volume_xch", "0"),
+            "sell_volume_cat": stats.get("sell_volume_cat", "0"),
+            "net_xch_flow": stats.get("net_xch_flow", "0"),
+            "net_cat_flow": stats.get("net_cat_flow", "0"),
             "avg_fill_size_xch": stats.get("avg_fill_size_xch", "0"),
             "avg_round_trip_secs": stats.get("avg_round_trip_secs", 0),
             "avg_pnl_per_trip_xch": stats.get("avg_pnl_per_trip_xch", "0"),

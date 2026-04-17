@@ -1273,12 +1273,55 @@ class OfferManager:
                     net_pos_xch = Decimal("0")
                 # Project the position INCREASE if all these offers fill
                 projected_increase_xch = (default_size or Decimal("0")) * Decimal(num)
+
+                # F69 (2026-04-17): net out already-open same-side exposure.
+                # A REQUOTE (or top-up of an existing ladder) cancels N existing
+                # offers and recreates them at a new price. The new exposure is
+                # not ADDED on top of the old — it REPLACES it. Without this
+                # subtraction, a legitimate requote during a market move hits
+                # the hard guard because "current_position + full_new_ladder >
+                # limit", even though the real delta is zero. See emergency
+                # requote at 2026-04-17 01:34:10 which blocked 22/24 sell
+                # replacements during a 2.6% price shock.
+                #
+                # We subtract the XCH value of currently-open same-side offers
+                # from the projected increase. This is the "delta exposure"
+                # the new creation actually adds above the existing ladder.
+                same_side_open_xch = Decimal("0")
+                try:
+                    from database import get_open_offers as _gopen
+                    _existing = _gopen(side=side, cat_asset_id=cat_asset_id or cfg.CAT_ASSET_ID)
+                    for _off in _existing or []:
+                        _sz = _off.get("size_xch") or _off.get("size_xch_mojos")
+                        if _sz is None:
+                            continue
+                        try:
+                            # size_xch may be stored as XCH float or mojos int —
+                            # prefer the column name we just read. size_xch is
+                            # the canonical XCH-unit column in this schema.
+                            if isinstance(_sz, (int,)) and _sz > 1_000_000_000:
+                                # mojos
+                                same_side_open_xch += Decimal(_sz) / Decimal("1000000000000")
+                            else:
+                                same_side_open_xch += Decimal(str(_sz))
+                        except Exception:
+                            continue
+                except Exception:
+                    # Fail open — if we can't read the existing exposure, fall
+                    # back to the pre-F69 behaviour. Worse: block a legit
+                    # requote. Better than: allow unbounded growth.
+                    same_side_open_xch = Decimal("0")
+
+                net_new_exposure_xch = projected_increase_xch - same_side_open_xch
+                if net_new_exposure_xch < 0:
+                    net_new_exposure_xch = Decimal("0")
+
                 # Only block if we're adding to the position in the wrong direction
                 add_long_dir = (side == "buy" and net_pos_cat >= 0) or \
                                (side == "sell" and net_pos_cat <= 0)
                 if (
                     add_long_dir
-                    and net_pos_xch + projected_increase_xch > hard_pos_xch
+                    and net_pos_xch + net_new_exposure_xch > hard_pos_xch
                     and max_pos_xch > 0
                 ):
                     log_event(
@@ -1286,9 +1329,11 @@ class OfferManager:
                         "position_hard_guard_blocked",
                         f"BLOCKED ladder creation: side={side}, num={num}, "
                         f"size={default_size}, current_position={net_pos_xch:.4f} XCH "
-                        f"(net {net_pos_cat:+.0f} CAT), would add up to "
-                        f"{projected_increase_xch:.4f} XCH worth → projected "
-                        f"{(net_pos_xch + projected_increase_xch):.4f} XCH > "
+                        f"(net {net_pos_cat:+.0f} CAT), full-ladder value "
+                        f"{projected_increase_xch:.4f} XCH, already-open same-side "
+                        f"{same_side_open_xch:.4f} XCH, net new exposure "
+                        f"{net_new_exposure_xch:.4f} XCH → projected "
+                        f"{(net_pos_xch + net_new_exposure_xch):.4f} XCH > "
                         f"hard limit {hard_pos_xch:.4f} XCH (110% of "
                         f"MAX_POSITION_XCH={max_pos_xch}). Allow position to "
                         f"unwind via the opposite side first.",

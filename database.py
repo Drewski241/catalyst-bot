@@ -3655,7 +3655,7 @@ def get_stats(cat_asset_id: str = None, since: str = None) -> Dict:
         stats[f"unmatched_{side}_fills"] = row["cnt"]
 
     # Volume traded (total XCH and CAT across all verified fills)
-    query_base = """SELECT size_xch, size_cat FROM fills
+    query_base = """SELECT side, size_xch, size_cat FROM fills
                     WHERE COALESCE(verification_status, 'legacy') = 'verified'
                       AND (size_xch IS NOT NULL OR size_cat IS NOT NULL)"""
     params = []
@@ -3666,8 +3666,38 @@ def get_stats(cat_asset_id: str = None, since: str = None) -> Dict:
         query_base += " AND filled_at>=?"
         params.append(_sqlite_ts(since))
     rows = conn.execute(query_base, params).fetchall()
-    stats["volume_xch"] = str(sum((Decimal(str(r["size_xch"] or 0)) for r in rows), Decimal("0")))
-    stats["volume_cat"] = str(sum((Decimal(str(r["size_cat"] or 0)) for r in rows), Decimal("0")))
+
+    # Split by side so the dashboard can show "bought vs sold" gross amounts.
+    # Buy fill = we paid XCH and received CAT.
+    # Sell fill = we received XCH and gave CAT.
+    _buy_xch = Decimal("0")
+    _buy_cat = Decimal("0")
+    _sell_xch = Decimal("0")
+    _sell_cat = Decimal("0")
+    for r in rows:
+        _sx = Decimal(str(r["size_xch"] or 0))
+        _sc = Decimal(str(r["size_cat"] or 0))
+        if r["side"] == "buy":
+            _buy_xch += _sx
+            _buy_cat += _sc
+        elif r["side"] == "sell":
+            _sell_xch += _sx
+            _sell_cat += _sc
+
+    stats["volume_xch"] = str(_buy_xch + _sell_xch)
+    stats["volume_cat"] = str(_buy_cat + _sell_cat)
+    # Per-side gross volumes — what the user actually traded on each side.
+    stats["buy_volume_xch"] = str(_buy_xch)   # XCH spent acquiring CAT
+    stats["buy_volume_cat"] = str(_buy_cat)   # CAT received from buys
+    stats["sell_volume_xch"] = str(_sell_xch) # XCH received from sells
+    stats["sell_volume_cat"] = str(_sell_cat) # CAT delivered from sells
+    # Net cashflow — the simple "did I end up with more XCH or less?" number.
+    # This is GROSS (doesn't match round-trip PnL; it's the raw XCH delta
+    # from all fills, positive = we took in more XCH than we paid out).
+    stats["net_xch_flow"] = str(_sell_xch - _buy_xch)
+    # Net CAT inventory change — how the position shifted this window.
+    # Positive = we net bought CAT (gained inventory), negative = net sold.
+    stats["net_cat_flow"] = str(_buy_cat - _sell_cat)
 
     # Average fill size (XCH)
     if stats["total_fills"] > 0:
