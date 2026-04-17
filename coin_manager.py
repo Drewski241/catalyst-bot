@@ -4171,9 +4171,31 @@ class CoinManager:
                 # positions and should be replenished before outer/mid/inner pools.
                 # Sell side is never reversed so always inner → extreme.
                 _buy_reversed = getattr(cfg, "BUY_LADDER_REVERSED", False)
-                _tier_order = (["extreme", "outer", "mid", "inner"]
-                               if _buy_reversed else
-                               ["inner", "mid", "outer", "extreme"])
+                _default_tier_order = (["extreme", "outer", "mid", "inner"]
+                                       if _buy_reversed else
+                                       ["inner", "mid", "outer", "extreme"])
+
+                # EMPTY-FIRST priority: a tier with zero free coins blocks any
+                # offer on that slot. Single-action topup means only one split
+                # per cycle, so if inner=3 and mid=0 with inner iterated first,
+                # mid has to wait the full drip interval. Sort so empty tiers
+                # (on any side that has active slots) are attempted first; ties
+                # fall back to the default floor-priority order.
+                def _empty_first_key(tier_name: str) -> tuple:
+                    xch_slots_n = int(xch_dist.get(tier_name, 0) or 0)
+                    cat_slots_n = int(cat_dist.get(tier_name, 0) or 0)
+                    xch_have_n = len(xch_inv.get(tier_name, []))
+                    cat_have_n = len(cat_inv.get(tier_name, []))
+                    xch_empty = xch_slots_n > 0 and xch_have_n == 0
+                    cat_empty = cat_slots_n > 0 and cat_have_n == 0
+                    empty_rank = 0 if (xch_empty or cat_empty) else 1
+                    try:
+                        default_idx = _default_tier_order.index(tier_name)
+                    except ValueError:
+                        default_idx = 99
+                    return (empty_rank, default_idx)
+
+                _tier_order = sorted(_default_tier_order, key=_empty_first_key)
                 _xch_split_done = False  # True only for real splits, not pool rebuilds
                 for tier_name in _tier_order:
                     if self._topup_should_stop():
@@ -4209,7 +4231,8 @@ class CoinManager:
                         result = self._smart_topup_wallet(
                             f"XCH-{tier_name}", cfg.WALLET_ID_XCH,
                             xch_inv, xch_tier_size, deficit,
-                            is_cat=False
+                            is_cat=False,
+                            tier_is_empty=(xch_have == 0),
                         )
                         if result is True:
                             did_anything = True
@@ -4266,7 +4289,8 @@ class CoinManager:
                             result = self._smart_topup_wallet(
                                 f"CAT-{tier_name}", cfg.CAT_WALLET_ID,
                                 cat_inv, cat_tier_mojos_val, deficit,
-                                is_cat=True, cat_token_amount=cat_token_size
+                                is_cat=True, cat_token_amount=cat_token_size,
+                                tier_is_empty=(cat_have == 0),
                             )
                             if result:
                                 did_anything = True
@@ -4558,7 +4582,8 @@ class CoinManager:
                              inventory: Dict[str, list],
                              trading_size_mojos: int, needed: int,
                              is_cat: bool = False,
-                             cat_token_amount: int = None) -> bool:
+                             cat_token_amount: int = None,
+                             tier_is_empty: bool = False) -> bool:
         """Smart topup for one wallet. Returns True if an action was taken.
 
         Two-step process (mirrors coin_prep_worker):
@@ -4643,6 +4668,7 @@ class CoinManager:
                         wallet_id=wallet_id,
                         pool_amount_mojos=pool_amount_mojos,
                         is_cat=is_cat,
+                        tier_is_empty=tier_is_empty,
                     )
 
                     if not guard_ok:
@@ -4846,7 +4872,8 @@ class CoinManager:
 
     def _check_topup_reserve_guards(self, name: str, wallet_id: int,
                                     pool_amount_mojos: int,
-                                    is_cat: bool) -> bool:
+                                    is_cat: bool,
+                                    tier_is_empty: bool = False) -> bool:
         """Return True if a split of `pool_amount_mojos` is permitted.
 
         Checks (in order):
@@ -4857,6 +4884,12 @@ class CoinManager:
              values are configured (> 0). If configured to 0, the
              budget is treated as "unlimited" and only the hard reserve
              guard applies.
+
+        Empty-tier escape hatch: when `tier_is_empty=True` and only the
+        budget guard would block, bypass it with a prominent warning.
+        An empty tier blocks every offer on that slot, which is a worse
+        outcome than overspending the soft budget. The hard reserve
+        guard is never bypassed — capital protection still applies.
 
         Logs a structured refusal event on block and returns False.
         On any unexpected error, logs a warning and returns True so
@@ -4952,13 +4985,39 @@ class CoinManager:
 
                 projected = spent_mojos + pool_amount_mojos
                 if projected > budget_mojos:
+                    # CAT mojos have CAT_DECIMALS precision (default 3),
+                    # XCH mojos have 12. Using /1e12 for both printed CAT
+                    # amounts as 0.0001 when actual values were thousands.
+                    _display_scale = float(
+                        Decimal(10) ** Decimal(str(getattr(cfg, "CAT_DECIMALS", 3)))
+                    ) if is_cat else 1e12
+                    _unit = "CAT" if is_cat else "XCH"
+
+                    if tier_is_empty:
+                        # Empty tier = every offer on this slot is blocked.
+                        # Letting the budget stop us here trades one protected
+                        # number for a dead trading slot. The hard reserve
+                        # above is the real capital guard — it already passed.
+                        log_event(
+                            "warning",
+                            f"topup_{name.lower()}_budget_bypass_empty_tier",
+                            f"{name} tier is empty (0 free coins) — bypassing "
+                            f"topup pool budget ({spent_mojos / _display_scale:.4f} "
+                            f"spent + {pool_amount_mojos / _display_scale:.4f} "
+                            f"requested > {budget_mojos / _display_scale:.4f} "
+                            f"{_unit} {budget_label}). Hard reserve guard still "
+                            f"honoured. Re-run Smart Settings to reset the budget.",
+                        )
+                        return True
+
                     log_event(
                         "info",
                         f"topup_{name.lower()}_blocked_by_budget",
                         f"{name} split refused: topup pool budget exhausted "
-                        f"({spent_mojos / 1e12:.4f} spent + {pool_amount_mojos / 1e12:.4f} "
-                        f"requested > {budget_mojos / 1e12:.4f} {budget_label}). "
-                        f"Re-run Smart Settings to replenish the topup pool.",
+                        f"({spent_mojos / _display_scale:.4f} spent + "
+                        f"{pool_amount_mojos / _display_scale:.4f} requested > "
+                        f"{budget_mojos / _display_scale:.4f} {_unit}, "
+                        f"{budget_label}). Re-run Smart Settings to replenish the topup pool.",
                     )
                     return False
         except Exception as exc:
