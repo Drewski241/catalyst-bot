@@ -7848,8 +7848,9 @@
                 <button class="v4-nav-item" type="button" data-view="settings" data-tooltip="Settings" aria-label="Settings" onclick="openConfig()">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                 </button>
-                <button class="v4-nav-item" type="button" data-view="logs" data-tooltip="Logs" aria-label="Logs" onclick="v4SwitchView('logs')">
+                <button class="v4-nav-item" type="button" id="v4-nav-logs" data-view="logs" data-tooltip="Logs" aria-label="Logs" onclick="v4SwitchView('logs')">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+                    <span id="logsUnreadBadge" aria-live="polite" style="display:none; position:absolute; top:2px; right:2px; background:var(--status-danger); color:white; font-size:9px; font-weight:700; min-width:14px; height:14px; padding:0 3px; border-radius:7px; line-height:14px; text-align:center; box-sizing:border-box; pointer-events:none;"></span>
                 </button>
             </div>
 
@@ -11348,6 +11349,10 @@
             if (viewName === 'intel' && typeof fetchMarketIntel === 'function') {
                 fetchMarketIntel();
             }
+            // If switching to Logs, reset the unread-event counter badge.
+            if (viewName === 'logs' && typeof _resetLogsUnread === 'function') {
+                _resetLogsUnread();
+            }
             // When returning to any view that owns canvas charts, re-render
             // them immediately so they pick up the correct container width.
             // Draws attempted while the view was hidden were skipped (see the
@@ -14265,7 +14270,11 @@
             // the advisor produces a new message for that slot). The dismiss key
             // is a hash of the message text — if the text changes, the dismissal
             // no longer matches and the new message shows naturally.
-            if (!window._dismissedAdvisorMsgs) window._dismissedAdvisorMsgs = new Set();
+            //
+            // Dismissals are persisted to localStorage so they survive page
+            // reloads, PyWebView restarts, and bot restarts. A user who's
+            // deliberately silenced a nag shouldn't see it bounce back.
+            _loadDismissedAdvisorMsgs();
             const visibleSuggestions = infoSuggestions.filter(s => {
                 const dismissKey = (s.type || '') + ':' + (s.msg || '');
                 return !window._dismissedAdvisorMsgs.has(dismissKey);
@@ -14276,7 +14285,7 @@
                 _saLastSuggestions = [];
                 container.innerHTML = '<div class="sa-empty" style="color: var(--text-tertiary);">'
                     + infoSuggestions.length + ' message(s) dismissed — '
-                    + '<a href="javascript:void(0)" onclick="window._dismissedAdvisorMsgs.clear(); if(typeof saUpdateAdvisor===\'function\' && window._lastDashboard) saUpdateAdvisor(window._lastDashboard);" '
+                    + '<a href="javascript:void(0)" onclick="_clearDismissedAdvisorMsgs(); if(typeof saUpdateAdvisor===\'function\' && window._lastDashboard) saUpdateAdvisor(window._lastDashboard);" '
                     + 'style="color: var(--accent-primary); text-decoration: underline; cursor: pointer;">show all</a></div>';
                 return;
             }
@@ -14318,14 +14327,52 @@
             container.scrollLeft = 0;
         }
 
+        // Advisor-dismissal persistence. We keep the dismissal keys in
+        // localStorage under this key so they survive reload/restart. The
+        // dismiss key is still `type:msg`, so the set is self-healing: if
+        // the advisor later produces a new message text for that slot,
+        // the new key won't match a stored dismissal and the new message
+        // shows naturally.
+        const _DISMISSED_ADVISOR_LS_KEY = 'cmm_dismissed_advisor_msgs_v1';
+
+        function _loadDismissedAdvisorMsgs() {
+            if (window._dismissedAdvisorMsgs instanceof Set) return;
+            window._dismissedAdvisorMsgs = new Set();
+            try {
+                const raw = localStorage.getItem(_DISMISSED_ADVISOR_LS_KEY);
+                if (!raw) return;
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) {
+                    parsed.forEach(k => {
+                        if (typeof k === 'string' && k) {
+                            window._dismissedAdvisorMsgs.add(k);
+                        }
+                    });
+                }
+            } catch (e) { /* corrupt storage — ignore, start empty */ }
+        }
+
+        function _saveDismissedAdvisorMsgs() {
+            try {
+                const arr = Array.from(window._dismissedAdvisorMsgs || []);
+                localStorage.setItem(_DISMISSED_ADVISOR_LS_KEY, JSON.stringify(arr));
+            } catch (e) { /* quota or disabled — dismissal becomes session-only */ }
+        }
+
+        function _clearDismissedAdvisorMsgs() {
+            window._dismissedAdvisorMsgs = new Set();
+            try { localStorage.removeItem(_DISMISSED_ADVISOR_LS_KEY); } catch (e) {}
+        }
+
         // Dismiss an advisor info message until its content changes.
         // The dismissal is keyed on `type:msg` so if market conditions
         // shift and the advisor produces a different message text, the
         // new message shows automatically without the user having to
         // manually "show all".
         function dismissAdvisorMsg(dismissKey) {
-            if (!window._dismissedAdvisorMsgs) window._dismissedAdvisorMsgs = new Set();
+            _loadDismissedAdvisorMsgs();
             window._dismissedAdvisorMsgs.add(dismissKey);
+            _saveDismissedAdvisorMsgs();
             // Force re-render immediately
             _saLastSuggestions = [];
             if (typeof saUpdateAdvisor === 'function' && window._lastDashboard) {
@@ -22368,18 +22415,8 @@
             // --- Coins ---
             if (eventType === 'topup_trigger' || eventType === 'topup_started')
                 return { icon: '\u{1FA99}', msg: 'Coin top-up started', cls: 'la-info' };
-            if ([
-                'topup_wait_sync',
-                'topup_wallet_unsynced',
-                'low_coins_adaptive',
-                'startup_coins_low',
-                'startup_coins_critical'
-            ].includes(eventType))
-                return null;
             if (eventType === 'coin_topup')
                 return { icon: '🪙', msg: 'Topping up coins...', cls: 'la-info' };
-            if (eventType === 'topup_trigger' || eventType === 'topup_started')
-                return { icon: 'ðŸª™', msg: 'Coin top-up started', cls: 'la-info' };
             if (eventType === 'topup_trigger' || eventType === 'topup_started')
                 return { icon: '🪙', msg: 'Coin top-up started', cls: 'la-info' };
             if (eventType === 'topup_wait_sync')
@@ -22397,15 +22434,11 @@
 
             // --- Health ---
             if (eventType === 'wallet_unhealthy')
-                return null;
-            if (eventType === 'wallet_unhealthy')
                 return { icon: '⚠️', msg: 'Wallet connection lost', cls: 'la-warning' };
             if (eventType === 'wallet_recovery' || eventType === 'connectivity_recovery')
                 return { icon: '💚', msg: 'Wallet reconnected', cls: 'la-success' };
 
             // --- Risk ---
-            if (eventType === 'circuit_breaker' || eventType === 'position_limit')
-                return null;
             if (eventType === 'circuit_breaker')
                 return { icon: '🛑', msg: 'Circuit breaker tripped!', cls: 'la-error' };
             if (eventType === 'position_limit')
@@ -22431,11 +22464,9 @@
             if (eventType === 'startup_wallet_sync')
                 return { icon: '🔗', msg: 'Syncing with wallet...', cls: 'la-info' };
 
-            // --- Price watcher wake ---
+            // --- Price watcher wake (suppressed — fires every 12s, too noisy) ---
             if (eventType === 'watcher_wake')
                 return null;
-            if (eventType === 'watcher_wake')
-                return { icon: '👁', msg: 'Price change detected — checking...', cls: 'la-info' };
 
             // --- Probe status (from log events, not alerts) ---
             if (eventType === 'probe_launch_status')
@@ -22450,6 +22481,33 @@
             // --- Cancel retries (brief mention, details in logs) ---
             if (eventType === 'cancel_retry_success')
                 return { icon: '✅', msg: 'Stuck cancel resolved', cls: 'la-success' };
+
+            // --- Watchdog (F72) — ladder + coin-accounting invariants ---
+            // These are the loud signals the refactor introduced. Actionable
+            // ones (size drift, inversion) ALSO raise a Recommendation with a
+            // Cancel button; the ticker entry is a lightweight "heads-up" so
+            // the user sees the detection landed.
+            if (eventType === 'watchdog_ladder_size_taper_violated')
+                return { icon: '📏', msg: 'Ladder size drift detected — see Recommendations', cls: 'la-warning' };
+            if (eventType === 'watchdog_ladder_inversion_reverse' ||
+                eventType === 'watchdog_ladder_inversion_standard')
+                return { icon: '🔀', msg: 'Ladder inversion detected — see Recommendations', cls: 'la-error' };
+            if (eventType === 'watchdog_ladder_count_mismatch')
+                return { icon: '🔢', msg: 'Ladder offer count off — transient requote state', cls: 'la-warning' };
+            if (eventType === 'watchdog_xch_locked_vs_buys_mismatch')
+                return { icon: '🔐', msg: 'XCH locked-coin count diverges from open buys', cls: 'la-warning' };
+            if (eventType === 'watchdog_cat_locked_vs_sells_mismatch')
+                return { icon: '🔐', msg: 'CAT locked-coin count diverges from open sells', cls: 'la-warning' };
+            if (eventType === 'watchdog_inventory_count_mismatch')
+                return { icon: '📊', msg: 'Inventory count diverges from wallet total', cls: 'la-warning' };
+
+            // --- Planner (F73) — pre-flight ladder plan ---
+            if (eventType === 'ladder_plan_deferred')
+                return { icon: '🧮', msg: 'Ladder plan deferred — waiting for coin reshape', cls: 'la-info' };
+
+            // --- Coin FSM (Phase 6) — state-machine observer ---
+            if (eventType === 'coin_fsm_violation')
+                return { icon: '🧭', msg: 'Coin state transition outside rules (diagnostic)', cls: 'la-warning' };
 
             // --- Everything else: skip from activity feed ---
             // Only specifically translated events appear in the activity ticker.
@@ -22564,7 +22622,66 @@
                 }, 200);
             },
             run_doctor: () => showDoctorReport(),
-            show_api_stats: () => showApiStatsReport()
+            show_api_stats: () => showApiStatsReport(),
+            // F72-UI: cancel the specific offers the watchdog flagged as
+            // misfit-backed. rawValue is a comma-separated list of
+            // trade_ids supplied by bot_loop when it raised the alert.
+            // Option (a): cancel + let normal requote path rebuild.
+            cancel_mismatched_offers: async (rawValue) => {
+                const tradeIds = String(rawValue || '')
+                    .split(',').map(s => s.trim()).filter(Boolean);
+                if (!tradeIds.length) {
+                    showToast('No offers were tagged to cancel.', 'warning');
+                    return;
+                }
+                // Find the alert that triggered this action so we can
+                // clear it server-side after a successful cancel.
+                const sourceAlert = Object.values(_activeAlerts || {}).find(
+                    (a) => a && !a.dismissed
+                        && String(a.action || '') === 'cancel_mismatched_offers'
+                        && String(a.action_value || '') === String(rawValue || ''));
+                const alertId = sourceAlert ? sourceAlert.id : '';
+                try {
+                    const resp = await apiFetch(
+                        `${API_URL}/watchdog/cancel-mismatched-offers`,
+                        {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                trade_ids: tradeIds,
+                                alert_id: alertId,
+                            })
+                        });
+                    const data = await resp.json().catch(() => ({}));
+                    if (data && data.success) {
+                        const n = data.cancelled_count || 0;
+                        const f = data.failed_count || 0;
+                        if (f > 0) {
+                            showToast(
+                                `Cancelled ${n} offer(s), ${f} failed. `
+                                + 'The ladder will rebuild on the next cycle.',
+                                'warning');
+                        } else {
+                            showToast(
+                                `Cancelled ${n} mismatched offer(s). `
+                                + 'The ladder will rebuild with correctly-sized coins.',
+                                'success');
+                        }
+                        if (alertId) {
+                            // Local clear — SSE alert_cleared will also arrive.
+                            if (_activeAlerts[alertId]) {
+                                _activeAlerts[alertId].dismissed = true;
+                            }
+                            renderAlerts();
+                        }
+                    } else {
+                        const err = (data && data.error) || 'Cancel request failed';
+                        showToast(`Cancel failed: ${err}`, 'error');
+                    }
+                } catch (e) {
+                    showToast('Cancel request failed: ' + formatError(e), 'error');
+                }
+            }
         };
 
         async function showDoctorReport() {
@@ -22922,7 +23039,9 @@
             badge.style.display = 'inline';
             pulse.className = 'la-pulse active';
 
-            body.innerHTML = active.map(a => {
+            // Render an individual alert row. Shared by both the Critical
+            // and Suggested groups below.
+            const renderAlert = (a) => {
                 const actionId = String(a.action || '');
                 const actionBtn = canRunDashboardAction(actionId) && a.action_label
                     ? `<button class="alert-action-btn" data-action="${escapeHtml(actionId)}" data-action-value="${escapeHtml(a.action_value || '')}" onclick="runAlertAction(this.dataset.action, this.dataset.actionValue)">${escapeHtml(a.action_label)}</button>`
@@ -22941,7 +23060,37 @@
                         </div>
                     </div>
                 </div>`;
-            }).join('');
+            };
+
+            // Severity grouping: errors become a "Critical" group, everything
+            // else becomes "Suggested". Headers are only shown when there's
+            // something on the other side — a single-group panel stays
+            // uncluttered.
+            const critical = active.filter((a) => String(a.severity) === 'error');
+            const suggested = active.filter((a) => String(a.severity) !== 'error');
+            const showHeaders = critical.length > 0 && suggested.length > 0;
+
+            const headerStyle = 'font-size: 11px; font-weight: 600; letter-spacing: 0.04em; '
+                + 'text-transform: uppercase; color: var(--text-tertiary); '
+                + 'padding: 4px 0 2px; margin-top: 6px;';
+            const criticalHeaderStyle = headerStyle + 'color: var(--status-danger);';
+
+            let html = '';
+            if (critical.length) {
+                if (showHeaders) {
+                    html += `<div style="${criticalHeaderStyle}">`
+                        + `Critical — act now (${critical.length})</div>`;
+                }
+                html += critical.map(renderAlert).join('');
+            }
+            if (suggested.length) {
+                if (showHeaders) {
+                    html += `<div style="${headerStyle}">`
+                        + `Suggested (${suggested.length})</div>`;
+                }
+                html += suggested.map(renderAlert).join('');
+            }
+            body.innerHTML = html;
         }
 
         async function dismissAlert(alertId) {
@@ -22990,6 +23139,37 @@
                 _sysLogBuffer.shift();
             }
             _renderSysLog();
+            // Unread badge: count events that landed while the user is
+            // NOT on the Logs tab, so they know a new error/warn is
+            // waiting to be reviewed.
+            try {
+                if (_v4CurrentView !== 'logs') {
+                    _logsUnreadCount = (_logsUnreadCount || 0) + 1;
+                    _updateLogsUnreadBadge();
+                }
+            } catch (e) { /* view state not ready yet */ }
+        }
+
+        // Unread-counter state + helpers for the Logs-tab badge. Count
+        // is reset when the user switches to the Logs view (see
+        // v4SwitchView). Debug entries never reach addLogEntry so the
+        // badge only tracks info/warn/error/success.
+        let _logsUnreadCount = 0;
+        function _updateLogsUnreadBadge() {
+            const badge = document.getElementById('logsUnreadBadge');
+            if (!badge) return;
+            const n = _logsUnreadCount || 0;
+            if (n <= 0) {
+                badge.style.display = 'none';
+                badge.textContent = '';
+                return;
+            }
+            badge.textContent = n > 99 ? '99+' : String(n);
+            badge.style.display = 'inline-block';
+        }
+        function _resetLogsUnread() {
+            _logsUnreadCount = 0;
+            _updateLogsUnreadBadge();
         }
 
         function _renderSysLog() {

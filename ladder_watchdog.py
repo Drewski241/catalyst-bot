@@ -168,6 +168,9 @@ def audit_ladder_shape(
     size_violations: List[Dict[str, Any]] = []
     # Track per-tier observed sizes for taper check
     sizes_by_tier: Dict[str, List[Decimal]] = {t: [] for t in tier_order}
+    # Track per-tier trade_ids so downstream (dashboard) can cancel the
+    # specific offers backing a tier on inversion.
+    trade_ids_by_tier: Dict[str, List[str]] = {t: [] for t in tier_order}
 
     for i, offer in enumerate(sorted_offers):
         if i >= len(slot_to_tier):
@@ -181,12 +184,16 @@ def audit_ladder_shape(
         if actual_size <= 0:
             continue
         sizes_by_tier[expected_tier].append(actual_size)
+        tid = str(offer.get("trade_id") or "")
+        if tid:
+            trade_ids_by_tier[expected_tier].append(tid)
         # Tolerance check — within ±size_tolerance × expected_size
         lower = expected_size * (Decimal("1") - size_tolerance)
         upper = expected_size * (Decimal("1") + size_tolerance)
         if not (lower <= actual_size <= upper):
             size_violations.append({
                 "slot": i,
+                "trade_id": tid,
                 "expected_tier": expected_tier,
                 "expected_size": float(expected_size),
                 "actual_size": float(actual_size),
@@ -194,6 +201,9 @@ def audit_ladder_shape(
             })
 
     if size_violations:
+        # Collect the trade_ids of the offending offers so the dashboard
+        # action button has something concrete to cancel.
+        offender_tids = [v["trade_id"] for v in size_violations if v.get("trade_id")]
         result.issues.append(Issue(
             severity=Severity.WARN,
             code="ladder_size_taper_violated",
@@ -206,7 +216,11 @@ def audit_ladder_shape(
                 "offer(s) and let topup reshape the misfit into a tier-correct coin "
                 "before the next requote."
             ),
-            details={"violations": size_violations[:5]},  # cap for log size
+            details={
+                "side": side,
+                "violations": size_violations[:5],   # cap for log size
+                "trade_ids": offender_tids,          # full list for cancel action
+            },
         ))
 
     # Check 3: per-tier size monotonicity with respect to reverse-ladder config
@@ -232,6 +246,9 @@ def audit_ladder_shape(
         # Standard: m1 should be <= m2 (inner is smallest)
         if reversed_ladder:
             if m1 < m2:
+                # Cancel the smaller-side offers at t1 — those are the
+                # misfit-backed ones that caused the inversion.
+                offender_tids = list(trade_ids_by_tier.get(t1, []))
                 result.issues.append(Issue(
                     severity=Severity.ERROR,
                     code="ladder_inversion_reverse",
@@ -246,13 +263,16 @@ def audit_ladder_shape(
                         "requote to correct the layout."
                     ),
                     details={
+                        "side": side,
                         "reverse": True,
                         "tier_a": t1, "median_a": float(m1),
                         "tier_b": t2, "median_b": float(m2),
+                        "trade_ids": offender_tids,
                     },
                 ))
         else:
             if m1 > m2:
+                offender_tids = list(trade_ids_by_tier.get(t1, []))
                 result.issues.append(Issue(
                     severity=Severity.ERROR,
                     code="ladder_inversion_standard",
@@ -266,9 +286,11 @@ def audit_ladder_shape(
                         "the ladder OR wait for topup to reshape."
                     ),
                     details={
+                        "side": side,
                         "reverse": False,
                         "tier_a": t1, "median_a": float(m1),
                         "tier_b": t2, "median_b": float(m2),
+                        "trade_ids": offender_tids,
                     },
                 ))
 

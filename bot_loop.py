@@ -1529,7 +1529,10 @@ class BotLoop:
         except Exception:
             return
 
-        # Map DB rows into the {price, size_xch} shape the watchdog expects.
+        # Map DB rows into the {price, size_xch, trade_id} shape the
+        # watchdog expects. trade_id is carried through so the watchdog
+        # can attribute violations to specific offers — the dashboard
+        # "Cancel mismatched offers" button cancels exactly those.
         def _offer_rows(rows):
             out = []
             for r in rows or []:
@@ -1538,7 +1541,11 @@ class BotLoop:
                     s = r.get("size_xch")
                     if p is None or s is None:
                         continue
-                    out.append({"price": p, "size_xch": Decimal(str(s))})
+                    out.append({
+                        "price": p,
+                        "size_xch": Decimal(str(s)),
+                        "trade_id": r.get("trade_id") or "",
+                    })
                 except Exception:
                     continue
             return out
@@ -1634,11 +1641,77 @@ class BotLoop:
 
         # Log each issue at the appropriate severity. The overnight
         # monitors grep for these codes and follow up.
+        #
+        # Additionally, for "actionable" codes we raise a persistent
+        # Recommendation in the dashboard with a Cancel button pre-loaded
+        # with the offender trade_ids. This closes the loop: watchdog
+        # *sees* drift → Recommendations panel lets the user *fix* it
+        # with one click.
+        ACTIONABLE = {
+            "ladder_size_taper_violated",
+            "ladder_inversion_reverse",
+            "ladder_inversion_standard",
+        }
+        # Alerts we raised this pass — used to clear stale ones.
+        raised_alert_ids: set = set()
+        has_event_bus = self._event_bus is not None
+
         for issue in issues:
             sev = "error" if issue.severity == Severity.ERROR else "warning"
             log_event(sev, f"watchdog_{issue.code}",
                       f"{issue.message} — {issue.suggested_action}",
                       data=issue.details)
+
+            if issue.code in ACTIONABLE and has_event_bus:
+                det = issue.details or {}
+                side = str(det.get("side") or "ladder")
+                tids = [str(t) for t in (det.get("trade_ids") or []) if t]
+                alert_id = f"watchdog_{issue.code}_{side}"
+                raised_alert_ids.add(alert_id)
+                # Only offer the button when we actually have trade_ids
+                # to cancel. Without them the button would cancel nothing.
+                has_targets = len(tids) > 0
+                title_map = {
+                    "ladder_size_taper_violated":
+                        f"Ladder size drift — {side} side",
+                    "ladder_inversion_reverse":
+                        f"Ladder inversion (reverse layout) — {side} side",
+                    "ladder_inversion_standard":
+                        f"Ladder inversion (standard layout) — {side} side",
+                }
+                title = title_map.get(issue.code, f"Ladder issue — {side} side")
+                try:
+                    self._event_bus.alert(
+                        alert_id,
+                        sev,
+                        title,
+                        f"{issue.message} {issue.suggested_action}".strip(),
+                        action=("cancel_mismatched_offers" if has_targets else None),
+                        action_label=(f"Cancel {len(tids)} mismatched offer(s)"
+                                      if has_targets else None),
+                        action_value=(",".join(tids) if has_targets else None),
+                    )
+                except Exception as _alert_err:
+                    log_event("debug", "watchdog_alert_failed",
+                              f"Watchdog alert dispatch failed (non-fatal): "
+                              f"{_alert_err}")
+
+        # Clear any previously-raised watchdog alerts that did NOT fire
+        # this pass — those conditions have resolved.
+        previously_raised = getattr(self, "_watchdog_active_alert_ids", set())
+        to_clear = previously_raised - raised_alert_ids
+        if has_event_bus and to_clear:
+            try:
+                store = getattr(self._event_bus, "_alert_store", None)
+                if store is not None:
+                    for aid in to_clear:
+                        try:
+                            store.clear(aid)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+        self._watchdog_active_alert_ids = raised_alert_ids
 
         if not issues:
             # All clear — log at debug so we can confirm the watchdog is

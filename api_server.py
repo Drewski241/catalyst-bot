@@ -954,10 +954,17 @@ class EventBus:
                 self._subscribers.remove(q)
 
     def alert(self, alert_id: str, severity: str, title: str, message: str,
-              action: str = None, action_label: str = None):
-        """Convenience: set a persistent alert and emit it."""
+              action: str = None, action_label: str = None,
+              action_value: str = None):
+        """Convenience: set a persistent alert and emit it.
+
+        ``action_value`` is an opaque string passed to the action handler
+        in the frontend (e.g. a comma-separated list of trade_ids). The
+        default is ``None``; set it when the action needs a payload.
+        """
         if hasattr(self, '_alert_store'):
-            self._alert_store.set_alert(alert_id, severity, title, message, action, action_label)
+            self._alert_store.set_alert(alert_id, severity, title, message,
+                                        action, action_label, action_value)
 
     @property
     def subscriber_count(self) -> int:
@@ -977,8 +984,13 @@ class AlertStore:
         self._lock = threading.Lock()
 
     def set_alert(self, alert_id: str, severity: str, title: str, message: str,
-                  action: str = None, action_label: str = None):
-        """Create or update an alert. Severity: 'error', 'warning', 'info', 'success'."""
+                  action: str = None, action_label: str = None,
+                  action_value: str = None):
+        """Create or update an alert. Severity: 'error', 'warning', 'info', 'success'.
+
+        ``action_value`` is an opaque payload passed to the action handler
+        (e.g. a comma-separated list of trade_ids). Optional.
+        """
         with self._lock:
             self._alerts[alert_id] = {
                 "id": alert_id,
@@ -987,6 +999,7 @@ class AlertStore:
                 "message": message,
                 "action": action,  # optional action ID handled client-side
                 "action_label": action_label,  # button text
+                "action_value": action_value,  # optional payload for the action
                 "created_at": time.time(),
                 "dismissed": False
             }
@@ -5339,6 +5352,81 @@ def api_dismiss_alert():
         alerts.dismiss(alert_id)
         return jsonify({"success": True})
     return jsonify({"success": False, "error": "No alert ID provided"}), 400
+
+
+@app.route("/api/watchdog/cancel-mismatched-offers", methods=["POST"])
+def api_watchdog_cancel_mismatched_offers():
+    """F72-UI: cancel the specific offers the watchdog flagged as misfit-
+    backed.
+
+    Body: ``{"trade_ids": [...], "alert_id": "...optional..."}``
+
+    Behaviour (option (a) from the audit): cancel the flagged offers and
+    let the normal requote path rebuild them with correctly-sized coins.
+    No force-requote is issued — the next cycle's create_ladder will see
+    missing slots and fill them via F70 strict selection.
+
+    Returns ``{"success": True, "cancelled_count": N}`` on success, or
+    ``{"success": False, "error": ...}`` on failure. The storm-protection
+    inside ``offer_manager.cancel_offers`` applies; this endpoint does not
+    pass ``force_storm=True``.
+    """
+    if not bot:
+        return jsonify({"success": False, "error": "Bot not initialised"}), 500
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "error": "Invalid request body"}), 400
+
+    raw_ids = data.get("trade_ids") or []
+    if isinstance(raw_ids, str):
+        # Tolerate comma-separated string as well as JSON array
+        raw_ids = [s.strip() for s in raw_ids.split(",") if s.strip()]
+    trade_ids = [str(t) for t in raw_ids if t]
+    if not trade_ids:
+        return jsonify({"success": False, "error": "No trade_ids provided"}), 400
+
+    # De-dupe while preserving order
+    seen = set()
+    unique_tids: list = []
+    for t in trade_ids:
+        if t not in seen:
+            seen.add(t)
+            unique_tids.append(t)
+
+    try:
+        result = bot.offer_manager.cancel_offers(
+            unique_tids, reason="watchdog_shape_fix")
+    except Exception as e:
+        log_event("error", "watchdog_cancel_failed",
+                  f"Watchdog-triggered cancel failed: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+    cancelled = [tid for tid, r in (result or {}).items()
+                 if isinstance(r, dict) and r.get("success")]
+    failed = [tid for tid in unique_tids if tid not in cancelled]
+
+    log_event("info", "watchdog_cancel_triggered",
+              f"Watchdog cancel action cancelled {len(cancelled)} of "
+              f"{len(unique_tids)} flagged offers "
+              f"(failed={len(failed)})",
+              data={"cancelled": cancelled, "failed": failed})
+
+    # Clear the originating alert so the recommendation card goes away.
+    alert_id = str(data.get("alert_id") or "").strip()
+    if alert_id:
+        try:
+            alerts.clear(alert_id)
+        except Exception:
+            pass
+
+    return jsonify({
+        "success": True,
+        "cancelled_count": len(cancelled),
+        "failed_count": len(failed),
+        "cancelled": cancelled,
+        "failed": failed,
+    })
 
 
 # ---------------------------------------------------------------------------
