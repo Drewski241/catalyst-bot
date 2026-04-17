@@ -796,38 +796,17 @@ def _get_reconcile_tier_sizes_mojos(wallet_type: str) -> Dict[str, int]:
 
 
 def _infer_reconcile_designation_by_size(amt: int, tier_sizes_mojos: Dict[str, int]) -> tuple[str, str]:
-    """Infer designation for a newly-seen coin during reconciliation."""
-    if not tier_sizes_mojos:
-        return ("unknown", "none")
+    """Infer designation for a newly-seen coin during reconciliation.
 
-    tiers_sorted = sorted(tier_sizes_mojos.items(), key=lambda x: x[1], reverse=True)
-    largest_tier_mojos = tiers_sorted[0][1] if tiers_sorted else 0
-    smallest_tier_mojos = tiers_sorted[-1][1] if tiers_sorted else 0
-
-    dust_threshold = int(smallest_tier_mojos * 0.5)
-    if amt < dust_threshold:
-        return ("dust", "none")
-
-    for tier_name, tier_mojos in tiers_sorted:
-        low = int(tier_mojos * 0.8)
-        high = int(tier_mojos * 1.2)
-        if low <= amt <= high:
-            return ("tier_spare", tier_name)
-
-    if amt > int(largest_tier_mojos * 1.2):
-        return ("reserve", "none")
-
-    nearest = None
-    nearest_diff = float("inf")
-    for tier_name, tier_mojos in tiers_sorted:
-        diff = abs(amt - tier_mojos)
-        if diff < nearest_diff:
-            nearest = tier_name
-            nearest_diff = diff
-    if nearest:
-        return ("tier_spare", nearest)
-
-    return ("unknown", "none")
+    Routes through the single-source-of-truth classifier in
+    :mod:`coin_classifier` so that reconcile agrees with the misfit
+    absorber and the offer selector on what "fits a tier" means. This
+    eliminates the class of bugs where reconcile's loose ±20% bounds put
+    a coin in a tier bucket that the absorber's strict 0.98/1.5 bounds
+    would have rejected.
+    """
+    from coin_classifier import infer_designation_by_size as _cc_infer
+    return _cc_infer(amt, tier_sizes_mojos)
 
 
 # ---------------------------------------------------------------------------

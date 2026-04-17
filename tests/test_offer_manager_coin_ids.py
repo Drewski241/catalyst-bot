@@ -375,7 +375,7 @@ class OfferManagerCoinIdTests(unittest.TestCase):
 
         def fake_select(wallet_id, amount_mojos, used_coins=None,
                          preferred_tier=None, strict_preferred_tier=False,
-                         spendable_records=None, max_amount_mojos=None):
+                         spendable_records=None, max_amount_mojos=None, **kwargs):
             captured.append({
                 "wallet_id": wallet_id,
                 "amount_mojos": amount_mojos,
@@ -446,7 +446,7 @@ class OfferManagerCoinIdTests(unittest.TestCase):
 
         def fake_select(wallet_id, amount_mojos, used_coins=None,
                         preferred_tier=None, strict_preferred_tier=False,
-                        spendable_records=None, max_amount_mojos=None):
+                        spendable_records=None, max_amount_mojos=None, **kwargs):
             return f"0xcoin{next(counter)}"
 
         def fake_create_offer_with_retry(self, offer_dict, max_retries=2,
@@ -702,7 +702,7 @@ class OfferManagerCoinIdTests(unittest.TestCase):
 
         def fake_select(wallet_id, amount_mojos, used_coins=None,
                          preferred_tier=None, strict_preferred_tier=False,
-                         spendable_records=None, max_amount_mojos=None):
+                         spendable_records=None, max_amount_mojos=None, **kwargs):
             captured.append({
                 "wallet_id": wallet_id,
                 "amount_mojos": amount_mojos,

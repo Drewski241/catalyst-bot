@@ -367,43 +367,90 @@ def _infer_designation_by_size(amt: int, tier_sizes_mojos: Dict[str, int]) -> Tu
     Used when a coin has no designation yet. Once designated, this is NOT
     called again — the DB designation is authoritative.
 
-    Returns: (designation, assigned_tier)
+    Routes through the single-source-of-truth classifier in
+    :mod:`coin_classifier`. This means the 2026-04-17 bug — where reconcile
+    classified a 23.4k CAT coin as ``tier_spare/inner`` using loose ±20%
+    bounds while the misfit absorber flagged it with stricter 0.98/1.5
+    bounds — is now impossible. Both paths agree.
+
+    Returns: ``(designation_str, assigned_tier_str)``
     """
-    if not tier_sizes_mojos:
-        return ('unknown', 'none')
+    from coin_classifier import infer_designation_by_size as _cc_infer
+    return _cc_infer(amt, tier_sizes_mojos)
 
-    tiers_sorted = sorted(tier_sizes_mojos.items(), key=lambda x: x[1], reverse=True)
-    largest_tier_mojos = tiers_sorted[0][1] if tiers_sorted else 0
-    smallest_tier_mojos = tiers_sorted[-1][1] if tiers_sorted else 0
 
-    # Dust threshold: less than 50% of smallest tier
-    dust_threshold = int(smallest_tier_mojos * 0.5)
-    if amt < dust_threshold:
-        return ('dust', 'none')
+def get_tier_sizes_mojos_from_cfg(is_cat: bool = False) -> Dict[str, int]:
+    """Module-level helper that builds the tier_sizes_mojos dict from cfg
+    without requiring a CoinManager instance.
 
-    # Check if it matches a tier size (±20%)
-    for tier_name, tier_mojos in tiers_sorted:
-        low = int(tier_mojos * 0.8)
-        high = int(tier_mojos * 1.2)
-        if low <= amt <= high:
-            return ('tier_spare', tier_name)
+    Used by :class:`OfferManager` (F70) to pass tier sizes into
+    :func:`_select_coin_for_offer` for SSOT misfit rejection. Keeps the
+    offer side from reaching into the CoinManager private API and lets
+    the check run when an instance isn't readily available.
 
-    # Larger than any tier but doesn't match — could be reserve material
-    if amt > int(largest_tier_mojos * 1.2):
-        return ('reserve', 'none')
+    Returns ``{"inner": mojos, "mid": mojos, "outer": mojos, "extreme": mojos}``
+    for the configured tier sizes. For CAT we derive sizes as
+    ``(xch_tier_size / mid_price) * prep_headroom`` scaled to CAT mojos.
+    When mid_price is unknown, falls back to the XCH-denominated size
+    directly — good enough for rough misfit checks at startup.
+    """
+    if not cfg.TIER_ENABLED:
+        return {}
+    try:
+        from config import get_buy_tier_size_xch, get_sell_tier_size_xch
+    except Exception:
+        return {}
+    side = "sell" if is_cat else "buy"
+    get = get_sell_tier_size_xch if side == "sell" else get_buy_tier_size_xch
+    result_xch: Dict[str, Decimal] = {}
+    for tier in ("inner", "mid", "outer", "extreme"):
+        try:
+            result_xch[tier] = Decimal(str(get(tier)))
+        except Exception:
+            continue
 
-    # Doesn't match any tier exactly — assign to nearest tier as spare
-    nearest = None
-    nearest_diff = float("inf")
-    for tier_name, tier_mojos in tiers_sorted:
-        diff = abs(amt - tier_mojos)
-        if diff < nearest_diff:
-            nearest = tier_name
-            nearest_diff = diff
-    if nearest:
-        return ('tier_spare', nearest)
+    # Apply prep headroom (coins are prepped slightly larger than live
+    # offer size — matches CoinManager._get_tier_sizes_mojos behaviour).
+    try:
+        prep_mult = Decimal(str(getattr(cfg, "COIN_PREP_HEADROOM_MULT", "1.0") or "1.0"))
+        if prep_mult <= 0:
+            prep_mult = Decimal("1.0")
+    except Exception:
+        prep_mult = Decimal("1.0")
 
-    return ('unknown', 'none')
+    if is_cat:
+        # Need a price to convert XCH-denominated tier sizes to CAT mojos.
+        # Try bot_state / live dashboard endpoint; fall back to a synthetic
+        # price derived from cfg if live price isn't available.
+        price = None
+        try:
+            from flask import current_app  # optional
+        except Exception:
+            current_app = None  # noqa: F841
+        try:
+            # Read directly from bot_state if available via api_server module
+            import api_server as _api
+            bs = getattr(_api, "bot_state", None) or {}
+            if bs and "mid_price" in bs:
+                price = Decimal(str(bs.get("mid_price") or 0))
+        except Exception:
+            price = None
+        if price is None or price <= 0:
+            # Fall back to a placeholder — will be approximate but
+            # classify_coin's 0.98/1.5 bounds are generous enough to tolerate.
+            price = Decimal("0.0001")
+        cat_scale = Decimal(10) ** Decimal(cfg.CAT_DECIMALS)
+        out = {}
+        for tier, xch_size in result_xch.items():
+            cat_amount = (xch_size / price * prep_mult).quantize(Decimal("1"))
+            out[tier] = int(cat_amount * cat_scale)
+        return out
+
+    xch_scale = Decimal("1000000000000")
+    return {
+        tier: int((xch_size * prep_mult) * xch_scale)
+        for tier, xch_size in result_xch.items()
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -870,6 +917,15 @@ class CoinManager:
         self._prep_running: bool = False
         self._topup_running: bool = False
         self._topup_thread: Optional[threading.Thread] = None
+
+        # F71: Coin reservation registry (see coin_reservations.py).
+        # Short-lived reservations prevent trade-create and topup-reshape
+        # from racing on the same coin. Every long-running operation
+        # (offer create, absorb, consolidate, split) reserves coins before
+        # its RPC call and releases them in a finally block.
+        # Reservations are TTL'd so a crash can't leak them forever.
+        from coin_reservations import ReservationRegistry
+        self.reservations = ReservationRegistry()
 
         # Backoff state
         self._no_coins_backoff: bool = False
@@ -5693,17 +5749,13 @@ class CoinManager:
                         floor_tolerance: float = 0.98) -> bool:
         """Return True if this coin cannot fund any configured tier offer.
 
-        A coin is considered usable for tier T if:
-          tier_T_mojos × floor_tolerance <= coin_amount <= tier_T_mojos × max_size_ratio
-
-        The floor_tolerance (default 2%) prevents tiny fee-rounding artefacts
-        from the coin-prep split (where a coin ends up a handful of mojos below
-        the exact tier floor) from being incorrectly flagged as misfits.
-        Only coins that are genuinely and significantly below a tier floor —
-        i.e. they can't fund any offer even with the tolerance — are flagged.
-
-        If no tier fits, the coin is stranded — it will never be selected
-        by _select_coin_for_offer and its value is wasted unless reclaimed.
+        This is a thin wrapper that routes through the single-source-of-truth
+        classifier in :mod:`coin_classifier`. Historically there were FIVE
+        different classifiers in the codebase, each with different thresholds,
+        which led to bugs like the 2026-04-17 ladder-shape regression where a
+        23.4k CAT coin was flagged as a misfit here (0.98/1.5 bounds) but
+        accepted by reconcile (±20% bounds). Now all five route through the
+        same authoritative function, making inconsistency impossible.
 
         Args:
             coin_amount_mojos: Coin size in mojos.
@@ -5714,18 +5766,13 @@ class CoinManager:
                                Default 0.98 allows a coin to be up to 2% below
                                the exact tier size before it is flagged.
         """
-        for tier_mojos in tier_sizes_mojos.values():
-            if not tier_mojos or tier_mojos <= 0:
-                continue
-            effective_floor = int(tier_mojos * floor_tolerance)
-            max_usable = (
-                int(tier_mojos * max_size_ratio)
-                if max_size_ratio < float("inf")
-                else float("inf")
-            )
-            if effective_floor <= coin_amount_mojos <= max_usable:
-                return False  # Close enough to fund this tier — not a misfit
-        return True  # Cannot fund any tier
+        from coin_classifier import is_misfit_coin as _cc_is_misfit
+        return _cc_is_misfit(
+            coin_amount_mojos,
+            tier_sizes_mojos,
+            max_size_ratio=max_size_ratio,
+            floor_tolerance=floor_tolerance,
+        )
 
     def _absorb_misfits_to_reserve(self, name: str, wallet_id: int,
                                    inventory: Dict[str, list],

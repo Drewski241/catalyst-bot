@@ -351,7 +351,8 @@ class OfferManager:
                                 strict_preferred_tier: bool = False,
                                 spendable_records: List[Dict] = None,
                                 exclude_coin_ids: set = None,
-                                max_amount_mojos: int = None) -> Optional[str]:
+                                max_amount_mojos: int = None,
+                                tier_sizes_mojos: Optional[Dict[str, int]] = None) -> Optional[str]:
         """Pre-select the best coin for an offer before creating it.
 
         Instead of letting the wallet auto-select (and then polling to
@@ -374,6 +375,17 @@ class OfferManager:
                 exact_tier_spend_mode — locking 87% of the coin as change.
                 When no coin fits within [amount_mojos, max_amount_mojos],
                 returns None so the slot suspends and triggers a topup.
+            tier_sizes_mojos: Optional mapping of tier name → mojos used to
+                strict-validate candidate coins via
+                :func:`coin_classifier.classify_coin`. When provided AND
+                ``preferred_tier`` is set, coins classified as a MISFIT for
+                that tier (under the SSOT 0.98/1.5 bounds) are rejected —
+                even if they satisfy the raw amount_mojos / max_amount_mojos
+                window. This prevents the 2026-04-17 regression where the
+                offer selector happily accepted a 23.4k CAT coin for an
+                "inner" slot even though strict bounds classified it as a
+                misfit, producing a ragged ladder shape on Dexie.
+                Leave None to preserve legacy behaviour.
 
         Returns:
             coin_id string if a suitable coin is found, None otherwise.
@@ -383,6 +395,33 @@ class OfferManager:
 
         if used_coins is None:
             used_coins = set()
+
+        # SSOT misfit rejection — precompute once so it's cheap to apply per
+        # candidate. Only active when the caller supplied both
+        # preferred_tier and tier_sizes_mojos. See the F70 docstring above
+        # for why this exists.
+        #
+        # Design note: we only reject TRUE misfits here (coins that fit no
+        # configured tier under the 0.98/1.5 bounds). Reserve and dust coins
+        # are NOT rejected by this check — other pre-existing filters
+        # (designation == "reserve", size floor vs amount_mojos) handle
+        # those categories. Narrowing the check to misfits only keeps F70
+        # targeted at the ladder-shape regression without breaking legacy
+        # callers that use oversize coins for tier-agnostic fallback paths.
+        _reject_misfit = bool(preferred_tier and tier_sizes_mojos)
+        if _reject_misfit:
+            from coin_classifier import classify_coin
+
+            def _coin_fits_preferred_tier(coin_amount_mojos: int) -> bool:
+                """Returns False ONLY when the coin is a confirmed misfit —
+                i.e. it fits no configured tier at strict 0.98/1.5 bounds.
+                Everything else (including reserve and dust coins) returns
+                True here and is filtered by the existing selector logic
+                downstream."""
+                cls = classify_coin(coin_amount_mojos, tier_sizes_mojos)
+                return not cls.is_misfit
+        else:
+            _coin_fits_preferred_tier = None  # type: ignore
 
         try:
             if spendable_records is None:
@@ -417,6 +456,15 @@ class OfferManager:
                 # creates a cascading wrong-size cycle. Fail cleanly instead.
                 if max_amount_mojos is not None and coin_amount > max_amount_mojos:
                     continue
+                # F70 SSOT misfit guard: reject coins that the unified
+                # classifier says don't fit the preferred tier. Without this,
+                # a 23.4k-CAT change coin from a past fill could be used to
+                # back an "inner" slot even though it's 12% below inner's
+                # strict floor — producing ragged ladder shape like the
+                # 2026-04-17 incident.
+                if _coin_fits_preferred_tier is not None:
+                    if not _coin_fits_preferred_tier(coin_amount):
+                        continue
 
                 fallback_candidates.append((coin_amount - amount_mojos, coin_id, coin_amount))
 
@@ -460,6 +508,15 @@ class OfferManager:
                         continue
                     if max_amount_mojos is not None and coin_amount > max_amount_mojos:
                         continue
+                    # F70 SSOT misfit guard — see the fallback loop above
+                    # for the full rationale. Applies here too so that a
+                    # misfit-sized coin that WAS incorrectly designated
+                    # tier_spare/<tier> (legacy reconcile before the
+                    # classify_coin() change took effect) still gets
+                    # rejected at selection time.
+                    if _coin_fits_preferred_tier is not None:
+                        if not _coin_fits_preferred_tier(coin_amount):
+                            continue
 
                     priority = self._coin_designation_priority(
                         designation, assigned_tier, preferred_tier
@@ -1569,6 +1626,18 @@ class OfferManager:
                     if _ratio > 0:
                         _max_coin = int(spend_amount * _ratio)
 
+                # F70 — pass tier sizes so the selector can do strict SSOT
+                # misfit rejection via classify_coin(). Without this, the
+                # selector would accept coins that are below inner's 0.98
+                # floor even though reconcile (post-fix) would classify
+                # them as UNKNOWN.
+                _tier_sizes_mojos_for_select = None
+                try:
+                    from coin_manager import get_tier_sizes_mojos_from_cfg as _gt_mojos
+                    _tier_sizes_mojos_for_select = _gt_mojos(is_cat=(side == "sell"))
+                except Exception:
+                    _tier_sizes_mojos_for_select = None
+
                 coin_id = self._select_coin_for_offer(
                     spec_spend_wallet_id or spend_wallet_id,
                     spend_amount,
@@ -1576,6 +1645,7 @@ class OfferManager:
                     preferred_tier=coin_size_pref,
                     spendable_records=spendable_records,
                     max_amount_mojos=_max_coin,
+                    tier_sizes_mojos=_tier_sizes_mojos_for_select,
                 )
                 spec["coin_id"] = coin_id
                 if coin_id:
