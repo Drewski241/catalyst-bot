@@ -7959,20 +7959,28 @@ def _calculate_smart_defaults(xch_reserve=0.0, cat_reserve=0.0, risk_profile="ba
             )
             # F55 (2026-04-09): the frontend's coin-prep total includes
             # sniper CAT and the topup-pool CAT alongside the trading
-            # tiers. If we let trading tiers eat 85% of avail_cat, and
-            # then sniper + topup take their share on top, the frontend
-            # sum can exceed avail_cat and fire a critical "Coin prep
-            # impossible" warning even though Smart Settings just signed
-            # off. Carve those holders OUT of the budget here so the
+            # tiers. Carve those holders OUT of the CAT budget here so the
             # trading-tier clamp leaves room for them.
+            #
+            # F77 (2026-04-17): removed the separate `* 0.85` safety factor.
+            # It was double-counting the topup reservation (which is
+            # already subtracted below as `_topup_cat_prep`), giving CAT
+            # side only ~70% of balance for trading while XCH side uses
+            # ~88%. The 15-25% topup-buffer is the explicit slack; no
+            # additional hidden factor is needed. Result: CAT-side ladder
+            # now deploys the same fraction of balance as the XCH side,
+            # which matches user intent ("my CAT should be fully used").
             _sniper_cat_prep = (
                 round((_smart_sniper_size / mid_price) * _cp_hm) * _smart_sniper_prep
                 if mid_price > 0 else 0
             )
             _topup_cat_prep = round(_avail_cat * _TOPUP_BUFFER_PCT)
+            # Match the XCH-side's implicit 2% safety margin (see
+            # _safe_tier_budget = _tier_warning_budget * 0.98 below) so
+            # both sides leave identical rounding-noise buffer.
             _cat_budget = max(
                 0.0,
-                _avail_cat * 0.85 - _sniper_cat_prep - _topup_cat_prep
+                _avail_cat * 0.98 - _sniper_cat_prep - _topup_cat_prep
             )
             if _total_cat_prep > _cat_budget:
                 _cat_scale = _cat_budget / _total_cat_prep   # < 1.0
