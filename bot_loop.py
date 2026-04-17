@@ -1586,6 +1586,15 @@ class BotLoop:
             out = []
             for r in rows or []:
                 try:
+                    # Skip sniper offers — they sit closest to mid but use
+                    # sniper-tier coins (0.01 XCH), not main-ladder coins.
+                    # Feeding them to the watchdog makes it count the sniper
+                    # as "slot 0 inner", pushing every main-tier slot down
+                    # by one and producing a cascade of bogus taper-drift
+                    # warnings on every cycle.
+                    tier = (r.get("tier") or "").strip().lower()
+                    if tier == "sniper":
+                        continue
                     p = r.get("price_xch") or r.get("price")
                     s = r.get("size_xch")
                     if p is None or s is None:
