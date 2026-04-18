@@ -170,6 +170,14 @@ class OfferManager:
         self._slot_warned_at: Dict[str, float] = {}
         self._slot_warn_cooldown: float = 600.0  # seconds
 
+        # Position-hard-guard log cooldown — when net position exceeds the hard
+        # limit, every ladder attempt emits the same block error. During a
+        # sustained imbalance the logs flooded with 4 identical ERROR lines per
+        # minute. Cooldown to once per 60s per side so the block reason stays
+        # visible without drowning other signals.
+        self._position_guard_logged_at: Dict[str, float] = {}
+        self._position_guard_log_cooldown: float = 60.0  # seconds
+
         # ----- Wallet sync fail-closed cache -----
         # When Sage get_offers times out, we must not treat that as an empty
         # book. Keep the last successful classified view so callers can fail
@@ -1427,20 +1435,26 @@ class OfferManager:
                     and net_pos_xch + net_new_exposure_xch > hard_pos_xch
                     and max_pos_xch > 0
                 ):
-                    log_event(
-                        "error",
-                        "position_hard_guard_blocked",
-                        f"BLOCKED ladder creation: side={side}, num={num}, "
-                        f"size={default_size}, current_position={net_pos_xch:.4f} XCH "
-                        f"(net {net_pos_cat:+.0f} CAT), full-ladder value "
-                        f"{projected_increase_xch:.4f} XCH, already-open same-side "
-                        f"{same_side_open_xch:.4f} XCH, net new exposure "
-                        f"{net_new_exposure_xch:.4f} XCH → projected "
-                        f"{(net_pos_xch + net_new_exposure_xch):.4f} XCH > "
-                        f"hard limit {hard_pos_xch:.4f} XCH (110% of "
-                        f"MAX_POSITION_XCH={max_pos_xch}). Allow position to "
-                        f"unwind via the opposite side first.",
-                    )
+                    _now = time.time()
+                    _last = self._position_guard_logged_at.get(side, 0.0)
+                    _should_log = (_now - _last) >= self._position_guard_log_cooldown
+                    if _should_log:
+                        self._position_guard_logged_at[side] = _now
+                        log_event(
+                            "error",
+                            "position_hard_guard_blocked",
+                            f"BLOCKED ladder creation: side={side}, num={num}, "
+                            f"size={default_size}, current_position={net_pos_xch:.4f} XCH "
+                            f"(net {net_pos_cat:+.0f} CAT), full-ladder value "
+                            f"{projected_increase_xch:.4f} XCH, already-open same-side "
+                            f"{same_side_open_xch:.4f} XCH, net new exposure "
+                            f"{net_new_exposure_xch:.4f} XCH → projected "
+                            f"{(net_pos_xch + net_new_exposure_xch):.4f} XCH > "
+                            f"hard limit {hard_pos_xch:.4f} XCH (110% of "
+                            f"MAX_POSITION_XCH={max_pos_xch}). Allow position to "
+                            f"unwind via the opposite side first. "
+                            f"(suppressing duplicates for {int(self._position_guard_log_cooldown)}s)",
+                        )
                     return []
             except Exception as _pg_err:
                 # Fail-open: never block trading on a guard bug
