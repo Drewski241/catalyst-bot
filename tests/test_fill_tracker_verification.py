@@ -33,6 +33,7 @@ class FillTrackerVerificationTests(unittest.TestCase):
         fake_database.update_offer_status = self._update_offer_status
         fake_database.update_offer_lifecycle_state = lambda *args, **kwargs: None
         fake_database.transition_offer = lambda *args, **kwargs: None
+        fake_database.mark_cancel_attempted = lambda *args, **kwargs: None
         fake_database.log_event = self._log_event
         sys.modules["database"] = fake_database
 

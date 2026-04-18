@@ -11806,6 +11806,36 @@ def api_doctor():
                         "checks": []}), 500
 
 
+# ---------------------------------------------------------------------------
+# Bot Health — runtime anomaly detection + repair
+# ---------------------------------------------------------------------------
+
+@app.route("/api/health/runtime")
+def api_health_runtime():
+    """Run runtime health checks (read-only by default).
+
+    Sister endpoint to /api/doctor — that one runs preflight checks (can
+    the bot start?), this one runs runtime checks (is the running bot
+    still in sync with reality?). Cross-checks DB vs Dexie/Sage/Spacescan.
+
+    Query params:
+        repair=true   — also execute auto-repair actions (default: read-only)
+        force=true    — bypass the 60s cache and re-run now
+    """
+    try:
+        from bot_health import run_runtime_checks
+        auto_repair = request.args.get("repair", "").lower() in ("1", "true", "yes")
+        force = request.args.get("force", "").lower() in ("1", "true", "yes")
+        report = run_runtime_checks(auto_repair=auto_repair, force=force)
+        return jsonify(report.to_dict())
+    except Exception as e:
+        log_event("error", "api_error", f"Runtime health check failed: {e}",
+                  {"endpoint": request.path})
+        return jsonify({"healthy": False,
+                        "summary": "Runtime health check failed — see debug log",
+                        "checks": []}), 500
+
+
 @app.route("/api/config/history")
 def api_config_history():
     """F26 (2026-04-08): expose the config change audit trail.

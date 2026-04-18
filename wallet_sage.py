@@ -3047,8 +3047,20 @@ def cancel_offers_batch(trade_ids: list, secure: bool = True, max_workers: int =
             if bulk_ok:
                 print(f"   ✅ [Sage] Bulk cancel submitted successfully")
                 cancel_submitted = True
+                # NOTE: bulk_3step only means submit_transaction returned HTTP 200
+                # — the cancel TX is in the mempool but NOT yet confirmed on-chain.
+                # With fee=0 (forced by Sage's BAD_AGGREGATE_SIGNATURE bug on
+                # multi-fee bundles) the TX has no priority and may sit forever
+                # or get displaced. Tag as submitted_pending_confirm so the
+                # CANCEL_PENDING_METHODS guard in offer_manager keeps DB status
+                # at "open" until the bot_health verifier confirms via Dexie.
+                # Previously this tagged "bulk_3step", which slipped past the
+                # guard and produced ghost-cancelled-but-still-live offers
+                # ("zombie offers" — DB cancelled, Dexie still active).
                 for tid in trade_ids:
-                    results[tid] = {"success": True, "method": "bulk_3step"}
+                    results[tid] = {"success": True,
+                                    "method": "submitted_pending_confirm",
+                                    "submission_path": "bulk_3step"}
             else:
                 print(f"   ⚠️ [Sage] Bulk cancel failed — falling back to sequential")
         except Exception as e:

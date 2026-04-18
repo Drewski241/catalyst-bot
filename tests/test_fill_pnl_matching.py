@@ -64,6 +64,7 @@ class FillPnlMatchingTests(unittest.TestCase):
         fake_database.log_event = _fake_log_event
         fake_database.update_offer_lifecycle_state = lambda *a, **kw: None
         fake_database.transition_offer = lambda *a, **kw: None
+        fake_database.mark_cancel_attempted = lambda *a, **kw: None
         sys.modules["database"] = fake_database
 
         fake_wallet = types.ModuleType("wallet")

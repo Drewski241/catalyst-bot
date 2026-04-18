@@ -22,7 +22,7 @@ from typing import Optional, Dict, List, Tuple, Callable, Any
 from config import cfg
 from database import (
     add_offer, update_offer_status,
-    transition_offer,
+    transition_offer, mark_cancel_attempted,
     get_open_offers, get_offer, log_event, lock_coin
 )
 from wallet import (
@@ -2410,6 +2410,13 @@ class OfferManager:
                 transition_offer(tid, "cancel_sent")
             except Exception:
                 pass  # lifecycle update is additive — never block cancel
+            # Stamp cancel attempt time so bot_health.check_pending_cancels()
+            # can throttle retries (don't re-cancel a still-pending offer
+            # every cycle — wait the configured backoff first).
+            try:
+                mark_cancel_attempted(tid)
+            except Exception:
+                pass
 
         # NOTE: Sage's cancel endpoints don't accept coin_ids — fee coin
         # is always auto-selected.  Bulk cancel (≥3 offers) uses a single

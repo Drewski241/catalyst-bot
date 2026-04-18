@@ -62,6 +62,7 @@ fake_database.log_event = lambda *args, **kwargs: None
 fake_database.lock_coin = lambda *args, **kwargs: None
 fake_database.update_offer_lifecycle_state = lambda *args, **kwargs: None
 fake_database.transition_offer = lambda *args, **kwargs: None
+fake_database.mark_cancel_attempted = lambda *args, **kwargs: None
 sys.modules["database"] = fake_database
 
 fake_wallet = types.ModuleType("wallet")

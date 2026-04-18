@@ -6313,6 +6313,27 @@ class BotLoop:
             log_event("warning", "position_sanity_check_failed",
                       f"Position sanity check failed: {_pos_err}")
 
+        # F76 (2026-04-18): runtime health verifier. Cross-checks the bot's
+        # DB against external sources of truth (Dexie, Sage). Currently
+        # detects/repairs the "zombie offer" anomaly — DB marked cancelled
+        # but Dexie still shows the offer as ACTIVE because the bulk-cancel
+        # TX (forced fee=0) didn't confirm. Auto-repair re-fires the cancel
+        # via the single-offer path with a priority fee.
+        try:
+            from bot_health import run_runtime_checks
+            health = run_runtime_checks(auto_repair=True)
+            if health.repaired:
+                log_event("info", "bot_health_repaired",
+                          f"bot_health repaired {health.repaired} anomalies "
+                          f"({health.summary})")
+            elif health.anomalies:
+                log_event("info", "bot_health_anomalies",
+                          f"bot_health found {health.anomalies} anomalies "
+                          f"({health.summary})")
+        except Exception as _hc_err:
+            log_event("warning", "bot_health_check_failed",
+                      f"Runtime health check failed: {_hc_err}")
+
         # F21 (2026-04-08): lifecycle FSM observability snapshot.
         # Logs noop-transition counts so misuse of the state machine
         # surfaces over time without forcing strict mode (which would

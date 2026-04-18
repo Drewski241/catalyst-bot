@@ -74,6 +74,7 @@ fake_database.get_offer = lambda *args, **kwargs: None
 fake_database.update_offer_status = lambda *args, **kwargs: True
 fake_database.update_offer_lifecycle_state = lambda *args, **kwargs: None
 fake_database.transition_offer = lambda *args, **kwargs: None
+fake_database.mark_cancel_attempted = lambda *args, **kwargs: None
 fake_database.backfill_verified_fills_from_offers = lambda *args, **kwargs: 0
 sys.modules["database"] = fake_database
 

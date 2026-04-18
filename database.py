@@ -517,6 +517,19 @@ def init_database():
         log_event("info", "db_migration",
                   "Migrated offers table: added 'lifecycle_state' column for extended offer lifecycle")
 
+    # Migration: add cancel_last_attempt_at column to offers table.
+    # Used by bot_health.check_pending_cancels() to throttle retries when
+    # a cancel TX hasn't confirmed yet (e.g. fee=0 bulk cancel sat in
+    # mempool and got displaced). Lets the verifier wait N minutes between
+    # retries instead of hammering Sage every cycle.
+    try:
+        conn.execute("SELECT cancel_last_attempt_at FROM offers LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE offers ADD COLUMN cancel_last_attempt_at TEXT")
+        conn.commit()
+        log_event("info", "db_migration",
+                  "Migrated offers table: added 'cancel_last_attempt_at' column for cancel-retry throttling")
+
     # Migration: add event_category column to events table.
     # Canonical event categories for filtering and routing.
     try:
@@ -1145,6 +1158,32 @@ def update_offer_status(trade_id: str, status: str) -> bool:
         return False
 
 
+def mark_cancel_attempted(trade_id: str) -> bool:
+    """Stamp cancel_last_attempt_at = now() for the given offer.
+
+    Used by the cancel path to record when a cancel RPC was last sent so
+    the bot_health verifier can throttle retries (don't re-cancel a still-
+    pending offer every cycle — wait the configured backoff period).
+    """
+    from datetime import datetime, timezone
+    try:
+        conn = get_connection()
+        conn.execute(
+            "UPDATE offers SET cancel_last_attempt_at=? WHERE trade_id=?",
+            (datetime.now(timezone.utc).isoformat(), trade_id),
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        log_event("warning", "mark_cancel_attempted_failed",
+                  f"Failed to stamp cancel_last_attempt_at for {trade_id[:16]}...: {e}")
+        return False
+
+
 def update_offer_lifecycle_state(trade_id: str, lifecycle_state: str) -> bool:
     """Update only the lifecycle_state column (extended state tracking).
 
@@ -1412,14 +1451,28 @@ def get_offers_for_repost(cat_asset_id: str = None) -> List[Dict]:
     return [dict(r) for r in rows]
 
 
-def get_open_offers(side: str = None, cat_asset_id: str = None) -> List[Dict]:
+def get_open_offers(side: str = None, cat_asset_id: str = None,
+                    include_pending_cancel: bool = False) -> List[Dict]:
     """Get all open offers, optionally filtered by side and/or CAT pair.
+
+    By default, excludes offers whose lifecycle_state is 'cancel_requested'
+    (cancel RPC sent, awaiting on-chain confirmation). These offers still
+    have status='open' in the DB but the bot has already asked Sage to
+    cancel them — for cap counting, requote selection, dashboard display,
+    and trim decisions they are effectively gone.
+
+    Pass include_pending_cancel=True only when you specifically need to
+    examine pending-cancel offers (e.g. the bot_health verifier loop that
+    re-checks them against Dexie/Sage).
 
     Returns list of dicts with all offer fields.
     """
     conn = get_connection()
     query = "SELECT * FROM offers WHERE status='open'"
     params = []
+
+    if not include_pending_cancel:
+        query += " AND (lifecycle_state IS NULL OR lifecycle_state NOT IN ('cancel_requested', 'cancel_sent'))"
 
     if side:
         query += " AND side=?"
