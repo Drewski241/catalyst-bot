@@ -1,20 +1,19 @@
-"""
-Offer Lifecycle — Canonical state machine for offer tracking.
+"""Pure state-machine definitions for offer tracking
 
-Adapted from Greenfloor's offer_lifecycle.py but extended for our
-desktop bot's real flows: requoting, cancel retries, fill verification,
-phantom/self-spend rejection, and Dexie posting.
+Defines the `OfferState` and `OfferSignal` enums plus `apply_signal(state, signal)
+-> OfferTransition`, which is the single authority for legal offer state changes.
+This module is stateless and has no external dependencies — callers feed in a
+state and a signal and receive back the new state and a recommended action.
 
-The existing DB column `status` (CHECK: open|filled|cancelled|expired)
-is preserved for backward compatibility. A new `lifecycle_state` column
-stores the extended state. The helper `coarse_status()` maps extended
-states back to the 4 legacy values for old queries.
+Key responsibilities:
+    - Enumerate extended lifecycle states and the signals that drive them
+    - Compute deterministic `(state, signal) -> transition` results
+    - Preserve backward compatibility with the legacy 4-value `status` column
+      through `coarse_status()`
 
-Usage:
-    from offer_lifecycle import OfferState, OfferSignal, apply_signal
-    transition = apply_signal(OfferState.OPEN, OfferSignal.CANCEL_SENT)
-    # transition.new_state == OfferState.CANCEL_REQUESTED
-    # transition.action == "await_cancel_confirm"
+The `REFRESH_POSTED` signal transitions `REFRESH_DUE -> CANCELLED` because the
+refreshed offer is a new row that replaces the old one; the old ID is treated
+as cancelled rather than filled or expired.
 """
 
 from __future__ import annotations

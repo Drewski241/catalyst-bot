@@ -1,24 +1,23 @@
 #!/usr/bin/env python3
-"""
-Intelligent Coin Preparation Worker - PARALLEL OPTIMIZED
-Runs in background, prepares coins for optimal trading
+"""Standalone subprocess that reshapes the coin set for optimal trading
 
-🚀 PERFORMANCE OPTIMIZATION:
-- Submits XCH and CAT transactions in parallel with 5s stagger
-- Confirms both transactions simultaneously (saves ~80 seconds!)
-- Splits both wallets in parallel (saves another ~40 seconds!)
-- Total time: ~3 minutes → ~1.7 minutes (44% faster!)
+This module is launched as a separate process by CoinManager.start_coin_prep
+and is never imported as a library by the main bot. The CoinPrepWorker class
+drives a PrepPhase state machine that consolidates dust, builds a trading
+pool, and splits that pool into tier-sized coins for both XCH and CAT wallets.
+Work runs in parallel across the two wallets so the main bot can keep quoting
+offers while prep is underway.
 
-FEATURES:
-- Analyzes current coin state
-- Consolidates dust into big coins
-- Splits big coins into optimal trading sizes
-- Reports progress to GUI via status file
-- Non-blocking - bot can trade while this runs
-- Uses CLI commands for fast splitting
+Key responsibilities:
+    - Analyze current coin state and plan the split/consolidation target
+    - Consolidate dust and small coins into a consolidated pool coin
+    - Split pool coins into tier-sized trading coins for XCH and CAT
+    - Write progress to a status JSON file consumed by the GUI
+    - Mirror log events to the bot's HTTP API for live feedback
 
-Author: Market Maker Bot Team
-Version: 1.0.0
+Because this is a separate process, it does not share memory with the main
+bot — all coordination happens via the status file, log mirroring, and the
+wallet's own view of the coin set after transactions confirm.
 """
 
 import os

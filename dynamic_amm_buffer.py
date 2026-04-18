@@ -1,34 +1,18 @@
-"""
-Dynamic AMM Buffer — widens AMM_BUFFER_BPS after sweep activity.
+"""Adaptive AMM buffer sizing driven by recent sweep activity
 
-After an arbitrageur sweeps the book, the arb window is likely to remain
-open for a few minutes while prices re-equilibrate.  Posting fresh offers
-at the original (narrow) buffer increases the chance of being swept again.
+Tracks arbitrage sweep events in a rolling in-memory window and returns
+a multiplier (1.0x baseline up to 2.5x cap) that widens the configured
+`AMM_BUFFER_BPS` when sweeps are frequent. `record_sweep()` is called by
+`bot_loop` as sweep events drain, and `get_buffer()` is consumed by
+`amm_monitor` when evaluating buffer proximity so offers are pushed
+farther from the AMM curve during active arbitrage. State lives in a
+module-level singleton guarded by a threading lock.
 
-This module tracks sweep timestamps over a rolling window and returns an
-effective buffer that is wider when sweeps are frequent.
-
-Multiplier table (defaults, all configurable via config keys):
-    0 sweeps in window  → 1.0× (baseline — no change)
-    1–2 sweeps          → 1.5×
-    3–5 sweeps          → 2.0×
-    6+  sweeps          → 2.5× (cap)
-
-Config keys:
-    DYNAMIC_BUFFER_WINDOW_MINS  — rolling window length (default 60)
-    DYNAMIC_BUFFER_MULTIPLIER_MED  — multiplier for 1-2 sweeps (default 1.5)
-    DYNAMIC_BUFFER_MULTIPLIER_HIGH — multiplier for 3-5 sweeps (default 2.0)
-    DYNAMIC_BUFFER_MULTIPLIER_CAP  — multiplier for 6+ sweeps  (default 2.5)
-    DYNAMIC_BUFFER_ENABLED         — master toggle (default True)
-
-Usage:
-    from dynamic_amm_buffer import get_buffer, record_sweep
-
-    # In bot_loop after sweep events drain:
-    record_sweep(fill_count=evt.fill_count)
-
-    # In amm_monitor.check_amm_buffer instead of reading cfg directly:
-    effective_bps = get_buffer(base_bps)
+Key responsibilities:
+    - Track sweep timestamps in a rolling window
+    - Map sweep frequency to a buffer multiplier
+    - Expose `record_sweep()` and `get_buffer()` entry points
+    - Keep all state in-memory, lock-protected, and process-local
 """
 
 from __future__ import annotations

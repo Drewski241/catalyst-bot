@@ -1,3 +1,21 @@
+"""Transaction fee estimation with three modes and short-TTL caching
+
+Chooses between a manual flat XCH fee, a local full-node auto-estimate
+(mTLS RPC), and a Coinset cloud fallback with retry/backoff on 429/5xx
+responses. Also supplies fee-pool helpers and a settings snapshot for
+the GUI. Used by offer_manager and coin_prep_worker whenever a spend
+bundle needs fees attached.
+
+Key responsibilities:
+    - `xch_to_mojos` / `mojos_to_xch` conversions and rounding
+    - Manual / node-auto / Coinset-auto fee selection
+    - Separate TTL caches for node-suggested and Coinset-suggested fees
+    - GUI-facing snapshot of current fee configuration
+
+Cache TTLs are short (30–60s) so fee guidance stays responsive to
+mempool conditions without hammering the node or Coinset.
+"""
+
 from __future__ import annotations
 
 import os

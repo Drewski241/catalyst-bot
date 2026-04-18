@@ -1,35 +1,21 @@
-"""
-Fill Classifier — Identify the nature of offer fills.
+"""Classify detected fills as retail, arb sweep, Dexie-combined, or unknown
 
-Classifies each fill into one of five categories:
+Takes a detected fill plus any available Dexie metadata and labels it as one of
+RETAIL, ARB_SWEEP_BUY, ARB_SWEEP_SELL, DEXIE_COMBINED, or UNKNOWN. The decision
+uses taker-puzzle-hash matching against `cfg.KNOWN_ARB_PUZZLE_HASHES`, Dexie
+response metadata, and clustering by `spent_block_index` to spot multi-offer
+atomic sweeps. The module is pure functions plus a single DB write through
+`update_fill_classification`.
 
-  RETAIL          — Individual user trading via Dexie; single offer, no
-                    known arb wallet, no same-block cluster pattern.
-  ARB_SWEEP_BUY   — TibetSwap (or similar) arb bot buying our sell offers.
-                    Taker puzzle hash matches a known arb wallet.
-  ARB_SWEEP_SELL  — TibetSwap arb bot selling into our buy offers.
-  DEXIE_COMBINED  — Multiple of our offers were swept in the same atomic
-                    on-chain transaction (same spent_block_index across
-                    fills that arrived close together). The arb bot
-                    combines several Dexie offers into one bundle.
-  UNKNOWN         — Not enough data to classify confidently.
+Key responsibilities:
+    - Resolve taker puzzle hash and match against the known arb-wallet set
+    - Detect DEXIE_COMBINED bundles via shared block index across close fills
+    - Return a `FillClassification` with category, confidence, and evidence
+    - Persist the label without ever blocking the fill-recording path
 
-Classification is additive and non-blocking.  Failures in the classifier
-never prevent a fill from being recorded — they just leave the
-fill_classification column as 'unknown'.
-
-Usage:
-    from fill_classifier import classify_fill, FillClassification
-
-    result = classify_fill(
-        trade_id="0xabc...",
-        fill_detail={"coin_id": "...", "side": "buy", ...},
-        dexie_detail={"spent_block_index": 12345, ...},
-    )
-    # result.classification → "retail" | "arb_sweep_buy" | ...
-    # result.confidence     → "high" | "medium" | "low"
-    # result.taker_puzzle_hash → "abc123..." or None
-    # result.spent_block_index → 12345 or None
+Fail-open by design: any exception inside classification is swallowed and the
+fill is left labelled `unknown`, so fill recording is never prevented by a
+classifier bug or missing upstream data.
 """
 
 from __future__ import annotations

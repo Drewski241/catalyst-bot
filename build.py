@@ -1,12 +1,21 @@
-"""
-build.py — CATalyst Windows build script
+"""PyInstaller build orchestrator for the CATalyst desktop app
+
+Wraps the full PyInstaller invocation so a single command produces a
+distributable Windows build. Cleans previous `dist/` and `build/`
+directories, runs PyInstaller against `catalyst.spec`, copies
+`.env.example` next to the generated exe (kept external rather than
+bundled so users can edit it), and verifies key assets shipped
+correctly.
+
+Key responsibilities:
+    - Parse CLI flags and drive the clean / build / verify phases
+    - Invoke PyInstaller via catalyst.spec and surface non-zero exits
+    - Place .env.example alongside dist/ChiaMarketMaker/ChiaMarketMaker.exe
+    - Sanity-check that expected output files exist after build
 
 Usage:
-    python build.py              # Normal build
-    python build.py --clean      # Force clean before build (default)
-    python build.py --no-clean   # Skip cleaning (faster iterative builds)
-
-Output: dist/ChiaMarketMaker/ChiaMarketMaker.exe
+    python build.py              # full clean build (default)
+    python build.py --no-clean   # skip cleaning for faster iteration
 """
 
 import os

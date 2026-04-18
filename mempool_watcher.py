@@ -1,38 +1,20 @@
-"""
-Mempool Watcher — Pre-emptive Price Intelligence
+"""Pre-emptive price intelligence from TibetSwap reserves and the mempool
 
-Monitors two sources in parallel to detect price movements faster than the
-main 30-second bot loop:
+`MempoolWatcher` runs two background pollers on a 5-second cadence: one
+watches TibetSwap pool reserves to emit `price_move` signals when a swap
+confirms, and one scans the Coinset mempool for spends of the known
+Tibet pool coin to emit `imminent_swap` and `fill_imminent` warnings up
+to ~18 s before block confirmation. Consumed by `bot_loop`, this lets
+the bot react to arb activity far sooner than the main 30-second cycle
+would allow. `compute_coin_id()` implements the Chia coin-ID hash
+`sha256(parent_coin_info + puzzle_hash + amount_bytes)` used to match
+mempool entries against the pool coin.
 
-  1. Tibet reserve polling (every 5s): detects CONFIRMED swaps the moment the
-     block lands, giving ~5s response vs 30s. Calculates exact direction and
-     magnitude from reserve deltas.
-
-  2. Coinset mempool polling (every 5s): scans pending transactions for
-     spends of the known Tibet pool coin. Fires an "imminent_swap" warning
-     BEFORE the block confirms (up to 18-54s early).
-
-Signals emitted:
-    {
-        "type":          "price_move" | "imminent_swap",
-        "direction":     "up" | "down" | "unknown",
-        "magnitude_pct": float,      # % change vs current mid
-        "source":        "confirmed_reserves" | "mempool_detected",
-        "timestamp":     float,
-        "new_xch_reserve":  int,     # (price_move only)
-        "new_tok_reserve":  int,
-        "old_xch_reserve":  int,
-        "old_tok_reserve":  int,
-        "delta_xch":     int,        # (price_move only) signed, mojos
-        "delta_tok":     int,        # signed, raw tokens
-    }
-
-Usage:
-    from mempool_watcher import MempoolWatcher
-    watcher = MempoolWatcher(pair_id, asset_id, cat_decimals)
-    watcher.start()
-    signals = watcher.get_pending_signals()   # call from bot loop
-    watcher.stop()
+Key responsibilities:
+    - Detect confirmed AMM swaps via reserve-delta polling
+    - Detect pending AMM swaps and fills via mempool scanning
+    - Emit typed signals with direction and magnitude for the bot loop
+    - Provide the Chia coin-ID hash helper used for mempool matching
 """
 
 from __future__ import annotations

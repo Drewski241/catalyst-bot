@@ -1,43 +1,22 @@
-"""Single source of truth for coin classification.
+"""Single source of truth for coin-to-tier classification
 
-Before this module existed, the codebase had FIVE different classifiers, each
-with different thresholds, leading to inconsistent decisions across the bot:
+classify_coin() returns a CoinClassification dataclass that answers, for a
+given coin amount, "can this coin back an offer at tier X?" The return value
+carries a CoinFit enum (EXACT, OVERSIZE_FIT, UNDER_FLOOR, OVER_CEILING), the
+suggested designation, and both a best_tier (if one fits) and a nearest_tier
+(for diagnostics only). This module replaces five inconsistent ad-hoc
+classifiers that previously lived in coin_manager, database, and
+coin_prep_worker with one deterministic set of thresholds.
 
-    Function                                   | Floor  | Ceiling | Purpose
-    -------------------------------------------+--------+---------+----------------
-    _is_misfit_coin (coin_manager.py)         | 0.98x  | 1.50x   | absorb misfits
-    _infer_designation_by_size (cm.py:364)    | 0.80x  | 1.20x   | new-coin designate
-    _infer_reconcile_designation (db.py:798)  | 0.80x  | 1.20x   | reconcile designate
-    _classify_coins_tiered (cm.py:286)        | 0.80x  | 1.20x   | legacy bucket
-    _partition_coins_for_designation (cpw)    | ±1%    | ±1%     | coin-prep alloc
+Key responsibilities:
+    - Provide a single classify_coin() entry point used across the codebase
+    - Define the CoinFit vocabulary and CoinClassification result shape
+    - Let callers pass custom (floor_tolerance, max_ratio) without forking logic
+    - Expose nearest_tier strictly for logs; best_tier is the actionable answer
 
-The inconsistency caused tonight's (2026-04-17) ladder-shape bug:
-
-    A 23.4k CAT change coin was received from a sell fill.
-    Reconcile classified it as `tier_spare/inner` (23.4k / 26.7k = 0.876 is
-    within ±20% of inner tier size, so passes the 0.80x floor check).
-
-    The misfit absorber would have correctly flagged it (0.876 < 0.98 inner
-    floor AND 23.4k > 20.0k mid ceiling, so fits NO tier at strict bounds),
-    but by the time the absorber scanned, the coin was already LOCKED in a
-    new sell offer — because _select_coin_for_offer also accepted it as
-    "good enough for inner" using its own laxer check.
-
-The fix: every classifier in the codebase routes through classify_coin() in
-this module. There is ONE set of thresholds, ONE classification vocabulary,
-ONE authoritative answer for "what tier can this coin back?" Call sites with
-different tolerance needs can pass different (floor_tolerance, max_ratio)
-parameters, but the decision logic is shared.
-
-Usage:
-    from coin_classifier import classify_coin, CoinFit
-
-    cls = classify_coin(amount_mojos=23_400_000, tier_sizes_mojos={
-        "inner": 26_678_000, "mid": 13_339_000, "outer": 5_802_000, "extreme": 2_901_000
-    })
-    # cls.fit == CoinFit.MISFIT
-    # cls.best_tier is None
-    # cls.nearest_tier == "inner" (for diagnostics only — do NOT use as actual tier)
+Call sites with different strictness (misfit absorber vs offer selector vs
+reconciler) vary only by passing different tolerance parameters — the core
+decision logic is shared so all subsystems agree on what a coin is for.
     # cls.designation == "unknown"  (for DB write)
     # cls.candidates == {"inner": CoinFit.UNDER_FLOOR, "mid": CoinFit.OVER_CEILING, ...}
 

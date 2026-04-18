@@ -1,30 +1,18 @@
-"""
-CAT Metadata Resolver
+"""Auto-resolve CAT metadata (pair_id, ticker_id, short_name) from TibetSwap
 
-Given only CAT_ASSET_ID, auto-resolves derived fields that should never
-need to be manually set in .env:
+Given CAT_ASSET_ID, looks up the TibetSwap pair and fills any empty
+derived fields on the cfg singleton so operators don't have to enter
+them by hand. Called once at startup via `resolve_and_apply(cfg)`.
 
-  - TIBET_PAIR_ID  : TibetSwap pair identifier (required for AMMMonitor)
-  - CAT_TICKER_ID  : Dexie ticker format e.g. "MZ_XCH"
-  - CAT_NAME       : Human-readable token name e.g. "Monkeyzoo Token"
+Key responsibilities:
+    - Populate TIBET_PAIR_ID, CAT_TICKER_ID, and CAT_NAME when blank
+    - Overwrite CAT_NAME only when empty or the generic default "MZ"
+    - Cache the resolved metadata to avoid repeat network calls
 
-Fields that are intentionally NOT auto-resolved here:
-  - CAT_DECIMALS   : Too critical — wrong value corrupts all offer amounts.
-                     Default of 3 is correct for all mainstream Chia CATs.
-                     Set manually in .env only if your CAT uses a different precision.
-  - CAT_WALLET_ID  : Already auto-resolved by wallet_sage.py on every wallet
-                     fetch. No change needed.
-  - CAT_ASSET_ID   : The root identity. Always required in .env.
-
-Resolution rules:
-  - .env values are NEVER overwritten. If a field is already set (non-empty)
-    in cfg, the resolved value is returned for logging but not applied.
-  - Only empty/missing fields are filled in.
-  - Failures are soft: missing metadata is logged, bot continues.
-
-Usage:
-    from cat_resolver import resolve_and_apply
-    resolve_and_apply(cfg)          # call once at startup
+CAT_DECIMALS is intentionally NOT auto-resolved — a wrong value would
+corrupt every offer amount, so it must be set manually when it differs
+from the default. Failures are soft: the bot continues even if TibetSwap
+is unreachable.
 """
 
 import time

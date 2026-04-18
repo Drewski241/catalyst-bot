@@ -1,7 +1,20 @@
-"""Windows-friendly subprocess launch helpers.
+"""Windows-only subprocess helpers to suppress console-window flashes
 
-These helpers keep console windows from flashing when the desktop app runs
-without an attached terminal.
+When the desktop app runs without an attached terminal, spawning child
+processes with default flags briefly flashes a console window. These
+helpers return the right `Popen` kwargs (creation flags plus a hidden
+STARTUPINFO) so those processes stay invisible. On non-Windows
+platforms the helper returns an empty dict, making it a no-op.
+
+Key responsibilities:
+    - `hidden_subprocess_kwargs(detached, new_process_group)` builds the
+      kwargs dict with CREATE_NO_WINDOW or DETACHED_PROCESS flags
+    - Optional CREATE_NEW_PROCESS_GROUP for children that need their own
+      signal group
+    - Cross-platform safe: returns `{}` when `os.name != "nt"`
+
+Used by anything that launches a child process (Sage daemon, Splash
+binary, coin-prep worker, PyInstaller build subprocesses).
 """
 
 from __future__ import annotations

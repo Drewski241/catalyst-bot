@@ -1,22 +1,19 @@
-"""
-Sweep Coordinator — Group fills by spent_block_index into sweep events.
+"""Groups same-block fills into sweep events and upgrades UNKNOWN classifications
 
-When an arb bot sweeps multiple of our offers in a single on-chain transaction,
-those fills share the same spent_block_index.  This coordinator collects fills
-as they arrive and groups same-block-index fills into a single SweepEvent.
+When an arb bot sweeps several of our offers in one on-chain transaction, all
+those fills share the same `spent_block_index`. `SweepCoordinator` collects
+incoming fills within a short time window and groups co-block fills into a
+single `SweepEvent` for downstream PnL / diagnostics attribution.
 
-Fills classified as UNKNOWN that share a spent_block_index with one or more
-others are upgraded to DEXIE_COMBINED (medium confidence).
+Key responsibilities:
+    - Buffer fills over a `SWEEP_WINDOW_SECS` window keyed by block index
+    - Emit finalised `SweepEvent` objects once the window closes
+    - Upgrade UNKNOWN fills to DEXIE_COMBINED when at least
+      `SWEEP_MIN_FILLS` share a block (medium confidence)
+    - Remain thread-safe under concurrent fill arrivals
 
-Usage:
-    coordinator = SweepCoordinator()
-
-    # After each fill is recorded:
-    coordinator.process_fill(fill_id, classification)
-
-    # Periodically drain finalised sweep events:
-    for event in coordinator.drain_sweep_events():
-        log_event("info", "sweep_detected", str(event))
+The coordinator never touches offer state or the wallet; it only
+enriches fill metadata so other modules can reason about sweep episodes.
 """
 
 from __future__ import annotations

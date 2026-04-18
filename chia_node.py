@@ -1,7 +1,7 @@
-"""Compatibility shim for the legacy chia_node module name.
+"""Legacy compatibility shim — re-exports all public symbols from sage_node
 
-The primary wallet runtime module is now sage_node.py. Importing from this file
-keeps older code paths working during the transition.
+Keeps older import paths (`from chia_node import ...`) working during
+the ongoing Sage migration.
 """
 
 from sage_node import *  # noqa: F401,F403

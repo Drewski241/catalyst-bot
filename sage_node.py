@@ -1,11 +1,20 @@
-"""
-Sage Wallet Runtime - backend for the Sage dashboard.
+"""Central Sage wallet runtime and startup layer for the dashboard backend
 
-Handles wallet startup orchestration, dashboard data aggregation, coin listing
-with lock detection, transaction history, and legacy Chia compatibility paths.
+Sits between `api_server` and `wallet_sage`, adding lifecycle and
+dashboard-specific helpers on top of raw wallet RPC. Handles fingerprint
+discovery and login orchestration, daemon and node status polling, coin
+display (including lock detection), and transaction history formatting.
+Also enforces a minimum supported Sage version via
+`MIN_SUPPORTED_SAGE_VERSION`.
 
-This module sits between the API routes and the wallet RPC layer, providing
-dashboard-specific data formatting and wallet lifecycle management.
+Key responsibilities:
+    - Wallet/daemon startup, login, and fingerprint selection
+    - Dashboard aggregation: balance, coins, history, node status
+    - Background preload of node status with short-TTL cache
+    - Version gating against MIN_SUPPORTED_SAGE_VERSION
+
+Data formatting here is GUI-oriented; pure RPC primitives live in
+wallet_sage.py.
 """
 
 import os

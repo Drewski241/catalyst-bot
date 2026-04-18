@@ -1,6 +1,20 @@
-"""
-Enhanced Wallet Module with Smart Coin Management
-Adds RPC-based coin splitting and inventory management
+"""Official Chia wallet RPC client for offers, coins, and transfers
+
+Talks to a locally running Chia wallet daemon (default ``https://localhost:9256``)
+and full node (default ``https://localhost:8555``) over mutual TLS using the
+node's self-signed certificates. Exposes the canonical wallet API consumed by
+the trading loop via ``wallet.py`` and is also imported directly by
+``api_server``, ``doctor``, and the test suite for Chia-specific workflows.
+
+Key responsibilities:
+    - Offer lifecycle: list, create, inspect, and cancel offers (single + batch)
+    - Coin queries: XCH and CAT UTXOs, balances, and split/combine operations
+    - Full-node reads for mempool and coin-record verification
+    - Transaction fee estimation and sending XCH / CATs to addresses
+
+SSL verification is intentionally disabled for localhost self-signed certs and
+``InsecureRequestWarning`` is silenced at import time. Batch cancel operations
+are serialised with adaptive backoff to stay within wallet RPC limits.
 """
 
 import os

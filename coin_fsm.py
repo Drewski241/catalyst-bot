@@ -1,23 +1,21 @@
-"""Coin finite-state-machine validator (Phase 6 — non-blocking observer).
+"""Non-blocking FSM validator for coin (status, designation) transitions
 
-This module provides a `validate_transition(from_state, to_state)` check
-that the DB write path consults as a non-blocking *assertion*. Disallowed
-transitions are logged at WARN level but not refused — the goal is to
-surface state-machine violations without risking a regression.
+Provides pure validation functions that the database write path consults as an
+observability safety net. validate_transition(old, new) returns (ok, reason)
+for a proposed transition of the coins table row, and is_terminal(state)
+identifies dead-end states. Violations are logged but never prevented — the
+module exists to surface state-machine bugs without risking a regression from
+refusing a write the rest of the code expects to succeed.
 
-See ``docs/COIN_FSM_DESIGN.md`` for the state diagram, allowed transitions,
-and migration plan.
+Key responsibilities:
+    - Define the STATUSES and DESIGNATIONS vocabularies
+    - Provide validate_transition() as a pure (old, new) -> (ok, reason) check
+    - Provide is_terminal() to identify sink states
+    - Remain side-effect free and safe to call from any DB code path
 
-Usage::
-
-    from coin_fsm import validate_transition, CoinState
-
-    old = CoinState(status="free", designation="tier_spare")
-    new = CoinState(status="locked", designation="tier_active")
-    ok, reason = validate_transition(old, new)
-    if not ok:
-        log_event("warning", "coin_fsm_violation",
-                  f"Disallowed transition: {old} → {new} ({reason})")
+Spent is strictly terminal: once a coin reaches that status no further
+transitions are valid. The validator is deliberately stateless so it can be
+called from anywhere without threading concerns.
 """
 from __future__ import annotations
 

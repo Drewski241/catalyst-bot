@@ -1,39 +1,24 @@
-"""
-V2 Coin Manager — Intelligent Coin Health Monitoring & Preparation
+"""Central coin inventory, classification, and lifecycle orchestrator
 
-Monitors spendable coin counts, classifies coins by role, triggers
-smart coin splitting/consolidation, and manages the coin_prep_worker.
+CoinManager is the authoritative in-memory view of the bot's spendable XCH and
+CAT coins. It keeps live counts, runs tier-aware classification, manages the
+fee-coin pool, holds the in-flight reservation registry, drives smart topups,
+and launches the coin_prep_worker subprocess when deeper reshaping is needed.
+Wallet RPC results are folded back in via reconcile_with_wallet() so the DB
+and live caches stay aligned with ground truth.
 
-=== Coin Classification ===
-Every spendable coin is classified into one of four roles:
+Key responsibilities:
+    - Track XCH/CAT inventories and expose tier-bucketed counts
+    - Classify coins into reserve / trading / small / locked roles
+    - Own FeeCoinPool and the ReservationRegistry used across modules
+    - Run smart topup (split reserves, consolidate smalls) between cycles
+    - Spawn and monitor the coin_prep_worker subprocess
+    - Reconcile live state with wallet RPC on demand
 
-  RESERVE  — Large coins (≥ 2× trading size). Left by coin prep for
-             future topups. Can be split into trading coins on demand.
-  TRADING  — Right-sized coins (0.5× to 1.5× trading size). Used for
-             creating offers. This is the target state.
-  SMALL    — Under-sized coins (< 0.5× trading size). Typically from
-             partial fills. Need consolidating into usable coins.
-  LOCKED   — Coins currently in active offers. Can't be touched.
-
-=== Smart Topup Strategy ===
-When free trading coins are low, the topup runs this decision tree:
-
-  1. If RESERVE coins exist → split the largest into trading coins
-  2. If enough SMALL coins exist to consolidate → consolidate to self,
-     wait for confirmation, then split the consolidated coin
-  3. If nothing available → back off 2 hours (fills may bring new coins)
-
-=== Detection Triggers ===
-  - needs_coin_prep(): TOTAL coins < 10% of target → full prep needed
-  - needs_topup(): FREE coins < 30% of max offers → smart topup
-  - check_runtime_health(): every 5 loops, independent check
-
-Key principles:
-- Always use RPC, never CLI parsing
-- Poll-based confirmation (no fixed timeouts)
-- Only one wallet operation at a time (serialisation)
-- Backoff resets on fills (new coins available)
-- Cooldown resets to 0 after successful topup
+A module-level fast-reconcile signal (request_fast_reconcile() /
+consume_fast_reconcile()) lets other modules nudge the next cycle to skip its
+normal cadence and refresh immediately after an event that likely changed
+coin state.
 """
 
 import time

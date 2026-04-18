@@ -1,28 +1,21 @@
-"""
-Bot Health — Runtime anomaly detection + self-repair.
+"""Active health-repair sister of `runtime_monitor` — detects and fixes drift
 
-Sister module to doctor.py:
-    doctor.py    = "Is the bot ALLOWED to start?" (preflight, read-only)
-    bot_health.py = "Is the running bot STILL in sync with reality?"
-                    (periodic, can mutate state via repair actions)
+Where `runtime_monitor` only observes, this module performs corrective
+actions when runtime invariants break. External systems are treated as the
+source of truth: Dexie for offer state, Sage RPC for coin state, Spacescan
+for on-chain confirmation; the bot's own DB is a hypothesis to be validated
+and repaired against those sources.
 
-Source of truth is always external: Dexie API for offer state, Sage RPC
-for coin state, Spacescan for on-chain confirmation. The bot's DB is
-treated as a hypothesis, not as truth.
+Key responsibilities:
+    - `check_pending_cancels` — reconcile DB pending-cancel rows
+    - `check_orphan_locks` — release coin locks with no matching open offer
+    - `check_stale_dexie_posts` — repost offers missing from Dexie
+    - `check_ladder_overbuild` — trim ladders that have drifted past shape
+    - `run_runtime_checks` — aggregator that runs the full suite
 
-Each check returns a HealthCheck with optional repair actions. Repairs
-are gated by the `auto_repair` flag — low-risk fixes auto-execute,
-position/fill-related anomalies are flagged for human review.
-
-Usage from bot_loop.py:
-    from bot_health import run_runtime_checks
-    report = run_runtime_checks(auto_repair=True)
-    if report.repaired:
-        slog("BOT_HEALTH", f"Auto-repaired {report.repaired} anomalies")
-
-Usage from API/GUI:
-    GET  /api/health/runtime           — read-only check
-    POST /api/health/repair            — explicit repair trigger
+Repairs are gated by an `auto_repair` flag: low-risk fixes execute
+automatically, while position- or fill-related anomalies are surfaced for
+human review. Complementary to `runtime_monitor`, not superseded by it.
 """
 
 from __future__ import annotations

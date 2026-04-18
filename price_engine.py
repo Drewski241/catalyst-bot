@@ -1,15 +1,18 @@
-"""
-V2 Price Engine — Unified Pricing from Dexie + TibetSwap
+"""Unified price discovery for Chia CAT trading pairs
 
-Absorbs V1's dexie.py and tibet_integration.py into one module.
-Handles all price discovery, strategy blending, volatility tracking,
-and arbitrage detection.
+The `PriceEngine` class is the central price oracle for the bot. It blends
+quotes from Dexie (`/v2/prices/tickers`) and TibetSwap (`/pairs`) with an
+EMA reference price, applies dynamic safety rails, and tracks realized
+volatility. `AMMMonitor` injects fresh reserves into `_tibet_cache` to
+keep pool-derived prices from going stale, and `risk_manager` and
+`amm_monitor` receive the engine via constructor injection. `bot_loop`
+calls `get_price()` directly on every cycle.
 
-Usage:
-    from price_engine import PriceEngine
-    engine = PriceEngine()
-    price_info = engine.get_price("cat_asset_id_here")
-    # price_info = {mid_price, dexie_price, tibet_price, strategy_used, ...}
+Key responsibilities:
+    - Fetch and cache Dexie ticker data and TibetSwap pair reserves
+    - Blend sources into a single mid-price with strategy metadata
+    - Maintain an EMA reference and volatility signal for risk logic
+    - Provide the injection point that `AMMMonitor` uses for live reserves
 """
 
 import time

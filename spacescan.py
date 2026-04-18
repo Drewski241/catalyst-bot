@@ -1,16 +1,19 @@
-"""
-Spacescan Pro API — Golden Source of Truth for On-Chain Verification
+"""On-chain verification client — the golden source of truth
 
-The blockchain is the source of truth, not the wallet.
-If it's not confirmed on-chain, it's not true.
+Wraps the Spacescan Pro (`pro-api.spacescan.io`) and Free
+(`api.spacescan.io`) APIs so the rest of the bot can confirm state from
+the blockchain instead of trusting wallet RPC alone. The main entry
+points are `is_coin_spent()`, `verify_fill()`, and the XCH / CAT balance
+checks used by `fill_tracker` and reconciliation logic. A tier-aware
+non-blocking rate limiter applies a 2 s interval on paid keys and 12 s
+on the free tier, plus a per-day call budget (roughly 30 calls/day ~=
+1000/month) to keep free-tier usage inside published limits.
 
-Endpoints used:
-  GET /coin/info/{coin_id}          — Check if coin spent (fill verification)
-  GET /address/xch-balance/{addr}   — XCH balance check
-  GET /address/token-balance/{addr} — CAT token balance check
-
-Pro API: pro-api.spacescan.io with x-api-key header
-Free API: api.spacescan.io (lower rate limits)
+Key responsibilities:
+    - Query coin-spent state for fill verification
+    - Query XCH and CAT balances for wallet reconciliation
+    - Route Pro vs Free endpoints based on configured API key
+    - Enforce rate and daily-budget limits without blocking the caller
 """
 
 import re

@@ -1,19 +1,21 @@
-"""
-V2 Risk Manager — Inventory Tracking, Dynamic Spreads & Circuit Breakers
+"""Inventory-aware spread adjustment, circuit breakers, and market-health grading
 
-This is the core "smart" module that makes V2 different from V1.
-V1 placed fixed-distance offers blindly. V2 adjusts based on:
+The `RiskManager` class is the pricing brain that sits between `price_engine`
+and `offer_manager`. Given a base spread, it layers inventory skew, volatility
+scaling, pool-depth adjustment, competitor adjustment, and boost-convergence
+on top, producing the per-side adjusted spread used to place offers. It also
+tracks circuit-breaker state and grades current market health for downstream
+consumers (GUI, bot_loop gating).
 
-1. **Inventory position** — If we're long CAT, widen buy spread / tighten sell
-2. **Volatility** — Widen spreads when price is moving fast
-3. **Circuit breakers** — Halt trading if risk limits are breached
+Key responsibilities:
+    - Compute adjusted buy/sell spreads from base config + live signals
+    - Track net inventory position and apply soft/hard position breakers
+      (soft at 1.0x configured limit, hard at 1.5x)
+    - Expose market-health scores and circuit-breaker status to callers
+    - Consume an injected `dexie_manager` for competitor spread signals
 
-Usage:
-    from risk_manager import RiskManager
-    risk = RiskManager(price_engine)
-    spread = risk.get_adjusted_spread("buy")
-    if risk.circuit_breaker_active():
-        # Don't create offers
+`bot_loop` is lazy-imported to break a circular dependency; `dexie_manager`
+is supplied via the constructor rather than imported at module scope.
 """
 
 import threading

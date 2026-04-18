@@ -1,11 +1,20 @@
-"""
-Notification Manager — Native OS notifications for the CATalyst.
+"""Native OS notifications with per-category rate-limiting
 
-Uses plyer for cross-platform notifications (Windows toast, macOS Notification
-Center, Linux libnotify). Supports per-category enable/disable and rate limiting
-to avoid notification spam.
+Wraps `plyer` to deliver desktop notifications for meaningful bot events —
+Windows toast, macOS Notification Center, Linux libnotify — with a
+per-category cooldown so a burst of events never floods the user. If
+`plyer` is not installed the manager degrades to a no-op so the rest of
+the bot continues to run.
 
-Requires: plyer
+Key responsibilities:
+    - Deliver notifications via the current OS's native mechanism
+    - Enforce a per-category enable flag and minimum-gap cooldown
+    - Expose categories `fill`, `error`, `circuit_breaker`, `sniper`,
+      `coin_prep`, `price_alert`, and `info`
+    - Fail silently when the `plyer` dependency is missing
+
+Categories and cooldowns are configurable; defaults are chosen to favour
+signal over noise (short cooldown on fills, longer on errors and breakers).
 """
 
 import time

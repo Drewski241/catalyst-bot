@@ -1,27 +1,19 @@
-"""
-V3 Splash Manager — Decentralized Offer Broadcasting via Splash Network
+"""Queue and broadcast offers to the Splash P2P peer mesh for Chia offers
 
-Splash is Dexie's peer-to-peer network for sharing offers across the
-Chia ecosystem. Every connected peer receives all offers — wider
-distribution means more fill opportunities.
+Splash is Dexie's peer-to-peer network — every connected peer receives
+every offer, so broadcasting here widens fill opportunities alongside
+direct Dexie posting. This module talks to the locally-running Splash
+binary's HTTP submission endpoint and applies the same fingerprint-based
+deduplication and queue-flush-retry pattern used by dexie_manager.
 
-Splash runs as a separate Rust binary alongside the bot. We communicate
-via its local HTTP endpoint:
-  - Submit offers: POST {"offer": "offer1..."} to SPLASH_SUBMIT_URL
-  - Receive offers: Splash POSTs incoming offers to our webhook
+Key responsibilities:
+    - Queue outbound offers keyed by a stable content fingerprint
+    - Flush the queue to the local Splash submit URL with retries
+    - Deduplicate repeats so the peer mesh isn't spammed
+    - Log success/failure into the event stream for observability
 
-This module follows the same queue+flush+dedup pattern as dexie_manager.py
-for consistency. It runs alongside Dexie posting, not instead of it.
-
-Usage:
-    from splash_manager import SplashManager
-    manager = SplashManager()
-    manager.queue_post(offer_bech32, trade_id)
-    manager.flush_queue()
-
-Requires: Splash binary running locally
-    splash.exe --listen-offer-submission 0.0.0.0:4000 \
-               --listen-address /ip4/0.0.0.0/tcp/11511
+Runs in addition to Dexie posting, not instead of it. Requires the
+Splash binary (managed by splash_node.py) to be running locally.
 """
 
 import time

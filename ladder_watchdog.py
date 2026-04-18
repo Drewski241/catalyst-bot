@@ -1,32 +1,20 @@
-"""Ladder shape + coin-accounting invariant watchdog.
+"""Cycle-level self-audit for ladder shape and coin-accounting invariants
 
-This module is the CATalyst bot's runtime self-audit. It doesn't create
-offers, it doesn't modify coins, it doesn't touch the wallet. All it does
-is observe state each cycle and raise a clear, actionable alarm when
-reality drifts from the configured shape.
+Observes current state each bot cycle and raises clear, actionable findings
+when reality drifts from the configured ladder shape or the coin books go
+inconsistent with wallet totals. Strictly informational — the watchdog never
+creates offers, moves coins, or mutates state; corrective actions are left
+to other modules that can consume its findings.
 
-Two audits:
+Key responsibilities:
+    - `audit_ladder_shape` — check offer count, size taper, monotonicity,
+      and price inversions across the open ladder
+    - `check_coin_invariants` — verify inventory bucket sums match wallet
+      totals and every locked coin points to an open offer
+    - `run_periodic_audit` — aggregator called once per cycle by `bot_loop`
 
-1. :func:`audit_ladder_shape` — looks at the current open-offer ladder
-   and checks that offer sizes taper correctly (reverse or non-reverse)
-   and that each slot is backed by a coin whose size fits the tier it
-   represents. The 2026-04-17 incident (23.4k CAT change coins at outer
-   price slots, breaking the reverse-ladder pattern) would have been
-   flagged here on the next cycle after the requote.
-
-2. :func:`check_coin_invariants` — cycle-level sanity checks on the
-   coin accounting: inventory sums match wallet totals, every locked
-   coin points to an open offer, no coin is in more than one bucket,
-   etc. Any violation = log warning + suggest corrective action.
-
-Integration point: bot_loop.py calls :func:`run_periodic_audit` once per
-cycle (cheap — a few ms). Issues are logged but not auto-fixed. The
-scheduled overnight monitors can pick them up from the log and apply
-corrective fixes.
-
-Design principle: the watchdog is *informational*, not *corrective*.
-Auto-fix logic lives elsewhere. The watchdog's job is to make drift
-visible.
+Findings are emitted as structured log events so downstream consumers
+(scheduled monitors, `bot_health`) can pick them up and apply fixes.
 """
 from __future__ import annotations
 

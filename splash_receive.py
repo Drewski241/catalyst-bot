@@ -1,4 +1,18 @@
-"""Helpers for classifying inbound Splash offers."""
+"""Pure helpers for classifying inbound Splash offer payloads
+
+Given the various shapes Splash and the wallet return when viewing an
+offer, these helpers normalize offered/requested sides and decide
+whether an offer is relevant to the active CAT pair — and if so, on
+which side (buy or sell). No network, wallet, or database calls; every
+function is a stateless transformation suitable for unit testing.
+
+Key responsibilities:
+    - Normalize asset keys and maker/taker payload variants
+    - Produce a consistent offered/requested dict from any input shape
+    - Classify an offer against a target asset as buy, sell, or ignore
+
+Called by the Splash incoming webhook handler in api_server.
+"""
 
 from typing import Any, Dict, Iterable
 

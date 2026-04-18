@@ -1,39 +1,20 @@
-"""
-user_paths.py — Canonical location of user-writable files.
+"""Cross-platform per-user data directory layout for all writable files
 
-All files the app needs to READ AND WRITE at runtime live under a
-per-user data directory so the app can be installed to a read-only
-location like C:\\Program Files\\.  The install directory is
-read-only in a packaged build; only bundled assets (splash.exe,
-favicon.ico, bot_gui.html, etc.) live there.
+Resolves the canonical location of every runtime-writable file — database,
+`.env`, log files, crash log, window state, backups, coin-prep sidecars —
+under the OS user data dir (`%APPDATA%` on Windows, `~/Library/Application
+Support` on macOS, `~/.local/share` on Linux). This lets the app be
+installed to a read-only location like `C:\\Program Files\\`, with only
+bundled assets (binaries, HTML, icons) staying beside the executable.
 
-Platform layout:
-    Windows: %APPDATA%\\ChiaMarketMaker\\
-    macOS:   ~/Library/Application Support/ChiaMarketMaker/
-    Linux:   $XDG_DATA_HOME/ChiaMarketMaker/
-             (defaults to ~/.local/share/ChiaMarketMaker/)
+Key responsibilities:
+    - Compute the data dir for the host OS and create it on demand
+    - Expose helpers for `env_file()`, `db_path()`, `log_dir()`, etc.
+    - Honour the `CMM_DATA_DIR` env var override for CI and portable setups
+    - Migrate legacy files from the install dir at import time on first run
 
-Files under the data dir:
-    .env                       — user config (settings panel writes here)
-    bot.db                     — SQLite trading database (WAL mode)
-    bot.db-shm, bot.db-wal     — SQLite WAL sidecar files
-    .window_state.json         — saved window size/position
-    crash.log                  — uncaught exception dump
-    bot_superlog_*.log         — structured per-run log files
-    user_secrets.json          — Spacescan API key etc.
-    worker_cancelled_ids.json  — coin prep worker state
-    backups/                   — database backups
-        bot_backup_YYYYMMDD_HHMMSS.db
-
-Developer override:
-    Set the CMM_DATA_DIR environment variable to override the auto-
-    detected path.  Useful for CI, tests, and power users who want
-    everything in a portable directory.
-
-First-launch migration:
-    On first launch, if an .env / bot.db / etc. exists in the
-    install directory (legacy dev layout), they are copied to the
-    data dir automatically.  See `migrate_legacy_files()`.
+The `migrate_legacy_files()` pass runs once and is idempotent — existing
+dev installs keep working transparently when upgraded to a packaged build.
 """
 
 import os

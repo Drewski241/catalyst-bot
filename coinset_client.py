@@ -1,24 +1,20 @@
-"""
-V3 Coinset Client — Fast Cloud Coin Queries via Coinset API
+"""Fast coin queries via the public Coinset API with wallet RPC fallback
 
-Coinset.org mirrors Chia's full node RPC as a fast cloud API.
-Coin queries drop from 2-5 seconds (wallet RPC) to ~100ms.
+Mirrors Chia's full-node RPC as a cloud service so coin lookups go from
+seconds (local wallet RPC) down to roughly a hundred milliseconds. The
+client caches the wallet's puzzle hashes on startup, then queries Coinset
+by puzzle hash; if Coinset is unreachable it falls back transparently to
+wallet RPC. Sage wallets skip the puzzle-hash cache and go straight to
+Sage RPC.
 
-How it works:
-  1. On startup: ask wallet RPC for our coins → extract puzzle hashes
-  2. After startup: query Coinset by puzzle hash instead of wallet RPC
-  3. If Coinset is down: transparently fall back to wallet RPC
-  4. Wallet RPC still handles all write operations (signing, cancelling)
+Key responsibilities:
+    - On-startup puzzle-hash discovery for non-Sage wallets
+    - Spendable-coin / coin-record queries by puzzle hash
+    - Fee-estimate helpers, block-record and additions-and-removals lookups
+    - Fill-verification fallback when Spacescan is unavailable
 
-This module is opt-in via COINSET_ENABLED=true in .env.
-
-Usage:
-    from coinset_client import CoinsetClient
-    client = CoinsetClient()
-    client.initialize_puzzle_hashes()  # Call once after wallet ready
-    coins = client.get_spendable_coins(wallet_id)  # Fast query
-
-Requires: Internet access to api.coinset.org
+Enabled via COINSET_ENABLED=true in .env. All write operations (signing,
+cancelling) always go through the local wallet RPC.
 """
 
 import time

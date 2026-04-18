@@ -1,19 +1,20 @@
-"""
-V2 Fill Tracker — Fill Detection & PnL Matching
+"""Fill detection and round-trip PnL matching via before/after trade-ID diffs
 
-Detects filled offers by comparing before/after offer snapshots.
-Records fills to the database and matches buy↔sell round-trips for PnL.
+The `FillTracker` class detects offer fills by diffing the set of trade IDs
+present on the wallet between polls. Disappearances that were not caused by
+bot-initiated cancels (tracked via `OfferManager._bot_cancelled_ids`) are
+treated as candidate fills, then verified on-chain through a Sage -> Dexie ->
+Spacescan fallback chain before being recorded.
 
-Key V1 lessons applied:
-- Mass disappearance guard (3-strike rule) prevents false fills from RPC blips
-- bot_cancelled_ids set distinguishes our cancels from genuine fills
-- Fill protection: cooldown on requoting after fills (anti-churn)
+Key responsibilities:
+    - Diff trade-ID snapshots each cycle to find candidate fills
+    - Verify fills on-chain via the Sage/Dexie/Spacescan fallback chain
+    - Record verified fills and drive `OfferState` transitions
+    - Match buy<->sell round-trips for PnL via a 4-pass algorithm
 
-Usage:
-    from fill_tracker import FillTracker
-    tracker = FillTracker(offer_manager)
-    tracker.detect_fills(current_buy_ids, current_sell_ids)
-    tracker.match_round_trips()
+A 3-strike mass-disappearance guard absorbs transient wallet-RPC blips where
+large swaths of trades vanish and reappear; the strike counter resets on any
+good poll so isolated anomalies don't accumulate.
 """
 
 import time

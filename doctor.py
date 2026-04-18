@@ -1,20 +1,20 @@
-"""
-Doctor / Preflight — Structured readiness checks for bot startup.
+"""Preflight health checks gating bot startup, with a cached structured report
 
-Produces a detailed report of blocking failures and warnings before
-the bot starts trading. Replaces the current scattered startup checks
-with a single, auditable preflight system.
+`run_preflight()` returns a `DoctorReport` containing per-check results
+(pass / warn / fail / skip) and a `can_start` flag that determines
+whether the trading loop is allowed to run. The report is cached
+briefly so repeated GUI polls don't spam the wallet or external APIs.
+Results are rendered both in the startup log and in the dashboard's
+readiness panel.
 
-Usage:
-    from doctor import run_preflight
-    report = run_preflight()
-    if not report.can_start:
-        for check in report.checks:
-            if check.status == "fail":
-                print(f"BLOCKED: {check.name} — {check.message}")
+Key responsibilities:
+    - Database health (WAL, schema version, corruption indicators)
+    - Config sanity and CAT config (asset_id, ticker, decimals)
+    - Wallet reachability, sync state, and signing capability
+    - External connectivity: Dexie, TibetSwap, Splash, Spacescan
 
-The report is cached for 30s to avoid spamming wallet/external RPCs
-on repeated calls (e.g., GUI polling).
+Each check produces a `DoctorCheck` with category and severity, so the
+frontend can group and colour-code results consistently.
 """
 
 from __future__ import annotations

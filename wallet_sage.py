@@ -1,22 +1,24 @@
-"""
-Sage Wallet Module — Drop-in replacement for wallet_chia.py
+"""Sage light-wallet RPC client with drop-in Chia-wallet API compatibility
 
-Sage is a high-performance light wallet for Chia built in Rust.
-It connects directly to Chia network peers (no full node required).
+Talks to the Sage light wallet (default ``https://127.0.0.1:9257``), a Rust-based
+Chia wallet that connects directly to network peers without a full node. Exposes
+the same function signatures as ``wallet_chia.py`` so it is both swappable
+through ``wallet.py`` and directly imported by many modules including
+``bot_loop``, ``coin_manager``, ``offer_manager``, ``api_server``, ``sage_node``,
+and the coin-prep worker.
 
-Key differences from Chia wallet RPC:
-  - Port 9257 (vs Chia's 9256)
-  - Amounts as strings (e.g., "1000000000000" not 1000000000000)
-  - get_coins (with asset_id=null for XCH, asset_id=string for CATs) for coin queries
-  - No wallet_id system — CATs identified by asset_id directly
-  - Native split_xch / split_cat endpoints (coin_ids array)
-  - make_offer with offered_assets / requested_assets arrays
-  - get_offers (not get_all_offers)
-  - No full node — light wallet only
+Key responsibilities:
+    - Offer create / list / inspect / cancel with Sage's offered/requested asset format
+    - XCH and CAT coin queries keyed by asset_id (no wallet_id abstraction)
+    - Native ``split_xch`` / ``split_cat`` endpoints plus transfer helpers
+    - Mutual-TLS client cert auto-generated on first run, reused per thread via
+      ``http.client.HTTPSConnection`` for low-latency polling
 
-All functions match the wallet_chia.py signatures exactly so the
-adapter layer (wallet.py) can swap implementations with zero changes
-to other modules.
+Amounts are passed and returned as strings and converted to integer mojos
+internally. A workaround in ``get_spendable_coins_with_owned_fallback``
+compensates for Sage's ``filter_mode="selectable"`` hiding coins locked on both
+sides of an active offer. ``cancel_offer`` treats HTTP 404 as success, since the
+offer is already gone from the wallet's view.
 """
 
 import os

@@ -1,22 +1,20 @@
-"""
-CATalyst — Desktop Application Entry Point (V4)
+"""Desktop entry point that wraps the Flask server in a PyWebView window
 
-This is the main launcher for the desktop app. It:
-1. Starts Flask (api_server.py) in a background thread on localhost:5000
-2. Creates a PyWebView window that loads the dashboard from Flask
-3. Manages the system tray icon (pystray)
-4. Handles native notifications (plyer)
-5. Manages clean shutdown of all components
+Top-level launcher for CATalyst. Starts the Flask API server (`api_server.py`)
+in a background thread, opens a native frameless PyWebView window that loads
+the dashboard from loopback, wires the system tray and native notifications,
+and coordinates graceful shutdown with window-state persistence. On Windows
+it transparently respawns under `pythonw.exe` so the console window is hidden
+during normal use.
 
-The existing Flask+HTML architecture stays fully functional â€” PyWebView
-just wraps it in a native window. The JS bridge (app_bridge.py) will
-replace HTTP calls in Phase 2, but for Phase 1 everything goes through
-Flask as before.
+Key responsibilities:
+    - Launch and supervise the embedded Flask server thread
+    - Create the PyWebView window and inject the AppBridge as `js_api`
+    - Own the tray icon, native notifications, and window-state persistence
+    - Dispatch `main(argv)` to `run_desktop_mode(dev_mode)` or `run_flask_mode()`
 
-Usage:
-    python desktop_app.py          # Normal launch
-    python desktop_app.py --dev    # Dev mode (also opens in browser)
-    python desktop_app.py --flask  # Flask-only mode (no desktop window)
+The `--flask` flag skips the desktop window and serves the GUI to a browser
+at localhost:5000; `--dev` runs both simultaneously for debugging.
 """
 
 import sys

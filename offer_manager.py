@@ -1,16 +1,19 @@
-"""
-V2 Offer Manager — Offer Lifecycle Management
+"""Offer-lifecycle manager for ladder creation, requoting, expiry, and cancellation
 
-Handles the full lifecycle of market-making offers:
-create → track → requote → expire → cancel
+The `OfferManager` class bridges pricing and risk output from `PriceEngine` and
+`RiskManager` to wallet-RPC offer operations exposed via the `wallet` module.
+It owns ladder construction, price-move-triggered requoting, expiry handling,
+and batch cancellation, and it maintains `_bot_cancelled_ids` so `FillTracker`
+can distinguish genuine fills from bot-initiated cancels.
 
-Extracted from V1's api_server.py (the biggest chunk of the monolith).
+Key responsibilities:
+    - Build buy/sell ladders sized against available coin inventory
+    - Requote offers when the mid-price drifts past configured thresholds
+    - Cancel offers individually or in batches and track which IDs we cancelled
+    - Coordinate with `Sniper` and `BoostManager` to avoid coin double-spend
 
-Usage:
-    from offer_manager import OfferManager
-    manager = OfferManager()
-    manager.create_ladder(mid_price, "buy", num_offers=5)
-    manager.check_requotes(current_price)
+Thread-safe via `_lock`. All mutating operations should be called while holding
+the lock, and any coin reservation crosses through shared state guarded here.
 """
 
 import time
@@ -422,16 +425,47 @@ class OfferManager:
         # callers that use oversize coins for tier-agnostic fallback paths.
         _reject_misfit = bool(preferred_tier and tier_sizes_mojos)
         if _reject_misfit:
-            from coin_classifier import classify_coin
+            from coin_classifier import classify_coin, CoinDesignation
+
+            _pref_lower = (preferred_tier or "").lower()
 
             def _coin_fits_preferred_tier(coin_amount_mojos: int) -> bool:
-                """Returns False ONLY when the coin is a confirmed misfit —
-                i.e. it fits no configured tier at strict 0.98/1.5 bounds.
-                Everything else (including reserve and dust coins) returns
-                True here and is filtered by the existing selector logic
-                downstream."""
+                """Returns True when the coin is usable for ``preferred_tier``.
+
+                Rules, in order:
+                  1. Misfits and dust are always rejected (F70 invariant).
+                  2. Reserve-sized coins pass here; other selector filters
+                     (``max_amount_mojos``, designation == "reserve") decide
+                     whether they're actually usable for this slot.
+                  3. Tier-fit coins must match ``preferred_tier`` EXACTLY —
+                     this is the 2026-04-18 slot-21/23 taper fix. Before
+                     this line, a mid-sized coin could back an outer-
+                     position slot (reverse-buy: outer position ↔ mid size)
+                     simply because it wasn't a misfit. Now we require the
+                     classifier's best_tier to equal the caller's preferred
+                     tier so wrong-sized coins fail the selector cleanly
+                     (→ slot skip → topup backfill) instead of landing on
+                     the ladder as a taper violation.
+                """
                 cls = classify_coin(coin_amount_mojos, tier_sizes_mojos)
-                return not cls.is_misfit
+                if cls.is_misfit:
+                    return False
+                # Dust and reserve coins pass F70 here — other selector
+                # filters (coin_amount < amount_mojos, max_amount_mojos,
+                # designation == "reserve") decide whether they're usable.
+                # We don't want to duplicate those rejections here.
+                if cls.designation != CoinDesignation.TIER_SPARE:
+                    return True
+                # For tier-spare coins we require an EXACT match with
+                # preferred_tier. This is the 2026-04-18 taper fix: a mid-
+                # sized coin was backing an outer-position slot under
+                # reverse-buy (outer position ↔ mid size) because it wasn't
+                # a misfit. Requiring best_tier == preferred_tier forces
+                # the selector to return None when no correctly-sized coin
+                # is available, which triggers clean slot-skip → topup
+                # backfill instead of building a ragged ladder.
+                best = (cls.best_tier or "").lower() if cls.best_tier else ""
+                return bool(best) and best == _pref_lower
         else:
             _coin_fits_preferred_tier = None  # type: ignore
 

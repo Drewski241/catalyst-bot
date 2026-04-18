@@ -1,17 +1,17 @@
-"""
-V2 Dexie Manager — Dexie Exchange Posting & Tracking
+"""Dexie.space offer-posting manager and historical data client
 
-Handles posting offers to the Dexie.space orderbook, tracking which
-offers have been posted, and preventing duplicate posts.
+`DexieManager` queues offers for posting to the Dexie orderbook, dedupes
+submissions via a SHA-256 fingerprint of the bech32 offer string, and
+posts with retry and backoff. It also fetches Dexie v3 historical trades
+and pair data used by volatility tracking and pair intelligence. The
+trade-id -> dexie-id mapping is persisted through `database.py` and
+hydrated on startup so restarts do not lose posted-state.
 
-Replaces V1's dexie_post.py (file-based state) with database-backed
-tracking via database.py.
-
-Usage:
-    from dexie_manager import DexieManager
-    manager = DexieManager()
-    manager.queue_post(offer_bech32, trade_id)
-    manager.flush_queue()
+Key responsibilities:
+    - Queue and flush offer posts decoupled from offer creation
+    - Deduplicate via bech32 SHA-256 fingerprints
+    - Persist and hydrate the trade_id -> dexie_id mapping
+    - Retrieve v3 historical trades and pairs for downstream consumers
 """
 
 import time

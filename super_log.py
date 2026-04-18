@@ -1,26 +1,20 @@
-"""
-Super Log v2 — Smart levelled logging with error context capture.
+"""Levelled structured logger with ring-buffered crash context
 
-Levels:
-    TRACE  — SQL queries, method entry/exit (only kept in memory ring buffer)
-    DEBUG  — Routine operations, method timing summaries
-    INFO   — State changes, fills, offers, prices, cycle summaries
-    WARN   — Unusual conditions, retries, slow operations
-    ERROR  — Failures, crashes, circuit breakers
+The bot's single logging facade. INFO and above are written to the active
+log file; TRACE and DEBUG stay in an in-memory ring buffer and only get
+flushed to disk when an ERROR fires, so crashes arrive with full context
+while normal runs stay quiet. `slog(category, message, data=None,
+level="info")` is the one entry point every other module should use — never
+`print()` and never stdlib `logging`.
 
-Normal operation:  Only INFO+ goes to the log file (~5% of v1 volume).
-When an error hits: The last 500 TRACE/DEBUG lines are flushed to file
-                    so you get full context around the crash.
+Key responsibilities:
+    - Emit structured log records with level, category, message, and data
+    - Maintain a ring buffer of recent TRACE/DEBUG lines for error dumps
+    - Track per-cycle counters (`start_cycle`, `cycle_count`, `end_cycle`)
+    - Manage thread lifecycle markers, log rotation, and archive digesting
 
-Usage:
-    from super_log import init_super_log, slog
-
-    init_super_log()
-
-    slog("STARTUP", "Bot starting up")                          # INFO (default)
-    slog("SQL", "SELECT ...", level="trace")                    # TRACE (ring buffer only)
-    slog("LOOP", "Cycle summary", {"fills": 2}, level="info")  # INFO (written to file)
-    slog("CRASH", "OOM detected", level="error")                # ERROR (+ dumps ring buffer)
+The file singleton is created on the first `init_super_log(log_dir, ...)`
+call; later imports reuse it. Levels map: trace < debug < info < warn < error.
 """
 
 import os

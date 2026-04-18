@@ -1,25 +1,23 @@
-"""
-Reservation Manager — Persistent SQLite-backed capacity leases.
+"""Persistent SQLite-backed capacity reservations for in-flight offer amounts
 
-Records intended XCH/CAT usage during parallel offer creation so
-callers can query total reserved amounts and avoid over-allocation.
-This is a coordination signal, not a hard lock — callers must check
-get_reserved_totals() and decide whether to proceed.
+ReservationManager tracks aggregate XCH and CAT mojos that callers intend to
+commit during parallel offer creation, so the bot can avoid over-allocating
+its balance before those offers actually post. Unlike coin_reservations.py
+(which locks specific coin IDs in memory), this module records capacity
+totals in SQLite and survives restarts. Reservations are advisory: callers
+inspect get_reserved_totals() and decide for themselves whether to proceed.
 
-Each reservation has a TTL (default 120s). Stale leases are cleaned
-at cycle start. This is additive — existing coin-lock via the coins
-table is preserved.
+Key responsibilities:
+    - try_acquire() to record an intended XCH/CAT capacity lease with a TTL
+    - release() to clear a lease when the work completes or fails
+    - expire_stale() to reap leases whose TTL has passed
+    - get_reserved_totals() for callers to read current in-flight commitments
+    - init_reservation_table() to create the schema lazily (called from database.py)
 
-Usage:
-    from reservation_manager import ReservationManager
-    rm = ReservationManager()
-    result = rm.try_acquire("create_buy_offer", xch_mojos=50000000000, lease_secs=120)
-    if result.success:
-        try:
-            # ... do the offer creation ...
-            rm.release(result.reservation_id, "completed")
-        except Exception:
-            rm.release(result.reservation_id, "failed")
+This is additive to the per-coin lock held via the coins table — it answers
+the question "how much capacity is already spoken for right now?" rather
+than "is this specific coin locked?". Callers that need hard enforcement
+must combine this signal with their own pre-flight checks.
 """
 
 from __future__ import annotations

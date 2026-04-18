@@ -1,30 +1,21 @@
-"""Coin reservation registry.
+"""In-memory TTL-based reservation registry for short-lived coin locks
 
-Eliminates races between offer creation, topup absorption, and
-consolidation by giving each operation an explicit reservation on the
-coins it intends to use.
+ReservationRegistry is a thread-safe, dependency-free registry that lets
+concurrent operations (offer creation, misfit absorb, consolidation, split)
+claim specific coin IDs before making wallet RPC calls. Each reservation
+carries an opaque owner token and a purpose string; release() checks
+r.owner == owner so a caller can only free the reservations it created.
+Expiry is lazy — callers must invoke gc_expired() periodically to reclaim
+slots whose TTL has elapsed.
 
-Before this module: trade and topup both scanned ``_xch_inventory`` /
-``_cat_inventory`` independently. If trade picked a coin at the same
-moment topup was about to absorb it, whichever ran second either
-silently skipped or attempted to spend a coin already consumed. This
-produced transient "no coin found" failures and "ghost" coins.
+Key responsibilities:
+    - Atomic reserve()/release() of coin ID sets behind a single lock
+    - Owner-checked release so crossed calls can't free each other's coins
+    - Declarative purpose strings for log auditability
+    - Lazy TTL-based expiry via gc_expired()
 
-After this module: every long-running operation (offer creation,
-misfit absorb, consolidation, split) reserves coins BEFORE the RPC
-call. Reservations are:
-
-- **Atomic** — held behind a lock, so two concurrent reservations
-  can't race for the same coin.
-- **Short-lived** — default 30 second TTL. Expired reservations auto-
-  release so a crash / timeout doesn't leak reservations forever.
-- **Intentional** — caller must declare ``purpose`` (for logs and
-  auditability) and opaque ``owner`` (to prevent one operation's
-  release accidentally freeing another's reservations).
-
-This module is intentionally tiny and dependency-free — it could live
-in coin_manager.py, but separating it keeps the reservation contract
-clean and testable in isolation.
+Intended for short-lived coordination (default ~30s TTL). For longer-lived,
+persistent capacity accounting across restarts, see reservation_manager.py.
 
 Usage::
 

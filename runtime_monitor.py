@@ -1,14 +1,18 @@
-"""
-Bot-health watch for live bot diagnostics.
+"""Passive sidecar watchdog that observes bot state and emits derived warnings
 
-This sidecar watches:
-  - structured bot events from database.log_event()
-  - the current superlog for slow-call/performance signals
-  - wallet/DB/Dexie alignment
-  - coin-manager headroom and long-running top-up activity
+Polls structured events from the database, wallet/DB/Dexie alignment, and
+slow-call samples parsed from the current superlog. Correlates these signals
+into human-readable warnings and recovery hints surfaced over the existing
+GUI log stream, so operators can see what's happening without a manual audit.
 
-It runs alongside the bot and emits derived warnings/recoveries so the
-existing GUI log stream can show what is happening without a manual audit.
+Key responsibilities:
+    - Tail `database.log_event()` output for categorised anomalies
+    - Scan superlog entries for slow-call / performance regressions
+    - Cross-check wallet, DB, and Dexie views for inventory misalignment
+    - Emit derived warning and recovery-hint events back into the log stream
+
+This module is strictly read-only — it does not repair state. Corrective
+actions live in `bot_health.py`, its active sister module.
 """
 
 from __future__ import annotations

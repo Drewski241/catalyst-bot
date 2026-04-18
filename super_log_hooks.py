@@ -1,20 +1,21 @@
-"""
-Super Log Hooks v2 — Level-aware instrumentation for all bot modules.
+"""Install instrumented wrappers around key bot methods for observability
 
-Called once from api_server.py after all modules are imported.
-Wraps key methods so significant operations get logged — but now with levels:
+At startup, `install_all_hooks()` walks the offer, fill, dexie, coin, risk,
+sniper, price, db, wallet, splash, and bot-loop subsystems and replaces
+selected methods with timed wrappers. On exit each wrapper emits TRACE for
+fast calls, INFO for slow calls, WARN for very slow calls, and ERROR when
+the wrapped method raised — so the in-memory ring buffer in `super_log` has
+the context needed to reconstruct what happened before any failure.
 
-- Method ENTRY → TRACE (ring buffer only, never written to file)
-- Method EXIT (normal) → TRACE (ring buffer only)
-- Method EXIT (slow >500ms) → WARN (written to file)
-- Method ERROR → ERROR (written to file + dumps context buffer)
+Key responsibilities:
+    - Patch instance methods in-place via `functools.wraps`
+    - Apply per-category slow thresholds (method / network / wallet)
+    - Classify each call's exit level based on duration and outcome
+    - Re-raise unchanged after logging so normal control flow is preserved
 
-This reduces log file volume by ~95% while keeping full context
-available when something goes wrong.
-
-Usage:
-    from super_log_hooks import install_all_hooks
-    install_all_hooks()
+Call `install_all_hooks()` exactly once, after every subsystem has been
+constructed. Safe to call before `init_super_log` — the shim falls back to
+a no-op if `super_log` is unavailable.
 """
 
 import time

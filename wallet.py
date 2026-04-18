@@ -1,17 +1,20 @@
-"""
-Wallet Adapter — Selects Sage or Chia wallet backend.
+"""Wallet backend dispatcher that re-exports a unified wallet API
 
-This thin adapter reads WALLET_TYPE from the environment and re-exports
-all public functions from either wallet_sage.py or wallet_chia.py.
+Thin adapter module that reads ``WALLET_TYPE`` from the environment and
+conditionally re-exports the public surface of either ``wallet_chia`` or
+``wallet_sage``. Callers throughout the codebase do ``from wallet import ...``
+without needing to know which backend is active, letting the trading loop,
+offer manager, coin manager, and API server stay backend-agnostic.
 
-Usage in .env:
-    WALLET_TYPE=sage    (default — Sage light wallet on port 9257)
-    WALLET_TYPE=chia    (official Chia wallet on port 9256, legacy)
+Key responsibilities:
+    - Read ``WALLET_TYPE`` from ``.env`` (``sage`` or ``chia``) on import
+    - Re-export constants, offer helpers, coin helpers, and transfer functions
+    - Provide a compatibility shim ``get_owned_coins_detailed`` for the Chia branch
+    - Fall back to the Sage backend when ``WALLET_TYPE`` is missing or unknown
 
-All other modules continue to do:
-    from wallet import get_all_offers, create_offer, ...
-
-Zero changes needed in any other file. The adapter handles the switch.
+Selection happens exactly once at import time; switching backends requires an
+application restart. The file intentionally contains no network or business
+logic of its own beyond the shim.
 """
 
 import os

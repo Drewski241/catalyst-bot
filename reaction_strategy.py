@@ -1,16 +1,20 @@
-"""
-Incremental Reaction Strategy — cycle budget and staleness-based prioritisation.
+"""Graduated requote-severity framework for incremental, budget-capped reactions
 
-Instead of full ladder rebuilds on price movement, the bot takes small,
-budget-limited actions each cycle:
-  - Emergency cancels for arbable offers (highest priority)
-  - Expiry refreshes (capped per cycle)
-  - Fill replacements
-  - Drift adjustments (most-stale offers first)
+Instead of wholesale ladder rebuilds on every price move, this module gives
+`bot_loop` and `offer_manager` a shared vocabulary for reacting proportionally
+to drift: a severity enum, a per-cycle action budget, and pure classification
+helpers that decide which tiers and offers need attention this cycle.
 
-The natural expiry rotation (24h staggered) is the primary self-correction
-mechanism for small drifts.  Active requoting is only for medium-to-large
-moves, and even then it processes only a handful of offers per cycle.
+Key responsibilities:
+    - `RequoteSeverity` enum — NONE / INNER / INNER_MID / FULL / EMERGENCY
+    - `CycleBudget` dataclass — caps cancels, requotes, and replacements
+    - `classify_drift` — drift magnitude to severity
+    - `tiers_for_severity` — severity to affected tier set
+    - `compute_offer_staleness` and `filter_offers_by_tiers` — selection helpers
+
+All functions here are pure: no DB, no wallet, no side effects. Consumers
+combine these signals with the natural 24h staggered expiry rotation, which
+remains the primary self-correction mechanism for small drifts.
 """
 
 from __future__ import annotations

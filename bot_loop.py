@@ -1,29 +1,23 @@
-"""
-V2 Bot Loop — Main Orchestrator
+"""Central trading-loop orchestrator that wires all bot subsystems together
 
-The central event loop that coordinates all modules each cycle:
-  1. Fetch prices
-  2. Check circuit breakers
-  3. Detect fills
-  4. Match round-trip PnL
-  5. Requote stale offers
-  6. Create new offers if needed
-  7. Post to Dexie
-  8. Manage coins
-  9. Housekeeping
+The `BotLoop` class owns instances of `PriceEngine`, `OfferManager`, `FillTracker`,
+`DexieManager`, `SplashManager`, `CoinManager`, `RiskManager`, `Sniper`,
+`BoostManager`, `MarketIntel`, `RuntimeMonitor`, `AMMMonitor`, and `MempoolWatcher`,
+then completes cross-module wiring via attribute injection after construction.
+The main entry point `_run_one_cycle()` runs on a background thread every
+`cfg.LOOP_SECONDS` and drives the per-cycle pipeline: price fetch, risk checks,
+fill detection, round-trip matching, requote, new-offer creation, Dexie posting,
+coin management, and housekeeping.
 
-Additional background threads (V1 parity):
-  - Health monitor: polls Chia wallet/node every 15s, auto-restarts after 5min failure
-  - Price watcher: polls TibetSwap reserves every 12s, wakes main loop on swap detection
+Key responsibilities:
+    - Construct and wire every trading subsystem into a single runnable loop
+    - Drive the per-cycle trading pipeline on a background thread
+    - Manage auxiliary watchers: health thread, price watcher, coin watcher,
+      Splash-receive thread
+    - Provide start/stop lifecycle hooks for the desktop app and API server
 
-This replaces V1's bot_loop() function (which was embedded in the
-7,500-line api_server.py monolith).
-
-Usage:
-    from bot_loop import BotLoop
-    loop = BotLoop()
-    loop.start()       # Background thread
-    loop.stop()        # Clean shutdown
+The loop is single-threaded per cycle; concurrent work (health, price, coin,
+Splash) runs in dedicated watcher threads that signal back through shared state.
 """
 
 import os

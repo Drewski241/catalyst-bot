@@ -1,26 +1,18 @@
-"""
-Smart Defaults v2 — Market Data Collector & Analysis Engine
+"""Multi-source market data aggregation and analysis for Smart Defaults
 
-Gathers 30 days of market data from all confirmed sources and produces
-analysis that drives intelligent default settings. This replaces the
-snapshot-only approach in v1 Smart Defaults.
+Collects raw market data from Dexie trade history and ticker, TibetSwap
+pool and quote endpoints, Spacescan token info, and internal DB metrics,
+then derives analysis covering volatility, liquidity, token health, and
+bot performance. The two top-level entry points are
+`collect_all_market_data()` and `analyze_market_data()`; results feed
+the Smart Defaults recommendation layer that tunes bot configuration.
 
-Data Sources (all confirmed working via test_api_data_sources.py):
-  1. Dexie trade history — 30-day fill rate, avg trade size, volume trend
-  2. Dexie ticker — 30d/90d high/low/volume, current bid/ask
-  3. TibetSwap — pool reserves, quote-based slippage, pair data
-  4. Spacescan — holder count, supply, on-chain activity
-  5. Internal DB — bot's own fill rate, spread capture, inventory drift
-
-Architecture:
-  collect_all_market_data() → gathers raw data from all sources
-  analyze_market_data()     → produces analysis (volatility, liquidity, health)
-  Both use caching so repeated Smart Defaults clicks don't hammer APIs.
-
-Usage:
-    from market_data_collector import collect_all_market_data, analyze_market_data
-    raw = collect_all_market_data(asset_id, ticker_id, decimals)
-    analysis = analyze_market_data(raw, asset_id)
+Key responsibilities:
+    - Fan out to Dexie, TibetSwap, Spacescan, and the internal DB
+    - Normalize raw data for the analysis stage
+    - Compute volatility, liquidity, health, and performance metrics
+    - Cache results via `get_market_analysis_cache` /
+      `set_market_analysis_cache` so repeated calls don't hammer APIs
 """
 
 import time

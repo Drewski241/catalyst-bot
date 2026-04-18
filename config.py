@@ -1,17 +1,19 @@
-"""
-V2 Config Module — Typed Configuration Loading
+"""Centralised typed configuration for the bot with hot-reload support
 
-Replaces scattered os.getenv() calls throughout V1's api_server.py.
-All configuration lives in .env and is loaded once here with proper
-types, defaults, and validation.
+The `Config` class loads settings from the user's `.env` file (resolved via
+`user_paths.env_file()`) once at import time and exposes them as typed
+attributes. The module-level singleton `cfg` is the canonical access point
+used everywhere in the codebase — `from config import cfg; cfg.SPREAD_BPS` —
+so no other module should read environment variables directly.
 
-Usage:
-    from config import cfg
-    spread = cfg.SPREAD_BPS
-    cfg.reload()  # Hot-reload from .env
+Key responsibilities:
+    - Parse `.env` into typed fields (Decimal for prices, int/bool/str)
+    - Provide `cfg.update(key, value)` to write back to `.env` and reload
+    - Expose `cfg.reload()` for hot-reload after external edits
+    - Seed `.env` from `.env.example` on first launch
 
-Settings are updated from the GUI via cfg.update("KEY", value) which
-writes back to .env and updates the in-memory value.
+All mutations are guarded by an internal lock so concurrent GUI and
+trading-loop writes stay consistent.
 """
 
 import os

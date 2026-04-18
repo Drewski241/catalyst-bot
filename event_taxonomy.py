@@ -1,12 +1,19 @@
-"""
-Event Taxonomy — Canonical categories for bot events.
+"""Canonical mapping of event_type strings to eight high-level categories
 
-Reduces event sprawl by grouping ~168 event types into 8 canonical categories.
-No existing event names are changed — this is purely additive metadata.
+Every event emitted by the bot has a free-form `event_type` string; this
+module groups those strings into the eight `EventCategory` values
+(`LIFECYCLE`, `OFFER`, `PRICING`, `WALLET`, `EXCHANGE`, `RISK`, `SYSTEM`,
+`COIN`) so the GUI can offer coarse filters without knowing every specific
+name. `categorize_event(event_type)` is used by `api_server` for filtering
+and by `doctor` / `runtime_monitor` for health rollups.
 
-Usage:
-    from event_taxonomy import categorize_event, EventCategory
-    cat = categorize_event("offer_created")  # -> EventCategory.OFFER
+Key responsibilities:
+    - Define `EventCategory` as a `StrEnum` (with a fallback for older Pythons)
+    - Maintain the authoritative event_type → category mapping
+    - Default unknown event types to `SYSTEM` rather than failing
+
+The map is additive — adding new event types to the codebase is a matter of
+appending rows here. Existing event names never change.
 """
 
 from __future__ import annotations

@@ -1,16 +1,20 @@
-"""
-Config Validator — Structured validation for .env settings.
+"""Structured validation of the loaded Config singleton
 
-Catches dangerous, contradictory, or broken configurations before they
-cause subtle trading errors. Designed to be called by the Doctor/Preflight
-system and on config reload.
+Runs a suite of checks against a populated `Config` object and returns a
+`ValidationReport` containing `ConfigIssue` entries split into errors
+(severity that should block startup or a reload) and warnings (log-only).
+Consumed by `config` itself on reload, by `api_server` through the validate
+endpoint, and by the `doctor` preflight to surface bad configuration before
+the trading loop starts.
 
-Usage:
-    from config_validator import validate_config
-    report = validate_config(cfg)
-    if not report.is_valid:
-        for issue in report.errors:
-            print(f"ERROR: {issue.key} — {issue.message}")
+Key responsibilities:
+    - Validate types, ranges, and URL formats for individual settings
+    - Catch contradictory or mutually-exclusive combinations
+    - Return a structured report rather than raising
+    - Keep validation logic independent of I/O and framework code
+
+The validator is pure: it reads from the passed-in config object and
+produces a report — no logging, no file access, no side effects.
 """
 
 from __future__ import annotations

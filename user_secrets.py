@@ -1,14 +1,20 @@
-"""User-local secrets store.
+"""Per-user secrets store kept out of the repo and out of the install dir
 
-Persists sensitive per-user values (e.g. API keys) in a JSON file inside the
-current OS user's application-data directory.  The file is NEVER written to
-the bot directory, so it cannot be accidentally committed, shared via a
-network drive, or reused on a different machine or OS account.
+Persists sensitive per-user values such as third-party API keys in a JSON
+file inside the OS user data directory, never inside the bot directory, so
+secrets cannot be accidentally committed, shared via a network drive, or
+reused on a different machine or OS account. `apply_to_config(cfg)` copies
+known secrets (e.g. `SPACESCAN_API_KEY`) onto the running `Config` object
+whenever the config is reloaded.
 
-Location:
-    Windows : %APPDATA%\\ChiaMarketMaker\\user_secrets.json
-    macOS   : ~/Library/Application Support/ChiaMarketMaker/user_secrets.json
-    Linux   : ~/.config/ChiaMarketMaker/user_secrets.json
+Key responsibilities:
+    - Read / write a JSON file at the platform-appropriate user path
+    - Serialise access with a module-level lock
+    - Project known secret keys onto the `Config` singleton on reload
+    - Set `0o600` permissions on Unix on every write
+
+Windows provides no equivalent per-file protection, so on Windows the
+secrets file is protected only by the user's profile ACLs.
 """
 
 from __future__ import annotations

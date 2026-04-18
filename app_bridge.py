@@ -1,46 +1,21 @@
-"""
-App Bridge — Python <-> JavaScript bridge for PyWebView desktop mode.
+"""Python-side bridge exposed to JavaScript inside the PyWebView window
 
-This class exposes Python methods that JavaScript can call directly via
-window.pywebview.api.method_name(). Each method mirrors a Flask API route,
-returning the same JSON-compatible dict the Flask route would return.
+Defines `AppBridge`, whose methods are reachable from the GUI as
+`window.pywebview.api.*`. Each bridge method mirrors a Flask route but invokes
+the corresponding handler in-process through `test_request_context()`,
+bypassing network I/O and the `before_request` hooks. This lets the desktop
+GUI share a single implementation with the browser-mode HTTP surface while
+avoiding serialization over localhost.
 
-Phase 2: All GUI-used routes bridged here. apiFetch() in bot_gui.html routes
-desktop calls through this bridge instead of HTTP fetch().
+Key responsibilities:
+    - Route JS calls to Flask handlers via in-process request contexts
+    - Normalize results to JSON-safe shapes using `DecimalEncoder`
+    - Catch all exceptions in `@_safe` and return `{"success": False, ...}`
+    - Clip excess positional args injected by PyWebView's `undefined` serialization
 
-The bridge is passed to PyWebView as the `js_api` parameter:
-
-    bridge = AppBridge()
-    window = webview.create_window(..., js_api=bridge)
-
-Then in JavaScript:
-    const data = await window.pywebview.api.get_status();
-    const result = await window.pywebview.api.start_bot();
-
-IMPORTANT: All methods must return JSON-serializable dicts/lists.
-PyWebView serializes them automatically for the JS side.
-No Decimal, no datetime objects — convert to str/float/int.
-
-SECURITY MODEL:
-    The bridge runs IN-PROCESS — it calls Flask route handlers directly via
-    test_request_context(), which bypasses the before_request hooks (loopback
-    check, per-run token validation, rate limiting). This means the bridge has
-    UNAUTHENTICATED access to all bot control endpoints.
-
-    This is acceptable because:
-    1. The bridge is only reachable via window.pywebview.api.* from JavaScript
-       running inside the PyWebView/Tauri desktop window.
-    2. The only way an attacker can invoke bridge methods is by injecting
-       JavaScript into the GUI (XSS). The GUI applies escapeHtml() to all
-       server-sourced data rendered via innerHTML, and uses allowlist maps
-       for enum-like values used in CSS classes. Audited 2026-04-05.
-    3. Switching to test_client() with token headers on all 82+ methods would
-       be a massive refactor for no practical gain — the token would need to
-       be embedded in the same process that already has full access.
-
-    If defense-in-depth is desired in the future, a lightweight approach would
-    be to add a per-session nonce check in _safe() that validates a token set
-    during PyWebView initialization. This is Phase 3+ work.
+Security note: because bridge calls do not traverse the HTTP layer, the
+loopback and per-run token checks are skipped. The bridge trusts the GUI,
+which must escape all server-sourced data before rendering (see `escapeHtml`).
 """
 
 import inspect

@@ -1,13 +1,21 @@
-"""
-System Tray Manager — pystray wrapper for the CATalyst desktop app.
+"""System-tray icon and context menu for the CATalyst desktop app
 
-Creates a system tray icon with:
-- Dynamic icon colour (green/amber/red/grey based on bot state)
-- Quick actions menu (show dashboard, pause/resume, start/stop, exit)
-- Status tooltip showing bot state and active pair
-- Callbacks for show/quit/start/stop/pause/resume actions
+Wraps `pystray` plus `Pillow` to present a coloured status icon in the OS
+tray alongside the PyWebView window. `TrayManager` renders a dynamically
+tinted icon (green / amber / red / grey / indigo), maintains a tooltip that
+reflects bot state and active pair, and drives a short context menu
+(Show Dashboard / Start / Stop / Exit). A polling thread owned by
+`desktop_app` refreshes the icon colour and tooltip on a timer.
 
-Requires: pystray, Pillow
+Key responsibilities:
+    - Build and run the pystray icon on a dedicated thread
+    - Render state-coloured icons with Pillow at runtime
+    - Route menu actions to `desktop_app` callbacks when wired, or fall back
+      to loopback Flask API calls against `127.0.0.1:5000`
+    - Degrade gracefully when `pystray` or `Pillow` are not installed
+
+The module imports `pystray` and `PIL` behind try/except so the rest of the
+app still starts in headless or reduced-dependency environments.
 """
 
 import threading

@@ -1,20 +1,20 @@
-"""
-V2 Sniper — Fast Arb Closer with Inventory Awareness
+"""Fast arb-closer that posts single probe offers at the best bid/ask on signal
 
-Detects TibetSwap swaps and immediately creates buy/sell offers at the
-new best bid/ask, posting to Dexie in ~3 seconds instead of waiting for
-the full loop cycle (~90s).
+`Sniper` reacts to drift signals from `mempool_watcher` and `amm_monitor` by
+creating a single probe offer at the new best bid or ask and posting it to
+Dexie immediately, bypassing the main-loop cadence. This closes the latency
+gap between an observed AMM swap and our book being refreshed by the normal
+cycle.
 
-V2 improvements over V1:
-1. Size awareness — offer size based on arb gap (bigger gap = bigger offer)
-2. Inventory awareness — won't snipe if it would push inventory too far
-3. Configurable cooldown — minimum time between snipes
-4. PnL category tracking — sniper fills tracked separately
+Key responsibilities:
+    - Listen for mempool / AMM drift signals and decide whether to fire
+    - Create at most 2 active sniper offers (max 1 per side)
+    - Size each probe against inventory skew and the observed arb gap
+    - Post directly to Dexie and track sniper fills separately in PnL
 
-Usage:
-    from sniper import Sniper
-    sniper = Sniper(offer_manager, risk_manager, dexie_manager, splash_manager)
-    sniper.try_snipe(bid_price, ask_price)
+Offer-side dependencies (`offer_manager`, `risk_manager`, `dexie_manager`,
+`splash_manager`) are injected via the constructor rather than imported at
+module scope.
 """
 
 import threading

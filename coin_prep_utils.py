@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
-"""Small reusable helpers for coin prep logic."""
+"""Stateless decision helpers for coin_prep_worker split retry logic
+
+A tiny collection of pure functions that the coin prep worker consults when a
+split transaction appears stuck. The helpers decide whether a pending split
+should be retried (because the source coin is still selectable and no outputs
+have materialised) or whether the grace window should simply be extended (the
+transaction is likely still propagating). Kept in a separate module so the
+retry policy can be unit-tested in isolation.
+
+Key responsibilities:
+    - should_retry_unconsumed_split: detect a silently-missed split
+    - should_extend_pending_consumed_split_grace: detect in-flight progress
+    - Remain completely stateless and side-effect free
+"""
 
 
 def should_retry_unconsumed_split(

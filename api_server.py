@@ -1,18 +1,21 @@
-"""
-V2 API Server — Thin Flask Layer
+"""Flask HTTP + SSE server backing the dashboard and the in-process bridge
 
-This is the web server: HTTP routes + Server-Sent Events for the GUI.
-All business logic lives in the modules (bot_loop, offer_manager, etc.).
-This file just translates HTTP requests into module calls.
+Thin translation layer between HTTP and the trading modules. Routes delegate
+straight into `bot_loop`, `offer_manager`, `coin_manager`, `wallet`, and the
+other domain modules; this file owns request validation, response shaping, and
+the real-time event stream. Consumed both by `bot_gui.html` over `fetch` and
+by `app_bridge.py` via `test_request_context()`.
 
-SSE (Server-Sent Events) provides real-time push updates to the GUI
-without needing Flask-SocketIO or any extra dependencies.
+Key responsibilities:
+    - Expose REST routes for bot control, config, offers, fills, coins,
+      wallet/Sage lifecycle, Splash, Dexie, Spacescan, and diagnostics
+    - Stream live updates to the GUI over Server-Sent Events at `/api/events`
+    - Gate state-changing routes behind a loopback-origin check plus a
+      per-run `X-Bot-Local-Token`
+    - Install superlog hooks at startup and bind strictly to `127.0.0.1:5000`
 
-Down from 7,500 lines in V1 to ~600 lines.
-
-Usage:
-    python api_server.py
-    # Serves on http://localhost:5000
+The server is never exposed beyond loopback. Any change that relaxes the
+origin or token checks must preserve that invariant.
 """
 
 import os

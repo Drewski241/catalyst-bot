@@ -1,34 +1,21 @@
-"""
-AMM Monitor — Live TibetSwap AMM Reserve Polling
+"""Background TibetSwap reserve polling and drift detection
 
-Polls the TibetSwap pair endpoint directly every AMM_POLL_INTERVAL_SECS to get
-live xch_reserve / token_reserve data. This gives a more accurate and more
-frequently updated AMM mid-price than the 30-minute tibet pairs cache.
+`AMMMonitor` runs a background thread that polls the TibetSwap pair
+endpoint on `AMM_POLL_INTERVAL_SECS` (default 30 s) for live
+`xch_reserve` and `token_reserve` values. On each poll it compares the
+derived AMM mid-price against the last quoted price, injects fresh
+reserves into `price_engine._tibet_cache`, and invalidates that cache
+when drift exceeds threshold so the next bot cycle requotes within one
+poll interval. It also computes an arb-pressure score and exposes
+proximity checks used by `offer_manager` to avoid posting inside the
+TibetSwap arb range.
 
 Key responsibilities:
-  1. Background-poll AMM reserves (single pair endpoint — fast, ~100ms)
-  2. Detect when AMM price has drifted from our last quoted price
-  3. Invalidate the price_engine's Tibet cache when drift exceeds threshold
-     so the next bot loop cycle uses the fresh AMM price immediately
-  4. Provide AMM proximity checks so offer_manager can avoid posting
-     inside TibetSwap's arb range (offers that would be instantly swept)
-  5. Expose state for /api/amm/price endpoint and GUI display
-
-Why this matters:
-  The old flow used a 30-minute cached /pairs list for AMM price. Overnight,
-  if the AMM price moved 200bps, the bot's buy offers stayed at the old price
-  and TibetSwap's arb bot swept them. With AMM Monitor, price drift is detected
-  within one poll interval (default 30s) and the cache is invalidated so the
-  bot requotes before being swept.
-
-Usage:
-    from amm_monitor import AMMMonitor
-    monitor = AMMMonitor(price_engine=engine)
-    monitor.start()                       # starts background polling thread
-    price = monitor.get_amm_price()       # Decimal or None
-    state = monitor.get_amm_state()       # AMMState dict
-    safe  = monitor.check_amm_buffer(offer_price, 'buy')  # bool
-    monitor.stop()
+    - Poll pool reserves on a configurable interval
+    - Detect drift vs the last quoted price
+    - Inject reserves into `price_engine` and invalidate its Tibet cache
+    - Expose AMM state / price for the API and GUI
+    - Provide buffer-proximity checks for offer placement
 """
 
 import time

@@ -1,13 +1,19 @@
-"""
-V3 Splash Setup — Auto-download the Splash P2P binary
+"""Download the Splash P2P binary from GitHub Releases with platform detection
 
-Detects the user's OS, downloads the correct Splash binary from
-GitHub releases, verifies it, and places it in the V3 folder.
+Picks the right asset for the current OS and architecture, downloads it
+from the dexie-space/splash GitHub release, optionally verifies a SHA-256
+checksum when the release ships a `.sha256` sidecar, and drops the
+binary next to this module. Exposes a non-blocking background download
+with a progress callback so the GUI can show a progress bar.
 
-Called from the GUI via /api/splash/setup or from splash_node.py
-when SPLASH_AUTO_START=true and no binary is found.
+Key responsibilities:
+    - Detect OS/arch and pick the matching release asset
+    - Stream-download the binary with progress reporting
+    - Verify SHA-256 when a checksum sidecar is available
+    - Make the binary executable and report the final install path
 
-Download source: https://github.com/dexie-space/splash/releases
+Called from the GUI via /api/splash/setup or from splash_node.py when
+SPLASH_AUTO_START is enabled and no binary is found.
 """
 
 import os

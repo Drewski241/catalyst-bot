@@ -1,24 +1,18 @@
-"""
-V2 Market Intelligence — Dexie Orderbook Monitoring
+"""Live competitive intelligence from the Dexie orderbook
 
-NEW MODULE — This is the "ecosystem advantage" that no other Chia market maker has.
+`MarketIntel` polls `/v1/offers` on a 30-second cadence via
+`refresh_orderbook()` and derives best bid / best ask, competitor spread,
+per-side thin-book detection, and DBX reward eligibility. The bot's own
+offers are excluded from competitor math by looking up the trade-id ->
+dexie-id mapping from the database. Output flows into `risk_manager`
+and the GUI so spread and placement decisions are reactive to the live
+book rather than stale snapshots.
 
-What it does:
-1. **Competitor Monitoring** — Fetches the live Dexie orderbook for our CAT pair,
-   identifies competing offers, and calculates the best bid/ask spread from other
-   market participants. Feeds this into risk_manager for smarter spread decisions.
-
-2. **DBX Rewards Tracking** — Monitors whether our offers qualify for Dexie's
-   DBX liquidity incentive program (offers within eligible spread earn DBX tokens).
-
-3. **Market Depth Analysis** — Calculates total liquidity depth on each side,
-   detects thin books where we can be more aggressive, and identifies whale orders.
-
-Usage:
-    from market_intel import MarketIntel
-    intel = MarketIntel(price_engine)
-    intel.refresh_orderbook()
-    competitor_spread = intel.get_competitor_spread()
+Key responsibilities:
+    - Fetch and snapshot the live Dexie orderbook for the active pair
+    - Separate bot-owned offers from competitor offers via dexie-id map
+    - Derive best bid/ask, competitor spread, and thin-side signals
+    - Flag whether current placement qualifies for DBX rewards
 """
 
 import time

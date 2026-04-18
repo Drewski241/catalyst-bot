@@ -1,29 +1,28 @@
-"""Shape-fix recovery orchestrator (Phase 7 / F74).
+"""User-triggered multi-stage recovery flow for ladder shape drift
 
-User-triggered recovery flow for watchdog-detected ladder shape drift.
-Coordinates cancel → wait-for-confirm → (P2) rebuild as a single
-orchestrated action with progressive status updates streamed over SSE.
+Coordinates a cancel -> wait-for-on-chain-confirmation -> coin-recheck ->
+rebuild pipeline as a single orchestrated action, with progressive status
+updates streamed to the GUI over SSE. Invoked by the operator when the
+watchdog has reported shape drift that the incremental reaction strategy
+cannot clear on its own.
 
-See the inline design notes below — the full design rationale was
-worked out in chat in the preceding session; this module is the
-runtime realisation.
+Key responsibilities:
+    - Drive the staged flow (CANCELLING, WAITING_FOR_CONFIRMATION,
+      CHECKING_COINS, RESHAPING, REBUILDING, COMPLETE / HALTED)
+    - Stream progress and final status out over SSE for the GUI
+    - Honour abort requests at every checkpoint with no orphaned locks
+    - Respect existing safety gates (position guard, storm protection)
 
-Scope of P1 (this file, first pass):
-  * CANCELLING          — submit cancel via offer_manager.cancel_offers
-  * WAITING_FOR_CONFIRMATION — poll until all trade_ids disappear from
-                           the open-offer book (or timeout)
-  * COMPLETE / HALTED   — terminal states
-
-Later phases add CHECKING_COINS, RESHAPING, REBUILDING. Each phase is
-independently testable on a live bot.
+Runs on a dedicated daemon thread so the main trading loop is never
+blocked. Globally serialised — at most one flow can run anywhere at a
+time (not one per side); re-entry is rejected with a clear reason.
 
 Design principles
 -----------------
 
-1. **One flow per side at a time** (per user requirement). Globally
-   serialised — if a flow is running on either side, a new call is
-   rejected with a clear reason. Keeps the coin-reservation story
-   simple and avoids multi-side races against the main loop.
+1. **One flow at a time, globally serialised** (per user requirement).
+   Keeps the coin-reservation story simple and avoids multi-side races
+   against the main loop.
 
 2. **Non-blocking for trading.** Runs on a dedicated daemon thread; the
    trading loop is never blocked waiting for a recovery to complete.

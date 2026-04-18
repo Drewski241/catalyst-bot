@@ -1,16 +1,20 @@
-"""
-V2 Database Module — Single Source of Truth
+"""Single source of truth for all persistent trading state
 
-Replaces V1's scattered state (offers_state.json, fills.csv, global variables)
-with a single SQLite database. All state reads and writes go through this module.
+Owns the SQLite database that backs every piece of bot state the user cares
+about surviving a restart: offers, fills, coins, inventory, price history,
+events, config history, bot settings, splash incoming offers, pool snapshots,
+market analysis cache, and trading pace. Connections are thread-local, WAL
+mode is enabled for concurrent reads, and every query goes through
+parameterised helpers so no other module needs to write raw SQL.
 
-Why SQLite:
-- Atomic writes: no more half-written JSON files if bot crashes mid-save
-- Queryable: "show me all fills from last 24h" is one line, not a CSV parse
-- Survives restarts: all state persists automatically
-- trade_id is always the key: no more keying by dexie_id (the bug that hit us 3 times)
+Key responsibilities:
+    - Initialise schema and indexes; migrate older databases forward
+    - Provide typed CRUD helpers for every table
+    - Normalise coin IDs between Sage (no `0x`) and Chia / DB (`0x` prefix)
+    - Delegate `reservation_leases` table creation to `reservation_manager`
 
-Uses WAL mode for safe concurrent reads (bot loop + GUI can both query without blocking).
+All DB access in the codebase should route through this module; importing
+`sqlite3` elsewhere is a smell.
 """
 
 import os

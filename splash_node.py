@@ -1,28 +1,19 @@
-"""
-V3 Splash Node Manager — Auto-launch and monitor the Splash P2P binary
+"""Auto-launch and monitor the Splash P2P binary as a managed subprocess
 
-The Splash binary (splash.exe on Windows) is a Rust P2P node from Dexie
-that broadcasts and receives offers across the Chia ecosystem.
+Owns the lifecycle of the Splash P2P node that broadcasts and receives
+offers across the Chia ecosystem. Discovers the executable, clears any
+stale processes holding the target port, starts Splash with the correct
+CLI flags, captures stdout for status, and restarts on crash up to a
+configured maximum.
 
-This module:
-  1. Finds the Splash binary (in V3 folder, PATH, or configurable location)
-  2. Launches it as a subprocess with the correct flags
-  3. Monitors it (restarts on crash)
-  4. Provides health/status info for the GUI
+Key responsibilities:
+    - Locate splash.exe (project folder, PATH, or configured path)
+    - Clean stale listeners on the submission port (default 4000)
+    - Launch as a hidden subprocess and pipe stdout into logs
+    - Health/status reporting and crash-restart up to a max count
 
-Splash CLI flags we use:
-  --listen-offer-submission 127.0.0.1:4000  → HTTP API for our bot to POST offers
-  --offer-hook http://localhost:5000/api/splash/incoming  → Splash forwards incoming offers to us
-  --listen-address /ip4/0.0.0.0/tcp/11511  → P2P listener port (optional, for inbound peers)
-
-Download: https://github.com/dexie-space/splash/releases
-
-Usage:
-    from splash_node import SplashNode
-    node = SplashNode()
-    node.start()   # Launches splash.exe in background
-    node.stop()    # Kills the process
-    node.get_status()  # Returns health info
+Configured via SPLASH_* env vars. Pairs with splash_manager (outbound
+posting) and splash_receive (inbound classification).
 """
 
 import os

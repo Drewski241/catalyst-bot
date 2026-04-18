@@ -1,28 +1,20 @@
-"""
-Gap Closer Manager — Adaptive Spread Tightening for Dexie Rankings
+"""Adaptive gap-closer that probes for the tightest safe spread, then cascades
 
-Creates and MAINTAINS a small pair of offers (1 buy + 1 sell) that start
-at a wide spread and gradually tighten, probing for the tightest safe
-spread that avoids arb bots. TibetSwap's arb gap acts as an intelligent
-floor — we never go tighter than where arbitrage would be profitable.
+`BoostManager` maintains a single pair of probe offers (1 buy + 1 sell) that
+start wide and tighten cycle by cycle until they hit the arb-profitability
+floor. Once the floor is proven, the main book is physically cascaded behind
+the probe price so the visible ladder follows the discovered best spread
+without ever overshooting into arb territory.
 
-How it works:
-  1. Start at 75% of current main book spread
-  2. Every 60s, if offers survived → tighten by 10%
-  3. If arbed → widen by 20%, wait, probe again
-  4. Never go tighter than arb_gap + safety buffer
-  5. Main book follows via convergence_factor in risk_manager
-  6. At floor: plants inner-tier offers at proven price, swaps out
-     the furthest inner offers, then lets the incremental reaction
-     strategy adjust the rest of the ladder naturally
+Key responsibilities:
+    - Maintain the 1-buy / 1-sell probe pair (create, refresh, cancel)
+    - Step the probe spread tighter on survival and wider on fill
+    - Detect the arb floor from TibetSwap's gap and hold there
+    - Cascade inner-tier main-book offers behind the proven price
 
-Usage:
-    from boost_manager import BoostManager
-    boost = BoostManager(offer_manager, dexie_manager, risk_manager)
-    boost.activate(mid_price, arb_gap_bps=120, main_spread_bps=600)
-    boost.refresh_if_needed(mid_price)    # Each cycle — keep offers alive
-    boost.step_tighter(current_arb_gap)   # Each cycle — probe tighter
-    boost.deactivate()                    # Turn off — cancels everything
+Offer-side dependencies (`risk_manager`, `dexie_manager`, `offer_manager`)
+are injected through the constructor; this module holds no direct imports
+of them at module scope.
 """
 
 import time

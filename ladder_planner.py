@@ -1,39 +1,21 @@
-"""Pre-flight ladder planner.
+"""Pre-flight deterministic ladder planner — produces a plan, never side effects
 
-Before creating any offers, this module produces a detailed *plan*
-describing what the ladder SHOULD look like and which coin would back
-each slot. If the plan has too many gaps or misfits, the caller can
-**defer** submission and trigger reshape — instead of submitting a
-ragged ladder that will need cleaning up later.
+`plan_ladder()` takes the current coin inventory, tier configuration, and
+requested ladder shape, and returns a slot-by-slot `LadderPlan` describing
+which available coin would back each tier slot. Each slot is classified as
+EXACT, OVERSIZE_ACCEPTABLE, MISFIT, or NO_COIN, so the caller can decide
+whether the plan is viable or whether a reshape is needed first.
 
-Design principle: ``plan_ladder()`` is pure (no side effects, no
-wallet RPC, no DB writes). It takes the current state and the config
-and produces a deterministic plan that the caller can inspect, log,
-and decide what to do with.
+Key responsibilities:
+    - Map requested tier slots to concrete coins without reserving them
+    - Classify each slot's fit quality (EXACT / OVERSIZE_ACCEPTABLE /
+      MISFIT / NO_COIN)
+    - Expose `is_viable()` and summary helpers for deferral decisions
+    - Remain fully pure — no wallet RPC, no DB writes, no locks
 
-Philosophy comparison vs the pre-existing `create_ladder` flow:
-
-    Before: "I need 20 offers. Pick whatever coin fits each, submit them,
-             hope the ladder ends up looking right."
-
-    After:  "Here's the plan. 18 slots have tier-correct coins ready.
-             2 slots have no matching coin — defer, trigger reshape, try
-             again next cycle."
-
-This eliminates the class of issue where a misfit coin gets used at a
-slot whose tier doesn't match the coin size, producing a ragged ladder
-(the 2026-04-17 regression).
-
-Typical usage::
-
-    plan = plan_ladder(side="sell", ...)
-    if not plan.is_viable():
-        log_event("ladder_plan_deferred", plan.summary())
-        trigger_reshape(plan.needed_reshapes)
-        return []
-    # Plan is viable → submit each slot
-    for slot in plan.slots:
-        create_offer(slot.price, slot.size, coin_id=slot.coin_id)
+Currently exercised primarily via `tests/test_ladder_planner.py`; the plan
+output is intended to let the caller defer submission instead of producing
+a ragged ladder that later needs cleanup.
 """
 from __future__ import annotations
 
