@@ -1356,6 +1356,34 @@ class CoinPrepWorker:
                 except Exception:
                     pass
             self._api_log_queue.task_done()
+
+    def shutdown_api_log(self, timeout: float = 3.0):
+        """Flush pending log deliveries before the subprocess exits.
+
+        The log queue is consumed by a daemon thread — daemons die the
+        moment sys.exit() fires, which was dropping the final ERROR /
+        OVERSHOOT lines before they reached the superlog. The caller is
+        left with only the bare '❌ Coin preparation failed!' banner and
+        no reason string.
+
+        Call this right before sys.exit() so the queue sentinel gets a
+        chance to drain outstanding POSTs.
+        """
+        if not getattr(self, "_is_subprocess", False):
+            return
+        worker = getattr(self, "_api_log_worker", None)
+        queue = getattr(self, "_api_log_queue", None)
+        if queue is None:
+            return
+        try:
+            queue.put_nowait(None)
+        except Exception:
+            return
+        if worker is not None:
+            try:
+                worker.join(timeout=max(0.1, float(timeout)))
+            except Exception:
+                pass
     
     def update_status(self, phase: PrepPhase = None, progress: float = None, 
                      message: str = None, error: str = None):
@@ -5787,10 +5815,25 @@ def main():
     if success:
         print()
         print("✅ Coin preparation successful!")
+        worker.shutdown_api_log()
         sys.exit(0)
     else:
         print()
-        print("❌ Coin preparation failed!")
+        # Surface the concrete failure reason via raw stdout. self.log
+        # posts go through a daemon background queue that dies at sys.exit,
+        # so the OVERSHOOT / ERROR / balance-too-low message often got
+        # dropped before the superlog could record it. The status file
+        # persists the reason, so mirror it here as a bare print that the
+        # ApiMirrorStream captures synchronously.
+        try:
+            err = (worker.status.error or worker.status.message or "").strip()
+        except Exception:
+            err = ""
+        if err:
+            print(f"❌ Coin preparation failed: {err}")
+        else:
+            print("❌ Coin preparation failed!")
+        worker.shutdown_api_log()
         sys.exit(1)
 
 
