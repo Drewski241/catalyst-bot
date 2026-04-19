@@ -1,0 +1,34 @@
+# ruff configuration — reflects the audit pass from plan slice 01-01
+# Run: ruff check . (or ruff check --fix for safe auto-fixes)
+
+[lint]
+# Rules enforced in this codebase:
+#   F  — pyflakes (undefined names, unused imports, etc.)
+#   E4 — import ordering errors
+#   E7 — statement errors (multi-statement lines, comparison issues)
+#   E9 — runtime errors (syntax, indentation)
+#   B  — flake8-bugbear (mutable defaults, etc.)
+select = ["F", "E4", "E7", "E9", "B"]
+
+# Deliberately excluded:
+#   E402 — module-level imports not at top: intentional in api_server.py
+#          (imports are interleaved with startup side-effects)
+#   E501 — line too long: not enforced in this project
+#   E701/E702 — multiple statements per line: style choice in run_tests.py
+#               and amm_monitor.py guard expressions
+ignore = ["E402", "E501", "E701", "E702"]
+
+# Directories that are never part of the codebase proper
+exclude = [
+    "backups_pre_audit_cleanup_20260408",
+    "dist",
+    "dist2",
+    ".venv",
+    "__pycache__",
+]
+
+[lint.per-file-ignores]
+# Test files: allow some patterns that would be noise in production code
+"tests/*" = [
+    "F841",   # assigned but unused — common in test setup/teardown helpers
+]
