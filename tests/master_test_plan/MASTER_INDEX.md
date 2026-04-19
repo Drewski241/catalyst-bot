@@ -82,6 +82,7 @@ executing. Cheap, broad, catches the "how did that even compile" class.
 | 2026-04-19 | 03-07 | `[x]` | b2390a4 | ladder creation: 15 tests — DB→get_free_coins→plan_ladder wiring, viability thresholds, two-sided bot-start cycle |
 | 2026-04-19 | 03-10 | `[x]` | da6ac5b | sniper arb cycle: 15 tests — try_snipe both-sided, DB recording, CB halt/side-block, cooldown, prune cycle, stats |
 | 2026-04-19 | 03-12 | `[x]` | 6e54a5a | cancel-all flow: 11 tests — confirmed/pending/failed/mixed/side-filter/exception; pending leaves DB open |
+| 2026-04-19 | 03-14 | `[x]` | d1ac1ac | config reload: 16 tests — reload/update/thread-safety/quote-stripping; _TempEnv env-var isolation pattern |
 
 ## Layer 2 — Unit test expansion (32 slices)
 
@@ -180,7 +181,7 @@ Confirms that modules wire together correctly. Slower than unit tests.
 | 03-11 | circuit breaker trip + recover | `[x]` | commit 2fb8831 |
 | 03-12 | cancel-all-flow — stop button → full cancel | `[x]` | commit 6e54a5a |
 | 03-13 | shutdown + resume — state correct on restart | `[ ]` | |
-| 03-14 | config reload (live vs stop-required split) | `[ ]` | |
+| 03-14 | config reload (live vs stop-required split) | `[x]` | commit d1ac1ac |
 | 03-15 | splash offer receive path | `[ ]` | |
 | 03-16 | liquidity-mode switch cycle (two→buy→sell→two) | `[ ]` | |
 | 03-17 | topup worker — reserve draws into tiers correctly | `[ ]` | |
