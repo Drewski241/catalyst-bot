@@ -67,7 +67,8 @@ executing. Cheap, broad, catches the "how did that even compile" class.
 | 2026-04-19 | 02-17 | `[x]` | 1341646 | coin_fsm+reservations: 49 tests — FSM transitions, terminal, vocab, ReservationRegistry lifecycle |
 | 2026-04-19 | 02-20 | `[x]` | (pending) | wallet: 17 tests — dispatch, get_wallet_type, API surface, all callables present |
 | 2026-04-19 | 02-21 | `[x]` | e32fc71 | wallet_sage pure fns: 69 tests — rpc_succeeded, classify, offer expiry, mojos, normalize |
-| 2026-04-19 | 02-22 | `[x]` | (pending) | wallet_chia+sage_node: 66 tests — mojos, expiry, _is_open_status, classify, version compare |
+| 2026-04-19 | 02-22 | `[x]` | cf1efce | wallet_chia+sage_node: 66 tests — mojos, expiry, _is_open_status, classify, version compare |
+| 2026-04-19 | 02-24 | `[x]` | (pending) | amm_monitor+mempool_watcher: 32 tests — encode_amount, coin_id, drift_bps, arb_label, buffer |
 
 ## Layer 2 — Unit test expansion (32 slices)
 
@@ -124,7 +125,7 @@ Target ~3× current coverage. Integration-style side-effects go in Layer 3.
 | Slice | Title | Status | Note |
 |-------|-------|--------|------|
 | 02-23 | risk_manager.py — circuit breaker, position, spreads | `[x]` | commit 7a9983b |
-| 02-24 | amm_monitor.py + mempool_watcher.py — move detection | `[ ]` | |
+| 02-24 | amm_monitor.py + mempool_watcher.py — move detection | `[x]` | (pending commit) |
 | 02-25 | dynamic_amm_buffer.py + reaction_strategy.py | `[ ]` | |
 
 ### Strategies (3)
