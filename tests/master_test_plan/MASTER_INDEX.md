@@ -78,6 +78,10 @@ executing. Cheap, broad, catches the "how did that even compile" class.
 | 2026-04-19 | 03-09 | `[x]` | 2fb8831 | fill detection+PnL: 20 tests — real SQLite DB, record_fill, match_round_trip, FIFO unmatched, net position |
 | 2026-04-19 | 03-11 | `[x]` | 2fb8831 | circuit breaker: 22 tests — hard limits, hysteresis, dynamic limit+mock PriceEngine, thread safety; streak behaviour documented |
 | 2026-04-19 | 03-08 | `[x]` | cf9dc4d | requote flow: 25 tests — offer_manager+reaction_strategy wiring, all severity levels, cooldown, tier superset chain |
+| 2026-04-19 | 03-18 | `[x]` | a43522e | orphan coin cleanup: 16 tests — cleanup_orphaned_locked_coins, check_orphan_locks, cancel flow cycle; sys.modules isolation fix |
+| 2026-04-19 | 03-07 | `[x]` | b2390a4 | ladder creation: 15 tests — DB→get_free_coins→plan_ladder wiring, viability thresholds, two-sided bot-start cycle |
+| 2026-04-19 | 03-10 | `[x]` | da6ac5b | sniper arb cycle: 15 tests — try_snipe both-sided, DB recording, CB halt/side-block, cooldown, prune cycle, stats |
+| 2026-04-19 | 03-12 | `[x]` | 6e54a5a | cancel-all flow: 11 tests — confirmed/pending/failed/mixed/side-filter/exception; pending leaves DB open |
 
 ## Layer 2 — Unit test expansion (32 slices)
 
@@ -169,18 +173,18 @@ Confirms that modules wire together correctly. Slower than unit tests.
 | 03-04 | coin-prep full cycle — consolidate → split → verify | `[ ]` | |
 | 03-05 | coin-prep retry (soft reset, preserve fills) | `[ ]` | |
 | 03-06 | coin-prep full reset (fresh-start path) | `[ ]` | |
-| 03-07 | ladder creation on bot start | `[ ]` | |
+| 03-07 | ladder creation on bot start | `[x]` | commit b2390a4 |
 | 03-08 | requote flow — price move triggers cancel+reissue | `[x]` | commit cf9dc4d |
 | 03-09 | fill detection + PnL round-trip match | `[x]` | commit 2fb8831 |
-| 03-10 | sniper arb cycle — both-sided probe + clean-up | `[ ]` | |
+| 03-10 | sniper arb cycle — both-sided probe + clean-up | `[x]` | commit da6ac5b |
 | 03-11 | circuit breaker trip + recover | `[x]` | commit 2fb8831 |
-| 03-12 | cancel-all-flow — stop button → full cancel | `[ ]` | |
+| 03-12 | cancel-all-flow — stop button → full cancel | `[x]` | commit 6e54a5a |
 | 03-13 | shutdown + resume — state correct on restart | `[ ]` | |
 | 03-14 | config reload (live vs stop-required split) | `[ ]` | |
 | 03-15 | splash offer receive path | `[ ]` | |
 | 03-16 | liquidity-mode switch cycle (two→buy→sell→two) | `[ ]` | |
 | 03-17 | topup worker — reserve draws into tiers correctly | `[ ]` | |
-| 03-18 | orphan coin cleanup | `[ ]` | |
+| 03-18 | orphan coin cleanup | `[x]` | commit a43522e |
 
 ## Layer 4 — API contracts (22 slices)
 
