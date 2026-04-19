@@ -111,6 +111,7 @@ executing. Cheap, broad, catches the "how did that even compile" class.
 | 2026-04-19 | 03-13 | `[x]` | b509f05 | shutdown+resume: 14 tests — real SQLite; check-resume wallet→can_resume, fresh_start flag guard; resume-chosen preserves fills; fresh-start clears fills+sets flag; regression fix restores session_start_time in tearDown |
 | 2026-04-19 | 03-02 | `[x]` | 0021a80 | bot start/stop: 17 tests — start validation gates, DB fills survive full start→stop cycle, already-running guard, events.emit contracts |
 | 2026-04-19 | 03-03 | `[x]` | 0021a80 | pair-switch: 17 tests — blocked while running (409), _active_cat updated, risk_manager.reset_session() called, DB fills preserved across all switches |
+| 2026-04-19 | 03-04/05/06 | `[x]` | f51a2d3 | coin prep lifecycle: 25 tests — trigger state (running/run_id/started_at/bot.stop), default preserves fills, soft reset clears running without touching DB, full_reset=True clears fills |
 
 ## Layer 2 — Unit test expansion (32 slices)
 
@@ -199,9 +200,9 @@ Confirms that modules wire together correctly. Slower than unit tests.
 | 03-01 | startup-flow — fresh app → risk → Sage → dashboard | `[ ]` | |
 | 03-02 | bot start/stop cycle — state persists across | `[x]` | commit 0021a80 |
 | 03-03 | pair-switch — mid-session pair change, DB/state cleanup | `[x]` | commit 0021a80 |
-| 03-04 | coin-prep full cycle — consolidate → split → verify | `[ ]` | |
-| 03-05 | coin-prep retry (soft reset, preserve fills) | `[ ]` | |
-| 03-06 | coin-prep full reset (fresh-start path) | `[ ]` | |
+| 03-04 | coin-prep full cycle — consolidate → split → verify | `[x]` | commit f51a2d3 |
+| 03-05 | coin-prep retry (soft reset, preserve fills) | `[x]` | commit f51a2d3 |
+| 03-06 | coin-prep full reset (fresh-start path) | `[x]` | commit f51a2d3 |
 | 03-07 | ladder creation on bot start | `[x]` | commit b2390a4 |
 | 03-08 | requote flow — price move triggers cancel+reissue | `[x]` | commit cf9dc4d |
 | 03-09 | fill detection + PnL round-trip match | `[x]` | commit 2fb8831 |
