@@ -94,6 +94,8 @@ executing. Cheap, broad, catches the "how did that even compile" class.
 | 2026-04-19 | 04-07 | `[x]` | a95f82a | session: 15 tests — fresh-start, resume-chosen, check-resume (4 branches: bot_running/fresh_start/no_offers/can_resume) |
 | 2026-04-19 | 04-08 | `[x]` | 66e62cb | diagnostics: 10 tests — runtime (bot=None safe shape), api-stats (spacescan/coinset/dexie availability) |
 | 2026-04-19 | 04-09 | `[x]` | 5b76e44 | sage/wallet: 25 tests — sage-running probe, begin-startup, fingerprints, start-with-fingerprint validation, detect, switch |
+| 2026-04-19 | 04-10 | `[x]` | a2de3a5 | smart-defaults: 8 tests — mode routing, fallback, risk_profile fwd, reserve params, exception→500 |
+| 2026-04-19 | 04-11 | `[x]` | a2de3a5 | trading-pair: 18 tests — cats list, cat/select validation (64-hex, lengths, decimals, bot-running→409), cat/refresh |
 
 ## Layer 2 — Unit test expansion (32 slices)
 
@@ -214,8 +216,8 @@ idempotency, response-shape validation.
 | 04-07 | session endpoints — fresh-start, resume-chosen, check-resume | `[x]` | commit a95f82a |
 | 04-08 | diagnostics endpoints — runtime, api-stats | `[x]` | commit 66e62cb |
 | 04-09 | sage/wallet endpoints — begin-startup, detect, begin | `[x]` | commit 5b76e44 |
-| 04-10 | smart-defaults endpoint — per-mode branching | `[ ]` | |
-| 04-11 | trading-pair endpoints — list, select, refresh | `[ ]` | |
+| 04-10 | smart-defaults endpoint — per-mode branching | `[x]` | commit a2de3a5 |
+| 04-11 | trading-pair endpoints — list, select, refresh | `[x]` | commit a2de3a5 |
 | 04-12 | fills endpoints — list, purge, classify | `[ ]` | |
 | 04-13 | logs endpoints — list, filter, export | `[ ]` | |
 | 04-14 | dashboard endpoint — aggregated payload | `[ ]` | |
