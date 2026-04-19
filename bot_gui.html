@@ -11614,7 +11614,12 @@
                             document.getElementById('configTierEnabled').checked = tierEnabledOn;
                             const blr = g('BUY_LADDER_REVERSED');
                             if (blr !== null) {
-                                document.getElementById('configBuyLadderReversed').checked = !(blr === true || blr === 'true' || blr === '1' || blr === 'True');
+                                // Checkbox checked ⇔ Reverse Buy Ladder IS on.
+                                // (Previously inverted so checked meant OFF, which
+                                //  made the tick disappear whenever the env had
+                                //  reverse-buy actually enabled — confusing UX.)
+                                document.getElementById('configBuyLadderReversed').checked =
+                                    (blr === true || blr === 'true' || blr === '1' || blr === 'True');
                                 // Snapshot orientation so rerun-hint knows what "saved state" is
                                 window._smartSettingsToggleState = document.getElementById('configBuyLadderReversed').checked;
                             }
@@ -16280,8 +16285,10 @@
                 // Coin Prep Multiplier — market-derived overall spare budget.
                 if (data.coin_prep_multiplier != null) document.getElementById('configCoinPrepMultiplier').value = data.coin_prep_multiplier;
 
-                // Ladder Strategy — reverse buy ladder is always on (risk management).
-                if (data.buy_ladder_reversed !== undefined) document.getElementById('configBuyLadderReversed').checked = !data.buy_ladder_reversed;
+                // Ladder Strategy — reverse buy ladder checkbox reflects the
+                // true state: checked ⇔ Reverse Buy Ladder IS on. (Previously
+                // inverted, which hid the tick even when reverse was active.)
+                if (data.buy_ladder_reversed !== undefined) document.getElementById('configBuyLadderReversed').checked = !!data.buy_ladder_reversed;
                 // Snapshot taken AFTER the buy-size auto-swap below (see end of
                 // this block) so it reflects the final displayed toggle state.
 
@@ -27178,7 +27185,9 @@
 
                 // V2: Tiered Orders
                 tier_enabled: document.getElementById('configTierEnabled').checked,
-                buy_ladder_reversed: !document.getElementById('configBuyLadderReversed').checked,
+                // Checkbox checked ⇔ reverse-buy ON. Direct mapping (no invert)
+                // so the saved flag matches the visual tick state.
+                buy_ladder_reversed: document.getElementById('configBuyLadderReversed').checked,
                 inner_size_xch: parseFloat(document.getElementById('configInnerSizeXch').value),
                 mid_size_xch: parseFloat(document.getElementById('configMidSizeXch').value),
                 outer_size_xch: parseFloat(document.getElementById('configOuterSizeXch').value),
