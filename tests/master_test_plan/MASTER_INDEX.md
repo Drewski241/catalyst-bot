@@ -99,6 +99,10 @@ executing. Cheap, broad, catches the "how did that even compile" class.
 | 2026-04-19 | 04-12 | `[x]` | 4741a4b | fills: 11 tests — /api/fills (bot=None→500, limit param), /api/fills/classified (pagination, type/side filters) |
 | 2026-04-19 | 04-13 | `[x]` | f95d5fd | logs: 10 tests — GET/clear/download; clear sets _logs_cleared_at; download returns zip |
 | 2026-04-19 | 04-14 | `[x]` | f95d5fd | dashboard: 8 tests — aggregated shape (settings/market_health/wallet/coins/links all verified) |
+| 2026-04-19 | 04-15 | `[x]` | bd61f1e | inventory+risk: 8 tests — /api/inventory (bot=None→500, net_position/CB keys), /api/risk/spreads (buy+sell) |
+| 2026-04-19 | 04-16-20 | `[x]` | bd61f1e | market-intel/spacescan/fees/sniper/CB: 16 tests — splash mock pattern, spacescan skip/clear, fees success |
+| 2026-04-19 | 04-21 | `[x]` | pending | SSE events: 14 tests — auth guard, headers, subscribe/unsubscribe lifecycle, bot=None vs bot initial state, message format, finite-queue termination pattern |
+| 2026-04-19 | 04-22 | `[x]` | pending | splash+settings: 39 tests — splash stats/receive/node/node-start/incoming webhook (403/400/413/429/200), settings defaults/validate, config export-env |
 
 ## Layer 2 — Unit test expansion (32 slices)
 
@@ -224,14 +228,14 @@ idempotency, response-shape validation.
 | 04-12 | fills endpoints — list, purge, classify | `[x]` | commit 4741a4b |
 | 04-13 | logs endpoints — list, filter, export | `[x]` | commit f95d5fd |
 | 04-14 | dashboard endpoint — aggregated payload | `[x]` | commit f95d5fd |
-| 04-15 | inventory endpoints — snapshots, current | `[ ]` | |
-| 04-16 | market-intel endpoints — regime, stats | `[ ]` | |
-| 04-17 | spacescan proxy endpoints | `[ ]` | |
-| 04-18 | fees endpoints — status, refresh | `[ ]` | |
-| 04-19 | sniper endpoints — stats, recent | `[ ]` | |
-| 04-20 | risk / circuit-breaker endpoints | `[ ]` | |
-| 04-21 | SSE events stream — /api/events | `[ ]` | |
-| 04-22 | splash endpoints + settings export/import | `[ ]` | |
+| 04-15 | inventory endpoints — snapshots, current | `[x]` | commit bd61f1e |
+| 04-16 | market-intel endpoints — regime, stats | `[x]` | commit bd61f1e |
+| 04-17 | spacescan proxy endpoints | `[x]` | commit bd61f1e |
+| 04-18 | fees endpoints — status, refresh | `[x]` | commit bd61f1e |
+| 04-19 | sniper endpoints — stats, recent | `[x]` | commit bd61f1e |
+| 04-20 | risk / circuit-breaker endpoints | `[x]` | commit bd61f1e |
+| 04-21 | SSE events stream — /api/events | `[x]` | commit pending |
+| 04-22 | splash endpoints + settings export/import | `[x]` | commit pending |
 
 ## Layer 5 — UI smoke (26 slices)
 
