@@ -36,6 +36,12 @@ except (ModuleNotFoundError, ImportError) as exc:
 class TestSageRPCDisconnected(unittest.TestCase):
     """When Sage is not running, rpc() must return error dicts, never raise."""
 
+    def setUp(self):
+        # Guard against test_wallet_sync_fail_closed.tearDown popping wallet_sage
+        # from sys.modules. patch("wallet_sage.X") resolves via sys.modules, so
+        # it must point to the same module object our tests hold a reference to.
+        sys.modules["wallet_sage"] = wallet_sage
+
     def _connection_refused(self):
         return ConnectionError("Connection refused — Sage not running")
 
@@ -138,6 +144,9 @@ class TestSageRPCDisconnected(unittest.TestCase):
 @unittest.skipIf(_SKIP is not None, f"wallet_sage unavailable: {_SKIP}")
 class TestNodeSyncLoss(unittest.TestCase):
     """When the node loses sync, sync-status functions must report it correctly."""
+
+    def setUp(self):
+        sys.modules["wallet_sage"] = wallet_sage
 
     def test_sync_status_synced_false_when_rpc_says_not_synced(self):
         """get_wallet_sync_status() returns synced=False for explicit False."""
