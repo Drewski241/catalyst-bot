@@ -77,6 +77,7 @@ executing. Cheap, broad, catches the "how did that even compile" class.
 | 2026-04-19 | 02-18 | `[x]` | 1142665 | shape_fix+sweep_coordinator: 40 tests — Stage/HaltReason enums, FlowState, SweepEntry/Event; fixed 02-24 sys.modules isolation |
 | 2026-04-19 | 03-09 | `[x]` | 2fb8831 | fill detection+PnL: 20 tests — real SQLite DB, record_fill, match_round_trip, FIFO unmatched, net position |
 | 2026-04-19 | 03-11 | `[x]` | 2fb8831 | circuit breaker: 22 tests — hard limits, hysteresis, dynamic limit+mock PriceEngine, thread safety; streak behaviour documented |
+| 2026-04-19 | 03-08 | `[x]` | cf9dc4d | requote flow: 25 tests — offer_manager+reaction_strategy wiring, all severity levels, cooldown, tier superset chain |
 
 ## Layer 2 — Unit test expansion (32 slices)
 
@@ -169,7 +170,7 @@ Confirms that modules wire together correctly. Slower than unit tests.
 | 03-05 | coin-prep retry (soft reset, preserve fills) | `[ ]` | |
 | 03-06 | coin-prep full reset (fresh-start path) | `[ ]` | |
 | 03-07 | ladder creation on bot start | `[ ]` | |
-| 03-08 | requote flow — price move triggers cancel+reissue | `[ ]` | |
+| 03-08 | requote flow — price move triggers cancel+reissue | `[x]` | commit cf9dc4d |
 | 03-09 | fill detection + PnL round-trip match | `[x]` | commit 2fb8831 |
 | 03-10 | sniper arb cycle — both-sided probe + clean-up | `[ ]` | |
 | 03-11 | circuit breaker trip + recover | `[x]` | commit 2fb8831 |
