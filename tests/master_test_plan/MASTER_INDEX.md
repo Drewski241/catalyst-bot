@@ -84,6 +84,7 @@ executing. Cheap, broad, catches the "how did that even compile" class.
 | 2026-04-19 | 03-12 | `[x]` | 6e54a5a | cancel-all flow: 11 tests — confirmed/pending/failed/mixed/side-filter/exception; pending leaves DB open |
 | 2026-04-19 | 03-14 | `[x]` | d1ac1ac | config reload: 16 tests — reload/update/thread-safety/quote-stripping; _TempEnv env-var isolation pattern |
 | 2026-04-19 | 03-16 | `[x]` | d29b46b | liquidity mode switch: 20 tests — mode→derive cycle, reload/update, invalid default, is_single_sided |
+| 2026-04-19 | 03-17 | `[x]` | 0b72934 | topup worker: 19 tests — needs_topup gates/thresholds, pool spend DB accumulation, cooldown state |
 
 ## Layer 2 — Unit test expansion (32 slices)
 
@@ -185,7 +186,7 @@ Confirms that modules wire together correctly. Slower than unit tests.
 | 03-14 | config reload (live vs stop-required split) | `[x]` | commit d1ac1ac |
 | 03-15 | splash offer receive path | `[ ]` | |
 | 03-16 | liquidity-mode switch cycle (two→buy→sell→two) | `[x]` | commit d29b46b |
-| 03-17 | topup worker — reserve draws into tiers correctly | `[ ]` | |
+| 03-17 | topup worker — reserve draws into tiers correctly | `[x]` | commit 0b72934 |
 | 03-18 | orphan coin cleanup | `[x]` | commit a43522e |
 
 ## Layer 4 — API contracts (22 slices)
