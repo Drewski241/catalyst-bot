@@ -58,7 +58,8 @@ executing. Cheap, broad, catches the "how did that even compile" class.
 | 2026-04-19 | 02-19 | `[x]` | e4a485b | fill_tracker+classifier: 37 tests — arb detection, mass disappearance |
 | 2026-04-19 | 02-09 | `[x]` | 1aba045 | market_intel: 43 tests — _bps_to_pct, parse_offer, analyse_orderbook, state queries, spread reco, DBX eligibility |
 | 2026-04-19 | 02-07 | `[x]` | 3538423 | spacescan: 47 tests — tier, budget, verify_fill tree, is_coin_spent; 1 bug fixed (InvalidOperation in get_xch_balance) |
-| 2026-04-19 | 02-08 | `[x]` | (pending) | market_data_collector: 40 tests — safe_float, count_from_payload, all 5 analysis functions |
+| 2026-04-19 | 02-08 | `[x]` | e11480a | market_data_collector: 40 tests — safe_float, count_from_payload, all 5 analysis functions |
+| 2026-04-19 | 02-10 | `[x]` | fdfa1bb | coinset_client: 35 tests — extract_ph, format_response, stats, guards, verify_spent, spendable |
 
 ## Layer 2 — Unit test expansion (32 slices)
 
@@ -81,12 +82,12 @@ Target ~3× current coverage. Integration-style side-effects go in Layer 3.
 | 02-07 | spacescan.py — activity + tier lookups | `[x]` | commit 3538423 |
 | 02-08 | market_data_collector.py — 30-day gather pipeline | `[x]` | (pending commit) |
 | 02-09 | market_intel.py — regime detection, stats | `[x]` | commit 1aba045 |
-| 02-10 | coinset_client.py — mempool + block record calls | `[x]` | (pending commit) |
+| 02-10 | coinset_client.py — mempool + block record calls | `[x]` | commit fdfa1bb |
 
 ### Offers (3)
 | Slice | Title | Status | Note |
 |-------|-------|--------|------|
-| 02-11 | offer_manager.py — create_ladder, requote, cancel | `[ ]` | |
+| 02-11 | offer_manager.py — create_ladder, requote, cancel | `[x]` | (pending commit) |
 | 02-12 | offer_lifecycle.py — state machine transitions | `[ ]` | |
 | 02-13 | ladder_planner.py + ladder_watchdog.py — shape + taper checks | `[ ]` | |
 
