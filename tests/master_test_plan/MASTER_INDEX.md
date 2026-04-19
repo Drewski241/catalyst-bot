@@ -232,12 +232,67 @@ field persists, modals open and close, keyboard navigation works.
 | 05-25 | v4 tab switching (dashboard/offers/pnl/intel/settings/logs) | `[ ]` | |
 | 05-26 | titlebar + status badge + notification badges | `[ ]` | |
 
+## Layer 6 — Live-fire scenarios (12 slices)
+
+**Require a human operator + secondary wallet.** Each slice uses the
+`plan_live_fire.md` template. Focus: cross-tab consistency, SSE
+propagation, realistic multi-module behaviour under a real fill / swap
+/ competitor move. See README section "Live-fire preconditions" for
+the one-off setup (second wallet + funding + timing ground rules).
+
+### Taker fills (4)
+| Slice | Title | Status | Note |
+|-------|-------|--------|------|
+| 06-01 | taker fills bot's top BUY offer — multi-tab verification | `[ ]` | seeded |
+| 06-02 | taker fills bot's top SELL offer — mirror direction | `[ ]` | |
+| 06-03 | taker eats multiple offers (inner+mid burst) | `[ ]` | |
+| 06-09 | taker exhausts one tier — topup worker triggers | `[ ]` | |
+
+### TibetSwap pool moves (3)
+| Slice | Title | Status | Note |
+|-------|-------|--------|------|
+| 06-04 | pool price moves UP — bot requotes + (if big) sniper fires | `[ ]` | |
+| 06-05 | pool price moves DOWN — mirror of 06-04 | `[ ]` | |
+| 06-11 | sudden pool move triggers AMM monitor defensive cancel | `[ ]` | |
+
+### Competitor dynamics (2)
+| Slice | Title | Status | Note |
+|-------|-------|--------|------|
+| 06-07 | competitor posts a tight offer on Dexie — bot's competitor-aware pricing responds | `[ ]` | |
+| 06-08 | competitor removes their offer — bot returns to normal spread | `[ ]` | |
+
+### Advanced strategies (3)
+| Slice | Title | Status | Note |
+|-------|-------|--------|------|
+| 06-10 | fill flips net position long↔short — inventory skew recalc visible | `[ ]` | |
+| 06-12 | rapid multiple fills — circuit breaker trips, cooldown, recovers | `[ ]` | |
+| 06-06 | partial fill (requires CHIP-0052 partial offer support) | `[ ]` | deferred if partials not live |
+
+## Layer 7 — Degraded-state / disaster recovery (8 slices)
+
+Chaos-style scenarios. Some are mockable (kill a subprocess, inject a
+5xx into stubbed APIs); others need the operator to physically pull
+the plug on Sage or disable the network. Each needs a restoration
+protocol documented in the slice plan — some of these leave the bot
+in a state that needs manual recovery.
+
+| Slice | Title | Status | Note |
+|-------|-------|--------|------|
+| 07-01 | Sage RPC disconnected mid-cycle — recovery + user-visible warning | `[ ]` | |
+| 07-02 | Chia node loses sync — bot pauses non-critical writes | `[ ]` | |
+| 07-03 | Dexie API returns 5xx intermittently — offer queue retries + rate-limit respected | `[ ]` | |
+| 07-04 | TibetSwap API returns 5xx — price engine falls back to Dexie | `[ ]` | |
+| 07-05 | coin_prep_worker crashed mid-run — orphan lock cleanup + retry | `[ ]` | |
+| 07-06 | database row inconsistency (fills referencing deleted offer) — reconcile gracefully | `[ ]` | |
+| 07-07 | disk space exhausted — shutdown cleanly rather than silent data loss | `[ ]` | |
+| 07-08 | system clock jumps (simulate) — nothing crashes on negative uptime | `[ ]` | |
+
 ---
 
 ## Progress summary
 
-- Total slices: **106**
-- Pending: **106**
+- Total slices: **126** (Layers 1-5: 106, Layer 6: 12, Layer 7: 8)
+- Pending: **126**
 - In progress: **0**
 - Done: **0**
 - Blocked: **0**

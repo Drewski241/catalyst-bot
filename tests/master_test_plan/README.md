@@ -132,6 +132,57 @@ layers/NN_layer/<slice-id>/
 
 When opening a new slice, copy all four templates if any are missing.
 
+## Live-fire preconditions (Layer 6 only)
+
+Layer 6 scenarios require human operation + a second wallet. Before
+running ANY Layer 6 slice, the operator must have prepared:
+
+### Required setup (do once, reuse for all Layer 6 slices)
+- [ ] A secondary Sage fingerprint OR a separate Chia reference wallet
+      that the operator can drive manually (NOT the bot's wallet)
+- [ ] Secondary wallet funded:
+  - ≥ 2 XCH (for change + multiple take-offers + fees)
+  - ≥ 100,000 MZ (or whichever CAT is being market-made) — so a
+    taker sell against the bot's buy offers is possible
+- [ ] Sage visible in system tray, RPC enabled, unlocked — you will
+      switch between wallets during the test
+- [ ] Screenshot tool ready (Win+Shift+S or equivalent) — every
+      live-fire slice asks for before/after screenshots per tab
+- [ ] Bot has completed at least one full coin-prep cycle in the
+      liquidity mode under test
+
+### Per-slice preconditions
+Each Layer 6 slice's `plan.md` specifies:
+- Exactly which wallet balances are needed
+- Exact bot state (stopped / running / which mode)
+- Market-state snapshot to capture (mid price, pool depth)
+- The baseline tab captures to take BEFORE triggering
+
+### Timing ground rules
+- Record `T0` = the moment the trigger action (take-offer click,
+  TibetSwap swap confirm, etc.) is fired. Every observation's
+  "Expected by" column is relative to `T0`.
+- Typical observation windows: 10-120 s for on-chain events, 30-60 s
+  for SSE propagation, one full bot cycle (~45 s) for requote / topup
+  reactions.
+- Be patient — DO NOT conclude "failed" until ALL the expected windows
+  have elapsed. Chia block time varies ~42-60 s; a fill-detect delay
+  of 90 s is often a pending block, not a bug.
+
+### Cross-tab verification style
+The observation matrix in each Layer 6 plan is a TABLE of
+(expected outcome × tab × element × timing). The check is NOT just
+"did the backend update" — it's "did every tab agree within its own
+expected window". Mismatches between tabs (e.g. Dashboard shows 47
+fills, PnL shows 46) are almost always SSE-propagation bugs and are
+exactly the class of issue this layer exists to catch.
+
+### Restoration after a Layer 6 run
+Most slices don't leave dirty state, but a few do (e.g. 06-10
+deliberately flips net position near the limit). Each plan's
+**Cleanup** section documents what, if anything, the operator has to
+restore before the next session.
+
 ## Safety rails
 
 **Never** modify these without explicit user approval:
@@ -179,10 +230,24 @@ full pytest green, one commit per logical step, no scope creep.
 - Layer 3: 18 slices × ~45 min = 13.5 hours
 - Layer 4: 22 slices × ~30 min = 11 hours
 - Layer 5: 26 slices × ~45 min = 19.5 hours
+- Layer 6: 12 slices × ~45 min active (plus waiting time) = 9 hours
+- Layer 7: 8 slices × ~45 min = 6 hours
 
-**Total: ~106 slices, ~72 person-hours.** At 2 slices per session, that's
-~53 sessions. At 2-3 sessions/day, 3-4 weeks of elapsed time.
+**Total: 126 slices, ~87 person-hours.** Layers 1-5 (~72 hours) are
+fully-automatable and a Claude session can drive them end-to-end.
+Layers 6 (live-fire) + 7 (some scenarios) need the operator in the
+loop, so elapsed time is longer than active time — plan for ~2× the
+active-hours estimate for those two layers.
+
+At 2 automatable slices per session (Layers 1-5), plus one Layer 6
+run per week (operator availability), the full audit lands in ~6-8
+weeks elapsed time. Much of the value is earned much earlier:
+
+- After Layer 1 + 2 (~28 hours): ~80% of real bugs found
+- After Layer 3 + 4 (~25 more hours): all public contracts verified
+- After Layer 5 (~20 more hours): UI regressions covered
+- Layers 6 + 7 are the "confidence" layers — they verify behaviour
+  the lower layers can only mock.
 
 Critically: the pyramid is **strictly monotonic-improving**. You can
-stop at any slice and be better off than when you started. Layer 1 and
-2 alone will surface 80% of real bugs.
+stop at any slice and be better off than when you started.
