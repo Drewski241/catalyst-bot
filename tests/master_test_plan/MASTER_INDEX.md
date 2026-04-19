@@ -64,7 +64,8 @@ executing. Cheap, broad, catches the "how did that even compile" class.
 | 2026-04-19 | 02-12 | `[x]` | 344654d | offer_lifecycle: 55 tests — full state machine, all transitions, coarse_status, is_terminal |
 | 2026-04-19 | 02-13 | `[x]` | fcb295c | ladder_planner+watchdog: 37 tests — plan_ladder, LadderPlan, audit shape/inversions, coin invariants |
 | 2026-04-19 | 02-14 | `[x]` | 2f858ba | coin_manager: 60 tests — record helpers, classify, tier distribution, FeeCoinPool, fast-reconcile |
-| 2026-04-19 | 02-17 | `[x]` | (pending) | coin_fsm+reservations: 49 tests — FSM transitions, terminal, vocab, ReservationRegistry lifecycle |
+| 2026-04-19 | 02-17 | `[x]` | 1341646 | coin_fsm+reservations: 49 tests — FSM transitions, terminal, vocab, ReservationRegistry lifecycle |
+| 2026-04-19 | 02-20 | `[x]` | (pending) | wallet: 17 tests — dispatch, get_wallet_type, API surface, all callables present |
 
 ## Layer 2 — Unit test expansion (32 slices)
 
@@ -113,7 +114,7 @@ Target ~3× current coverage. Integration-style side-effects go in Layer 3.
 ### Wallet adapters (3)
 | Slice | Title | Status | Note |
 |-------|-------|--------|------|
-| 02-20 | wallet.py — dispatch layer | `[ ]` | |
+| 02-20 | wallet.py — dispatch layer | `[x]` | (pending commit) |
 | 02-21 | wallet_sage.py — Sage RPC adapter | `[ ]` | |
 | 02-22 | wallet_chia.py + chia_node.py + sage_node.py | `[ ]` | |
 
