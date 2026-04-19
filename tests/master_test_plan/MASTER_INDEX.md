@@ -73,6 +73,8 @@ executing. Cheap, broad, catches the "how did that even compile" class.
 | 2026-04-19 | 02-26 | `[x]` | (pending) | sniper: 20 tests — bps_to_pct, prune_active_snipes, get_stats, calculate_snipe_size |
 | 2026-04-19 | 02-27 | `[x]` | (pending) | boost_manager: 11 tests — bps_to_pct, _find_stale_offers w/ price cache mock |
 | 2026-04-19 | 02-28 | `[x]` | (pending) | splash_manager+splash_receive: 31 tests — fingerprint, asset_key, normalize, classify |
+| 2026-04-19 | 02-15 | `[x]` | 1142665 | coin_prep_utils+worker: 56 tests — retry/grace helpers, PrepPhase, CoinPrepStatus, static methods, _compute_coin_id |
+| 2026-04-19 | 02-18 | `[x]` | 1142665 | shape_fix+sweep_coordinator: 40 tests — Stage/HaltReason enums, FlowState, SweepEntry/Event; fixed 02-24 sys.modules isolation |
 
 ## Layer 2 — Unit test expansion (32 slices)
 
@@ -108,10 +110,10 @@ Target ~3× current coverage. Integration-style side-effects go in Layer 3.
 | Slice | Title | Status | Note |
 |-------|-------|--------|------|
 | 02-14 | coin_manager.py — inventory, counts, tier sizing | `[x]` | (pending commit) |
-| 02-15 | coin_prep_worker.py + coin_prep_utils.py — split logic | `[ ]` | |
+| 02-15 | coin_prep_worker.py + coin_prep_utils.py — split logic | `[x]` | commit 1142665 |
 | 02-16 | coin_classifier.py — classify_coin, is_misfit_coin | `[x]` | commit b92d92a |
 | 02-17 | coin_fsm.py + coin_reservations.py + reservation_manager.py | `[x]` | (pending commit) |
-| 02-18 | shape_fix_orchestrator.py + sweep_coordinator.py | `[ ]` | |
+| 02-18 | shape_fix_orchestrator.py + sweep_coordinator.py | `[x]` | commit 1142665 |
 
 ### Fills (1)
 | Slice | Title | Status | Note |
