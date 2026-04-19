@@ -103,7 +103,7 @@ executing. Cheap, broad, catches the "how did that even compile" class.
 | 2026-04-19 | 04-16-20 | `[x]` | bd61f1e | market-intel/spacescan/fees/sniper/CB: 16 tests — splash mock pattern, spacescan skip/clear, fees success |
 | 2026-04-19 | 04-21 | `[x]` | 630a1eb | SSE events: 14 tests — auth guard, headers, subscribe/unsubscribe lifecycle, bot=None vs bot initial state, message format, finite-queue termination pattern |
 | 2026-04-19 | 04-22 | `[x]` | 630a1eb | splash+settings: 39 tests — splash stats/receive/node/node-start/incoming webhook (403/400/413/429/200), settings defaults/validate, config export-env |
-| 2026-04-19 | 07-03/04/06/08 | `[x]` | pending | degraded-state: 27 tests — Dexie 5xx retry/429/conn-error; TibetSwap 5xx stale cache fallback; fill_tracker None DB graceful; clock-jump negative age |
+| 2026-04-19 | 07-03/04/06/08 | `[x]` | 4d8ee80 | degraded-state: 27 tests — Dexie 5xx retry/429/conn-error; TibetSwap 5xx stale cache fallback; fill_tracker None DB graceful; clock-jump negative age |
 
 ## Layer 2 — Unit test expansion (32 slices)
 
@@ -349,12 +349,12 @@ in a state that needs manual recovery.
 |-------|-------|--------|------|
 | 07-01 | Sage RPC disconnected mid-cycle — recovery + user-visible warning | `[ ]` | |
 | 07-02 | Chia node loses sync — bot pauses non-critical writes | `[ ]` | |
-| 07-03 | Dexie API returns 5xx intermittently — offer queue retries + rate-limit respected | `[x]` | commit pending |
-| 07-04 | TibetSwap API returns 5xx — price engine falls back to Dexie | `[x]` | commit pending |
+| 07-03 | Dexie API returns 5xx intermittently — offer queue retries + rate-limit respected | `[x]` | commit 4d8ee80 |
+| 07-04 | TibetSwap API returns 5xx — price engine falls back to Dexie | `[x]` | commit 4d8ee80 |
 | 07-05 | coin_prep_worker crashed mid-run — orphan lock cleanup + retry | `[ ]` | |
-| 07-06 | database row inconsistency (fills referencing deleted offer) — reconcile gracefully | `[x]` | commit pending |
+| 07-06 | database row inconsistency (fills referencing deleted offer) — reconcile gracefully | `[x]` | commit 4d8ee80 |
 | 07-07 | disk space exhausted — shutdown cleanly rather than silent data loss | `[ ]` | |
-| 07-08 | system clock jumps (simulate) — nothing crashes on negative uptime | `[x]` | commit pending |
+| 07-08 | system clock jumps (simulate) — nothing crashes on negative uptime | `[x]` | commit 4d8ee80 |
 
 ---
 
