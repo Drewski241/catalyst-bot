@@ -85,6 +85,7 @@ executing. Cheap, broad, catches the "how did that even compile" class.
 | 2026-04-19 | 03-14 | `[x]` | d1ac1ac | config reload: 16 tests — reload/update/thread-safety/quote-stripping; _TempEnv env-var isolation pattern |
 | 2026-04-19 | 03-16 | `[x]` | d29b46b | liquidity mode switch: 20 tests — mode→derive cycle, reload/update, invalid default, is_single_sided |
 | 2026-04-19 | 03-17 | `[x]` | 0b72934 | topup worker: 19 tests — needs_topup gates/thresholds, pool spend DB accumulation, cooldown state |
+| 2026-04-19 | 04-01 | `[x]` | dbf5368 | status endpoints: 29 tests — /api/status /api/bot/state /api/bot/price contracts; 401-vs-405 discovery |
 
 ## Layer 2 — Unit test expansion (32 slices)
 
@@ -196,7 +197,7 @@ idempotency, response-shape validation.
 
 | Slice | Title | Status | Note |
 |-------|-------|--------|------|
-| 04-01 | status endpoints — /api/status, /api/bot/state, /api/bot/price | `[ ]` | |
+| 04-01 | status endpoints — /api/status, /api/bot/state, /api/bot/price | `[x]` | commit dbf5368 |
 | 04-02 | config — GET/POST, reload, live | `[ ]` | |
 | 04-03 | bot lifecycle — start, stop, shutdown | `[ ]` | |
 | 04-04 | offers endpoints — list, cancel (single + batch), post-to-dexie | `[ ]` | |
