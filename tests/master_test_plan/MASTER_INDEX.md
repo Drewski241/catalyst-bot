@@ -57,7 +57,8 @@ executing. Cheap, broad, catches the "how did that even compile" class.
 | 2026-04-19 | 02-16 | `[x]` | b92d92a | coin_classifier: 29 tests — dust/reserve/exact/oversize/misfit |
 | 2026-04-19 | 02-19 | `[x]` | e4a485b | fill_tracker+classifier: 37 tests — arb detection, mass disappearance |
 | 2026-04-19 | 02-09 | `[x]` | 1aba045 | market_intel: 43 tests — _bps_to_pct, parse_offer, analyse_orderbook, state queries, spread reco, DBX eligibility |
-| 2026-04-19 | 02-07 | `[x]` | (pending) | spacescan: 47 tests — tier, budget, verify_fill tree, is_coin_spent; 1 bug fixed (InvalidOperation in get_xch_balance) |
+| 2026-04-19 | 02-07 | `[x]` | 3538423 | spacescan: 47 tests — tier, budget, verify_fill tree, is_coin_spent; 1 bug fixed (InvalidOperation in get_xch_balance) |
+| 2026-04-19 | 02-08 | `[x]` | (pending) | market_data_collector: 40 tests — safe_float, count_from_payload, all 5 analysis functions |
 
 ## Layer 2 — Unit test expansion (32 slices)
 
@@ -77,8 +78,8 @@ Target ~3× current coverage. Integration-style side-effects go in Layer 3.
 |-------|-------|--------|------|
 | 02-05 | price_engine.py — weighted mid, fallback chain | `[x]` | commit 26f9c99 |
 | 02-06 | dexie_manager.py — post, delist, queue, rate-limit | `[x]` | commit e21dd96 |
-| 02-07 | spacescan.py — activity + tier lookups | `[x]` | (pending commit) |
-| 02-08 | market_data_collector.py — 30-day gather pipeline | `[ ]` | |
+| 02-07 | spacescan.py — activity + tier lookups | `[x]` | commit 3538423 |
+| 02-08 | market_data_collector.py — 30-day gather pipeline | `[x]` | (pending commit) |
 | 02-09 | market_intel.py — regime detection, stats | `[x]` | commit 1aba045 |
 | 02-10 | coinset_client.py — mempool + block record calls | `[ ]` | |
 
