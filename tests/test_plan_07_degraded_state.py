@@ -8,6 +8,8 @@ Slices covered:
          both sources failing returns None (bot does not crash)
   07-06: DB row inconsistency — fill_tracker._get_offer_context() handles
          get_offer() returning None; exception from get_offer caught
+  07-07: Disk space exhausted — record_fill/record_price/log_event return
+         failure sentinels (not raise); each calls rollback to release write lock
   07-08: System clock jumps backward — get_last_price() with negative age
          does not erroneously expire valid price; uptime int() handles negative;
          DexieManager rate-limit float works correctly under clock weirdness
@@ -407,6 +409,122 @@ class TestClockJump(unittest.TestCase):
         with _tibet_lock:
             _tibet_cache["pairs"] = []
             _tibet_cache["fetched_at"] = 0
+
+
+# ---------------------------------------------------------------------------
+# 07-07: Disk space exhausted — write operations degrade gracefully
+# ---------------------------------------------------------------------------
+
+class TestDiskFull(unittest.TestCase):
+    """Simulates sqlite3.OperationalError: database or disk is full.
+
+    Every critical write function must:
+    1. Not raise (bot continues running)
+    2. Return a failure sentinel (-1 or False)
+    3. Call rollback to release the write lock (prevents deadlock cascade)
+
+    This is the real failure mode — a full disk causes the conn.commit() inside
+    each function to raise OperationalError. Without a rollback, the RESERVED
+    lock is held indefinitely, blocking ALL other writers.
+    """
+
+    _DISK_FULL_ERR = "database or disk is full"
+
+    def _disk_full(self):
+        import sqlite3
+        return sqlite3.OperationalError(self._DISK_FULL_ERR)
+
+    def test_record_fill_returns_minus_one_on_disk_full(self):
+        """record_fill() returns -1 (not raises) when commit fails."""
+        import database as db
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.fetchone.return_value = None
+        mock_conn.commit.side_effect = self._disk_full()
+
+        with patch("database.get_connection", return_value=mock_conn), \
+             patch("database.log_event"):
+            result = db.record_fill(
+                "trade1", "buy", Decimal("0.001"), Decimal("1.0"),
+                Decimal("1000"), "a" * 64
+            )
+        self.assertEqual(result, -1)
+
+    def test_record_fill_calls_rollback_on_disk_full(self):
+        """record_fill() must call rollback after a failed commit."""
+        import database as db
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.fetchone.return_value = None
+        mock_conn.commit.side_effect = self._disk_full()
+
+        with patch("database.get_connection", return_value=mock_conn), \
+             patch("database.log_event"):
+            db.record_fill(
+                "trade2", "sell", Decimal("0.001"), Decimal("1.0"),
+                Decimal("1000"), "a" * 64
+            )
+        mock_conn.rollback.assert_called()
+
+    def test_record_price_returns_false_on_disk_full(self):
+        """record_price() returns False (not raises) when commit fails."""
+        import database as db
+        mock_conn = MagicMock()
+        mock_conn.commit.side_effect = self._disk_full()
+
+        with patch("database.get_connection", return_value=mock_conn):
+            result = db.record_price(
+                "a" * 64, Decimal("0.001"),
+                dexie_price=Decimal("0.001"), tibet_price=None
+            )
+        self.assertFalse(result)
+
+    def test_record_price_calls_rollback_on_disk_full(self):
+        """record_price() must call rollback to release write lock."""
+        import database as db
+        mock_conn = MagicMock()
+        mock_conn.commit.side_effect = self._disk_full()
+
+        with patch("database.get_connection", return_value=mock_conn):
+            db.record_price("a" * 64, Decimal("0.001"))
+        mock_conn.rollback.assert_called()
+
+    def test_log_event_returns_false_on_disk_full(self):
+        """log_event() returns False (not raises) when commit fails."""
+        import database as db
+        mock_conn = MagicMock()
+        mock_conn.commit.side_effect = self._disk_full()
+
+        with patch("database.get_connection", return_value=mock_conn), \
+             patch("database._sse_callback", None):
+            result = db.log_event("error", "disk_full_test", "test message")
+        self.assertFalse(result)
+
+    def test_log_event_calls_rollback_on_disk_full(self):
+        """log_event() must rollback to prevent permanent write lock."""
+        import database as db
+        mock_conn = MagicMock()
+        mock_conn.commit.side_effect = self._disk_full()
+
+        with patch("database.get_connection", return_value=mock_conn), \
+             patch("database._sse_callback", None):
+            db.log_event("warning", "disk_full_test", "test message")
+        mock_conn.rollback.assert_called()
+
+    def test_consecutive_disk_full_does_not_cascade_exception(self):
+        """Multiple consecutive write failures must each be swallowed,
+        not cascade into an unhandled exception that crashes the thread."""
+        import database as db
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.fetchone.return_value = None
+        mock_conn.commit.side_effect = self._disk_full()
+
+        with patch("database.get_connection", return_value=mock_conn), \
+             patch("database.log_event"):
+            try:
+                for _ in range(5):
+                    db.record_price("a" * 64, Decimal("0.001"))
+                    db.log_event("error", "disk_full", "disk full")
+            except Exception as exc:
+                self.fail(f"Consecutive disk-full raised: {exc}")
 
 
 if __name__ == "__main__":
