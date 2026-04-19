@@ -92,6 +92,8 @@ executing. Cheap, broad, catches the "how did that even compile" class.
 | 2026-04-19 | 04-05 | `[x]` | 5272e75 | pnl+purge: 21 tests — /api/pnl, reset-preview, reset confirm gate (case-insensitive), fills/purge risk_manager callback |
 | 2026-04-19 | 04-06 | `[x]` | 6552bad | coin-prep: 19 tests — status/verify/trigger/reset; trigger mocks Thread, verifies bot.stop() on running bot |
 | 2026-04-19 | 04-07 | `[x]` | a95f82a | session: 15 tests — fresh-start, resume-chosen, check-resume (4 branches: bot_running/fresh_start/no_offers/can_resume) |
+| 2026-04-19 | 04-08 | `[x]` | 66e62cb | diagnostics: 10 tests — runtime (bot=None safe shape), api-stats (spacescan/coinset/dexie availability) |
+| 2026-04-19 | 04-09 | `[x]` | 5b76e44 | sage/wallet: 25 tests — sage-running probe, begin-startup, fingerprints, start-with-fingerprint validation, detect, switch |
 
 ## Layer 2 — Unit test expansion (32 slices)
 
@@ -210,8 +212,8 @@ idempotency, response-shape validation.
 | 04-05 | pnl endpoints — pnl, pnl/reset, pnl/reset-preview, fills/purge | `[x]` | commit 5272e75 |
 | 04-06 | coin-prep endpoints — trigger, status, reset, verify | `[x]` | commit 6552bad |
 | 04-07 | session endpoints — fresh-start, resume-chosen, check-resume | `[x]` | commit a95f82a |
-| 04-08 | diagnostics endpoints — runtime, api-stats | `[ ]` | |
-| 04-09 | sage/wallet endpoints — begin-startup, detect, begin | `[ ]` | |
+| 04-08 | diagnostics endpoints — runtime, api-stats | `[x]` | commit 66e62cb |
+| 04-09 | sage/wallet endpoints — begin-startup, detect, begin | `[x]` | commit 5b76e44 |
 | 04-10 | smart-defaults endpoint — per-mode branching | `[ ]` | |
 | 04-11 | trading-pair endpoints — list, select, refresh | `[ ]` | |
 | 04-12 | fills endpoints — list, purge, classify | `[ ]` | |
