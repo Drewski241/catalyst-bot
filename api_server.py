@@ -9136,12 +9136,23 @@ def _calculate_smart_defaults(xch_reserve=0.0, cat_reserve=0.0, risk_profile="ba
         ),
 
         # Ladder Strategy
-        # Reversed (True) is the recommended default: buy and sell sides both taper
-        # large→small away from mid. Toggle ON = BUY_LADDER_REVERSED=True = large inner,
-        # small extreme. Toggle OFF = False = small inner, large extreme.
-        # F78: was hardcoded to False, contradicting the comment. Now returns
-        # True so the recommended layout actually gets applied. User can still
-        # override via the GUI toggle after Smart Settings runs.
+        # Reversed (True) is the recommended default. Under reverse-buy the
+        # buy ladder is asymmetric to the sell ladder:
+        #   * Sell side (unchanged):  inner = LARGE, extreme = small
+        #     (big sells nearest mid where buyers cluster)
+        #   * Buy side (reversed):    inner = small, extreme = LARGE
+        #     (small commits near mid, big commits only trigger on a deep drop)
+        # So toggle ON = reverse-on = "buy: small near price → large far",
+        # matching the tooltip on the GUI checkbox.
+        #
+        # The concrete Smart Defaults code lives around line 8645:
+        #   _smart_buy_inner   = base × _size_mults[3]  # smallest mult → smallest size
+        #   _smart_buy_extreme = base × _size_mults[0]  # biggest mult  → biggest size
+        #
+        # F78 (fix history): this field was hardcoded to False here, which
+        # overrode the recommendation every time Smart Settings ran. Now
+        # returns True so the recommended layout actually gets applied.
+        # User can still override via the GUI toggle after Smart Settings.
         "buy_ladder_reversed": True,
 
         # Offer Sizing (capital-derived — requires reserve params from frontend step 1)
