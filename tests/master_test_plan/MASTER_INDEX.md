@@ -63,7 +63,8 @@ executing. Cheap, broad, catches the "how did that even compile" class.
 | 2026-04-19 | 02-11 | `[x]` | e83e5b9 | offer_manager: 63 tests — conversions, slot suspension, requote, classify_tier, detect_expiring |
 | 2026-04-19 | 02-12 | `[x]` | 344654d | offer_lifecycle: 55 tests — full state machine, all transitions, coarse_status, is_terminal |
 | 2026-04-19 | 02-13 | `[x]` | fcb295c | ladder_planner+watchdog: 37 tests — plan_ladder, LadderPlan, audit shape/inversions, coin invariants |
-| 2026-04-19 | 02-14 | `[x]` | (pending) | coin_manager: 60 tests — record helpers, classify, tier distribution, FeeCoinPool, fast-reconcile |
+| 2026-04-19 | 02-14 | `[x]` | 2f858ba | coin_manager: 60 tests — record helpers, classify, tier distribution, FeeCoinPool, fast-reconcile |
+| 2026-04-19 | 02-17 | `[x]` | (pending) | coin_fsm+reservations: 49 tests — FSM transitions, terminal, vocab, ReservationRegistry lifecycle |
 
 ## Layer 2 — Unit test expansion (32 slices)
 
@@ -101,7 +102,7 @@ Target ~3× current coverage. Integration-style side-effects go in Layer 3.
 | 02-14 | coin_manager.py — inventory, counts, tier sizing | `[x]` | (pending commit) |
 | 02-15 | coin_prep_worker.py + coin_prep_utils.py — split logic | `[ ]` | |
 | 02-16 | coin_classifier.py — classify_coin, is_misfit_coin | `[x]` | commit b92d92a |
-| 02-17 | coin_fsm.py + coin_reservations.py + reservation_manager.py | `[ ]` | |
+| 02-17 | coin_fsm.py + coin_reservations.py + reservation_manager.py | `[x]` | (pending commit) |
 | 02-18 | shape_fix_orchestrator.py + sweep_coordinator.py | `[ ]` | |
 
 ### Fills (1)
