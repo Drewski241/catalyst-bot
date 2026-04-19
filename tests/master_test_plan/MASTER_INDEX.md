@@ -81,7 +81,7 @@ Target ~3× current coverage. Integration-style side-effects go in Layer 3.
 | 02-07 | spacescan.py — activity + tier lookups | `[x]` | commit 3538423 |
 | 02-08 | market_data_collector.py — 30-day gather pipeline | `[x]` | (pending commit) |
 | 02-09 | market_intel.py — regime detection, stats | `[x]` | commit 1aba045 |
-| 02-10 | coinset_client.py — mempool + block record calls | `[ ]` | |
+| 02-10 | coinset_client.py — mempool + block record calls | `[x]` | (pending commit) |
 
 ### Offers (3)
 | Slice | Title | Status | Note |
