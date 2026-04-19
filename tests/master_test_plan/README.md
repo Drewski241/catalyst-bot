@@ -24,6 +24,26 @@ more than one slice.
 (`[ ] pending` / `[~] in-progress` / `[x] done`), owner session, commit
 hash. Always update this file when a slice changes state.
 
+## Tools in `_tools/`
+
+- **`progress.py`** — print a live summary of slice counts + which
+  slice is next. `python tests/master_test_plan/_tools/progress.py`
+  (add `--json` for machine output). Safe to run anytime; pure read.
+- **`multi_tab_observer.js`** — DevTools snippet for Layer 6 live-fire
+  slices. Paste into Chrome console, then `mtoSnapshot('before')` →
+  trigger action → `mtoSnapshot('after')` → `mtoDiff()`. Captures
+  every tab's state + SSE events in one pass.
+- **`requirements-testplan.txt`** — pinned dev tools needed by
+  Layer 1 (ruff, bandit, vulture, radon, mypy, pydeps). Install
+  with `pip install -r tests/master_test_plan/_tools/requirements-testplan.txt`.
+
+## Shared fixtures
+
+See **[SHARED_FIXTURES.md](SHARED_FIXTURES.md)** — when you reach for
+the same mock twice across Layer 2/3 slices, promote it to
+`tests/conftest.py` as a shared fixture before continuing. The doc
+lists candidate fixture names + which slices will use each.
+
 ## Per-slice workflow
 
 ```
