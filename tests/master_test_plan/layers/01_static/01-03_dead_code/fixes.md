@@ -2,7 +2,7 @@
 
 ---
 
-## Fix (this commit): dead code sweep — params, F841, vulture whitelist
+## Fix 2e536f0: dead code sweep — params, F841, vulture whitelist
 
 **Addresses:** F1, F2, F3 · **Files touched:** `coin_manager.py`, `bot_loop.py`,
 `api_server.py`, `boost_manager.py`, `coin_prep_worker.py`, `database.py`,

@@ -17,7 +17,7 @@ exposed that the `cat_token_size` computation blocks at both call sites were dea
 they existed solely to compute the now-removed argument.
 
 ### Resolution
-- Fix committed: (this slice commit)
+- Fix committed: 2e536f0
 - Regression: `tests/test_plan_01_03_dead_code.py::TestSmartTopupWalletDeadParam`
 - No regressions in `pytest -q`
 
@@ -33,7 +33,7 @@ A comment mentioned zombies but used `effective_buy_count` (computed from wallet
 The parameters were dead since the zombie-count logic was replaced by `effective_*_count`.
 
 ### Resolution
-- Fix committed: (this slice commit)
+- Fix committed: 2e536f0
 - Regression: `tests/test_plan_01_03_dead_code.py::TestCreateOffersIfNeededDeadParams`
 
 ---
@@ -64,7 +64,7 @@ All 18 non-auto-fixable F841 items from the 01-01 spawn queue resolved:
 | `wallet_sage.py:3118,3169` | `last_count` | pre/post polling counts; loop checked deltas inline |
 
 ### Resolution
-- Fix committed: (this slice commit)
+- Fix committed: 2e536f0
 - Regression: `tests/test_plan_01_03_dead_code.py::TestF841DeadVariablesRemoved`
 
 ---

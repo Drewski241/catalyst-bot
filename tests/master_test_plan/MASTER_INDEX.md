@@ -32,7 +32,7 @@ executing. Cheap, broad, catches the "how did that even compile" class.
 |-------|-------|--------|------|
 | 01-01 | ruff lint sweep — top findings + auto-fix | `[x]` | commit 5b16ab1 |
 | 01-02 | bandit security scan — secrets, injection, paths | `[x]` | commit 2968308 |
-| 01-03 | dead code — vulture + manual unused-function check | `[x]` | (pending commit) |
+| 01-03 | dead code — vulture + manual unused-function check | `[x]` | 2e536f0 |
 | 01-04 | TODO/FIXME/XXX sweep — triage + file as issues or fix | `[ ]` | |
 | 01-05 | type annotation audit — mypy on public APIs of core modules | `[ ]` | |
 | 01-06 | complexity audit — radon CC, flag functions >10 | `[ ]` | |
