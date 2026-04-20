@@ -8367,6 +8367,35 @@ def _calculate_smart_defaults(xch_reserve=0.0, cat_reserve=0.0, risk_profile="ba
                       f"{_shock_extreme} for price shock resilience")
             _spare_extreme = _shock_extreme
 
+        # ── POST-SHOCK XCH BUDGET RECONCILIATION ───────────────────────────
+        # The price-shock spare floor above may have raised spare counts AFTER
+        # the capital-plan solver ran, so the solver's base_size was computed
+        # with fewer spares than are now recommended. Re-check that
+        # (active + new_spares) × base_size × headroom ≤ _trading_xch and
+        # scale base_size down proportionally if not.
+        _post_shock_spare_ovhd = (
+            _spare_inner   * _size_mults[0] +
+            _spare_mid     * _size_mults[1] +
+            _spare_outer   * _size_mults[2] +
+            _spare_extreme * _size_mults[3]
+        )
+        _post_shock_total_xch = (
+            (_n_final * _TIER_CAPITAL_FACTOR + _post_shock_spare_ovhd)
+            * _CP_HEADROOM_MULT * _base_size
+        )
+        if _post_shock_total_xch > _trading_xch > 0:
+            _rescale = _trading_xch / _post_shock_total_xch
+            _base_size     = max(_MIN_OFFER_XCH, round(_base_size * _rescale, 4))
+            _smart_trade_size = _base_size
+            _smart_inner   = max(_MIN_OFFER_XCH, round(_base_size * _size_mults[0], 4))
+            _smart_mid     = max(_MIN_OFFER_XCH, round(_base_size * _size_mults[1], 4))
+            _smart_outer   = (max(_MIN_OFFER_XCH, round(_base_size * _size_mults[2], 4))
+                              if _max_tiers >= 3 else 0.0)
+            _smart_extreme = (max(_MIN_OFFER_XCH, round(_base_size * _size_mults[3], 4))
+                              if _max_tiers == 4 else 0.0)
+            print(f"[SMART_DEFAULTS] Post-shock XCH rescale ×{_rescale:.4f}: "
+                  f"base {_base_size:.4f} XCH, inner {_smart_inner:.4f} XCH")
+
         # ── COIN-PREP CAT FEASIBILITY CLAMP ────────────────────────────────
         # The capital-plan solver may have been run when the token balance was
         # higher (or the price was higher), so the recommended tier sizes can
