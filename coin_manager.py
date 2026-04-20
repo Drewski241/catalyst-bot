@@ -6371,6 +6371,20 @@ class CoinManager:
                     fee_sz = Decimal(str(get_fee_coin_size_xch()))
                     buy_tier_sizes_str  += f",{fee_name}={fee_sz}"
                     sell_tier_sizes_str += f",{fee_name}={fee_sz}"
+                # Sniper: when the pool is enabled the counts were added to
+                # xch_tier_counts/cat_tier_counts above (line ~6330). The prep
+                # worker skips any tier whose SIZE is missing from the CLI
+                # tier-size strings, so we MUST emit the sniper size on both
+                # sides here — otherwise the worker sees `sniper=N` counts but
+                # no matching size and never preps the pool.
+                if self._sniper_pool_enabled():
+                    try:
+                        sniper_sz = Decimal(str(getattr(cfg, "SNIPER_SIZE_XCH", Decimal("0"))))
+                    except Exception:
+                        sniper_sz = Decimal("0")
+                    if sniper_sz > 0:
+                        buy_tier_sizes_str  += f",sniper={sniper_sz}"
+                        sell_tier_sizes_str += f",sniper={sniper_sz}"
                 xch_counts_str = ",".join(f"{k}={v}" for k, v in xch_tier_counts.items())
                 cat_counts_str = ",".join(f"{k}={v}" for k, v in cat_tier_counts.items())
 

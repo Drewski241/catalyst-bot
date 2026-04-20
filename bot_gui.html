@@ -18535,6 +18535,27 @@
             // Smart Settings preset description follows the mode so
             // the user reads accurate copy before clicking Auto-Fill.
             try { applySmartDefaultsLabels(resolved); } catch (_) {}
+            // Sync the ENABLE_BUY / ENABLE_SELL checkboxes in Safety & Limits
+            // so they reflect the mode. Without this sync a stale ENABLE_SELL=False
+            // persisted from a previous single-sided session survives across a
+            // switch back to two_sided (the boxes are read from env on load and
+            // never reset when the mode card changes), so the user sees two_sided
+            // selected but only one side trading. Mode is the source of truth —
+            // anything LIQUIDITY_MODE implies overrides the per-side flags.
+            try {
+                const _buyEl = document.getElementById('configEnableBuy');
+                const _sellEl = document.getElementById('configEnableSell');
+                if (resolved === 'buy_only') {
+                    if (_buyEl)  _buyEl.checked  = true;
+                    if (_sellEl) _sellEl.checked = false;
+                } else if (resolved === 'sell_only') {
+                    if (_buyEl)  _buyEl.checked  = false;
+                    if (_sellEl) _sellEl.checked = true;
+                } else {
+                    if (_buyEl)  _buyEl.checked  = true;
+                    if (_sellEl) _sellEl.checked = true;
+                }
+            } catch (_) { /* non-fatal */ }
             // Smart Settings expects to know the mode on its next run.
             window._liquidityMode = resolved;
             if (!silent) {
