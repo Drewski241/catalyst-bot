@@ -12816,8 +12816,10 @@ def api_spacescan_setup():
                 return jsonify({"success": False, "error": "Invalid API key — Spacescan rejected it (403)"}), 400
             if test_resp.status_code == 429:
                 return jsonify({"success": False, "error": "Rate limited — try again in 60 seconds"}), 429
-            if test_resp.status_code != 200:
-                return jsonify({"success": False, "error": f"Spacescan returned HTTP {test_resp.status_code}"}), 400
+            if test_resp.status_code >= 500:
+                return jsonify({"success": False, "error": f"Spacescan server error ({test_resp.status_code}) — try again shortly"}), 502
+            # 200 or 400 both mean the key passed authentication (400 = key accepted
+            # but the null-address probe returned "not found" — that is fine).
         except Exception as e:
             return jsonify({"success": False, "error": f"Could not reach Spacescan: {e}"}), 502
 
