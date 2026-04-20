@@ -9571,6 +9571,18 @@ def _calculate_smart_defaults(xch_reserve=0.0, cat_reserve=0.0, risk_profile="ba
         ]
         for k in _zero_fields:
             result[k] = 0 if k in ("max_active_sell", "topup_pool_cat") else None
+        # Ensure max_position_xch covers the full buy ladder so the position
+        # guard (offer_manager: hard limit = max_position * 1.1) never blocks
+        # initial ladder creation. Use /0.9 for headroom; round up to 1 dp.
+        _buy_ladder_xch = sum(
+            (result.get(f"buy_{_t}_size_xch") or 0) * (result.get(f"buy_{_t}_tier_count") or 0)
+            for _t in ("inner", "mid", "outer", "extreme")
+        )
+        if _buy_ladder_xch > 0:
+            import math as _math_mp
+            _min_pos = round(_math_mp.ceil(_buy_ladder_xch / 0.9 * 10) / 10, 1)
+            if (result.get("max_position_xch") or 0) < _min_pos:
+                result["max_position_xch"] = _min_pos
         # Sniper arb needs both sides
         result["sniper_enabled"] = False
         result["sniper_prep_count"] = 0
@@ -9593,6 +9605,18 @@ def _calculate_smart_defaults(xch_reserve=0.0, cat_reserve=0.0, risk_profile="ba
             result[k] = 0 if k in ("max_active_buy", "topup_pool_xch") else None
         # Reverse-buy is a buy-ladder concept — force off in sell-only.
         result["buy_ladder_reversed"] = False
+        # Ensure max_position_xch covers the full sell ladder so the position
+        # guard (offer_manager: hard limit = max_position * 1.1) never blocks
+        # initial ladder creation. Use /0.9 for headroom; round up to 1 dp.
+        _sell_ladder_xch = sum(
+            (result.get(f"sell_{_t}_size_xch") or 0) * (result.get(f"sell_{_t}_tier_count") or 0)
+            for _t in ("inner", "mid", "outer", "extreme")
+        )
+        if _sell_ladder_xch > 0:
+            import math as _math_mp
+            _min_pos = round(_math_mp.ceil(_sell_ladder_xch / 0.9 * 10) / 10, 1)
+            if (result.get("max_position_xch") or 0) < _min_pos:
+                result["max_position_xch"] = _min_pos
         # Sniper arb needs both sides
         result["sniper_enabled"] = False
         result["sniper_prep_count"] = 0
