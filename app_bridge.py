@@ -110,11 +110,24 @@ class AppBridge:
 
     def read_clipboard(self):
         try:
-            import tkinter as tk
-            root = tk.Tk()
-            root.withdraw()
-            text = root.clipboard_get()
-            root.destroy()
+            import ctypes
+            import ctypes.wintypes
+            CF_UNICODETEXT = 13
+            if not ctypes.windll.user32.OpenClipboard(None):
+                return {"success": False, "text": "", "error": "OpenClipboard failed"}
+            try:
+                h = ctypes.windll.user32.GetClipboardData(CF_UNICODETEXT)
+                if not h:
+                    return {"success": False, "text": "", "error": "No text in clipboard"}
+                ptr = ctypes.windll.kernel32.GlobalLock(h)
+                if not ptr:
+                    return {"success": False, "text": "", "error": "GlobalLock failed"}
+                try:
+                    text = ctypes.wstring_at(ptr)
+                finally:
+                    ctypes.windll.kernel32.GlobalUnlock(h)
+            finally:
+                ctypes.windll.user32.CloseClipboard()
             return {"success": True, "text": text}
         except Exception as e:
             return {"success": False, "text": "", "error": str(e)}

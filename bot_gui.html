@@ -31477,6 +31477,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // execCommand('paste') is blocked by WebView2 — read via Python bridge instead
         try {
             const res = await window.pywebview.api.read_clipboard();
+            console.log('[paste]', JSON.stringify(res));
             if (res && res.success && res.text) {
                 const el = _ctxTarget;
                 const start = el.selectionStart ?? el.value.length;
@@ -31485,8 +31486,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 const cur = start + res.text.length;
                 el.setSelectionRange(cur, cur);
                 el.dispatchEvent(new Event('input', { bubbles: true }));
+            } else if (res && !res.success) {
+                console.warn('[paste] bridge error:', res.error);
             }
-        } catch (_) {
+        } catch (err) {
+            console.warn('[paste] exception:', err);
             // pywebview not available (browser mode) — fall back
             document.execCommand('paste');
         }
