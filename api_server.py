@@ -3211,6 +3211,41 @@ def api_diagnostics_api_stats():
     except Exception as e:
         payload["dexie"]["error"] = str(e)
 
+    # --- Splash (P2P offer broadcast) ---------------------------------
+    # Splash has its own /api/splash/stats endpoint, but callers of the
+    # unified diagnostics modal should see it in one place alongside the
+    # other external APIs. Mirror the field shape used by Dexie so the
+    # frontend can render the same "posts / failed / queue" panel.
+    try:
+        if bot is not None and getattr(bot, "splash_manager", None):
+            sp_stats = bot.splash_manager.get_stats() or {}
+            sp_health = {}
+            try:
+                sp_health = bot.splash_manager.check_health() or {}
+            except Exception:
+                sp_health = {}
+            sp_receive = {}
+            try:
+                sp_receive = bot.get_splash_receive_stats() or {}
+            except Exception:
+                sp_receive = {}
+            payload["splash"] = {
+                "available": True,
+                "total_posted": int(sp_stats.get("total_posted", 0) or 0),
+                "total_failed": int(sp_stats.get("total_failed", 0) or 0),
+                "total_skipped": int(sp_stats.get("total_skipped", 0) or 0),
+                "queue_size": int(sp_stats.get("queue_size", 0) or 0),
+                "fingerprints_cached": int(sp_stats.get("fingerprints_cached", 0) or 0),
+                "healthy": bool(sp_stats.get("healthy", True)),
+                "consecutive_failures": int(sp_stats.get("consecutive_failures", 0) or 0),
+                "health": sp_health,
+                "receive": sp_receive,
+            }
+        else:
+            payload["splash"] = {"available": False}
+    except Exception as e:
+        payload["splash"] = {"available": False, "error": str(e)}
+
     # --- TibetSwap / AMM Monitor --------------------------------------
     try:
         if bot is not None and getattr(bot, "amm_monitor", None):

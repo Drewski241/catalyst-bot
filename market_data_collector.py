@@ -186,7 +186,19 @@ def collect_all_market_data(asset_id: str, ticker_id: str,
             spacescan = _fetch_spacescan_data(asset_id)
             if spacescan and spacescan.get("has_data"):
                 result["spacescan"] = spacescan
-                set_market_analysis_cache(asset_id, "spacescan", spacescan, CACHE_TTL_SPACESCAN)
+                # If /token/info succeeded (has_data=True) but holders or
+                # activities silently failed (count=0 with activity_fetch_failed
+                # set, or holder_count=0 for a real token), cache with a much
+                # shorter TTL so we retry on the next Smart Defaults run rather
+                # than baking the partial failure into the 24-hour cache. The
+                # holders-zero case was bricking the dashboard's holder count
+                # for whole days after a single transient upstream hiccup.
+                _partial = (
+                    int(spacescan.get("holder_count", 0) or 0) <= 0
+                    or bool(spacescan.get("activity_fetch_failed"))
+                )
+                _ttl = 30 if _partial else CACHE_TTL_SPACESCAN  # 30 min vs 24 hr
+                set_market_analysis_cache(asset_id, "spacescan", spacescan, _ttl)
         if result["spacescan"]:
             meta["sources_ok"].append("spacescan")
         else:

@@ -23520,6 +23520,7 @@
                 const cs = data.coinset     || {};
                 const dx = data.dexie       || {};
                 const ts = data.tibetswap   || {};
+                const sp = data.splash      || {};
 
                 const fmtN = (v) => (v === undefined || v === null) ? '—' : Number(v).toLocaleString();
                 const fmtPct = (v) => (v === undefined || v === null) ? '—' : Number(v).toFixed(1) + '%';
@@ -23612,6 +23613,23 @@
                             <div style="color:var(--text-secondary);">Price cache age</div><div>${ts.price_cache_age_secs != null ? fmtN(Math.round(ts.price_cache_age_secs)) + 's' : '—'}</div>
                           </div>
                         ` : '<div style="color:var(--text-tertiary);">TibetSwap AMM monitor not running.</div>'}
+                    </div>
+                    <div class="v4-modal-panel">
+                        <div class="v4-modal-panel-title">Splash ${sp.available ? (sp.healthy ? '✅' : '⚠️') : '❌'}</div>
+                        ${sp.available ? `
+                          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;font-size:0.92em;">
+                            <div style="color:var(--text-secondary);">Offers posted</div><div>${fmtN(sp.total_posted)}</div>
+                            <div style="color:var(--text-secondary);">Post failures</div><div>${fmtN(sp.total_failed)}</div>
+                            <div style="color:var(--text-secondary);">Skipped (dedup)</div><div>${fmtN(sp.total_skipped)}</div>
+                            <div style="color:var(--text-secondary);">Queue size</div><div>${fmtN(sp.queue_size)}</div>
+                            <div style="color:var(--text-secondary);">Fingerprints cached</div><div>${fmtN(sp.fingerprints_cached)}</div>
+                            <div style="color:var(--text-secondary);">Consecutive failures</div><div>${fmtN(sp.consecutive_failures)}</div>
+                            ${sp.receive && sp.receive.enabled !== undefined ? `
+                              <div style="color:var(--text-secondary);">Receive listening</div><div>${sp.receive.enabled ? 'yes' : 'no'}</div>
+                              ${sp.receive.offers_received != null ? `<div style="color:var(--text-secondary);">Offers received</div><div>${fmtN(sp.receive.offers_received)}</div>` : ''}
+                            ` : ''}
+                          </div>
+                        ` : '<div style="color:var(--text-tertiary);">Splash manager not running.</div>'}
                     </div>
                 `;
 
