@@ -3838,6 +3838,65 @@ class CoinManager:
                                       f"Proactive drip: fees "
                                       f"xch={_fee_sp}/{_fee_drip_tgt} (tgt {_fee_target})")
                             return True
+                # Orphan reclaim: fire the topup worker (which runs the
+                # misfit absorber as Step 0) when the 'small' bucket has
+                # accumulated enough dust/misfit material to be worth
+                # consolidating. Without this trigger, orphans sit idle
+                # forever once all tiers are full — no topup reason ever
+                # fires. Threshold: total small >= smallest trading tier
+                # size, so the reclaimed reserve can immediately fund a
+                # split if needed.
+                try:
+                    _orphan_wallets = []
+                    if cfg.ENABLE_BUY:
+                        _xch_tier = self._get_tier_sizes_mojos(is_cat=False)
+                        _xch_small_total = sum(
+                            _coin_amount(r) for r in self._xch_inventory.get("small", [])
+                        )
+                        _xch_smallest = min(
+                            (v for k, v in _xch_tier.items()
+                             if k in ("inner", "mid", "outer", "extreme") and v > 0),
+                            default=0,
+                        )
+                        if (_xch_smallest > 0
+                                and _xch_small_total >= _xch_smallest
+                                and len(self._xch_inventory.get("small", [])) >= 2):
+                            _orphan_wallets.append(
+                                f"xch small×{len(self._xch_inventory.get('small', []))}="
+                                f"{_format_amount_xch(_xch_small_total)}"
+                            )
+                    if cfg.ENABLE_SELL:
+                        _cat_tier = self._get_tier_sizes_mojos(is_cat=True)
+                        _cat_small_total = sum(
+                            _coin_amount(r) for r in self._cat_inventory.get("small", [])
+                        )
+                        _cat_smallest = min(
+                            (v for k, v in _cat_tier.items()
+                             if k in ("inner", "mid", "outer", "extreme") and v > 0),
+                            default=0,
+                        )
+                        if (_cat_smallest > 0
+                                and _cat_small_total >= _cat_smallest
+                                and len(self._cat_inventory.get("small", [])) >= 2):
+                            _orphan_wallets.append(
+                                f"cat small×{len(self._cat_inventory.get('small', []))}="
+                                f"{_format_amount_cat(_cat_small_total, cfg.CAT_DECIMALS)}"
+                            )
+                    if _orphan_wallets:
+                        self._last_drip_time = time.time()
+                        self._topup_is_drip = True
+                        log_event(
+                            "info", "drip_trigger",
+                            "Proactive drip: orphan reclaim — " +
+                            ", ".join(_orphan_wallets)
+                        )
+                        return True
+                except Exception as _orphan_err:
+                    log_event(
+                        "debug", "orphan_reclaim_check_failed",
+                        f"Orphan reclaim trigger check failed: {_orphan_err}"
+                    )
+
                 self._last_drip_time = time.time()  # nothing to drip — reset timer
             return False
         else:
@@ -6162,6 +6221,32 @@ class CoinManager:
                     amt = _coin_amount(rec)
                     if self._is_misfit_coin(amt, base_tier_mojos, max_size_ratio):
                         misfit_records.append(rec)
+
+            # Also sweep the 'small' bucket — dust + unknown-designation coins
+            # that fell between tier sizes when the classifier ran. These
+            # typically originate as change outputs from filled offers
+            # (seen during the 2026-04-21 sweep tests: 16 CAT orphans at
+            # ~4.8k and ~1.9k each between extreme=2.6k and outer=5.7k).
+            # Without this path they just sit idle forever — the primary
+            # misfit loop only looks at tier buckets, and the classifier
+            # routes these to "small" because their inferred tier is "none".
+            #
+            # Safety filters:
+            # - Skip coins too small to cover the consolidation tx fee
+            #   (XCH only; CAT fees are paid separately in XCH).
+            # - Cap at 20 coins per absorption to avoid building a single
+            #   monster TX that Sage's CLVM cost budget would reject.
+            small_bucket = inventory.get("small", [])
+            _absorb_cap = 20 - len(misfit_records)  # leave room for tier misfits
+            fee_floor = self._tx_fee_mojos() * 2 if not is_cat else 0
+            for rec in small_bucket:
+                if _absorb_cap <= 0:
+                    break
+                amt = _coin_amount(rec)
+                if amt <= fee_floor:
+                    continue  # not worth the fee
+                misfit_records.append(rec)
+                _absorb_cap -= 1
 
             if not misfit_records:
                 return False
