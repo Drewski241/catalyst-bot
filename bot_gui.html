@@ -10375,17 +10375,39 @@
             <div class="v4-modal-inner">
                 <div class="v4-modal-hero">
                     <div class="v4-modal-icon">📊</div>
-                    <div class="v4-modal-title">Keep your trading history?</div>
+                    <div class="v4-modal-title">Before we prep coins…</div>
                     <div class="v4-modal-body" id="prepHistoryChoiceDetails" style="text-align: left; font-size: 0.95em; line-height: 1.55;">
                         Coin prep will rebuild your coin pool.
                     </div>
                 </div>
-                <div class="v4-modal-actions" style="display: flex; flex-direction: column; gap: 10px; padding: 0 24px 20px;">
-                    <button id="prepHistoryKeepBtn" class="btn btn-start btn-primary" style="padding: 12px; font-size: 1em; font-weight: 700;">
-                        📒 Keep history <span style="opacity: 0.7; font-weight: 500;">(recommended)</span>
-                    </button>
-                    <button id="prepHistoryFreshBtn" class="btn btn-stop btn-danger" style="padding: 12px; font-size: 1em; font-weight: 700;">
-                        🗑️ Start fresh — clear fills &amp; PnL
+                <div style="padding: 0 24px 6px; display: flex; flex-direction: column; gap: 8px;">
+                    <label id="prepResetPnlRow" style="display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; background: rgba(248,113,113,0.05); border: 1px solid rgba(248,113,113,0.2); border-radius: 6px; cursor: pointer;">
+                        <input type="checkbox" id="prepResetPnlCb" style="margin-top: 3px;">
+                        <span style="flex: 1;">
+                            <span style="font-weight: 600;">Reset P&amp;L</span>
+                            <span id="prepResetPnlCount" style="color: var(--text-secondary); font-weight: 400;"></span>
+                            <span class="v4-settings-hint" style="display: block; margin-top: 2px;">Wipes fills, round-trips, price history, inventory snapshots, and the position baseline.</span>
+                        </span>
+                    </label>
+                    <label id="prepResetOffersRow" style="display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; background: rgba(248,113,113,0.05); border: 1px solid rgba(248,113,113,0.2); border-radius: 6px; cursor: pointer;">
+                        <input type="checkbox" id="prepResetOffersCb" style="margin-top: 3px;">
+                        <span style="flex: 1;">
+                            <span style="font-weight: 600;">Clear offer history</span>
+                            <span id="prepResetOffersCount" style="color: var(--text-secondary); font-weight: 400;"></span>
+                            <span class="v4-settings-hint" style="display: block; margin-top: 2px;">Deletes cancelled, filled, and expired offer rows. Live offers are always re-created by coin prep.</span>
+                        </span>
+                    </label>
+                    <label id="prepResetCountersRow" style="display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; background: rgba(248,113,113,0.05); border: 1px solid rgba(248,113,113,0.2); border-radius: 6px; cursor: pointer;">
+                        <input type="checkbox" id="prepResetCountersCb" style="margin-top: 3px;">
+                        <span style="flex: 1;">
+                            <span style="font-weight: 600;">Reset runtime counters</span>
+                            <span class="v4-settings-hint" style="display: block; margin-top: 2px;">Zeroes sniper history, watchdog streaks, and fill-tracker state. Harmless — resets on next restart anyway.</span>
+                        </span>
+                    </label>
+                </div>
+                <div class="v4-modal-actions" style="display: flex; flex-direction: column; gap: 10px; padding: 8px 24px 20px;">
+                    <button id="prepHistoryContinueBtn" class="btn btn-start btn-primary" style="padding: 12px; font-size: 1em; font-weight: 700;">
+                        Continue — keep everything
                     </button>
                     <button id="prepHistoryCancelBtn" class="btn btn-config btn-secondary" style="padding: 10px; font-size: 0.95em;">
                         Cancel
@@ -28639,50 +28661,106 @@ function closeCtgErrorModal() {
                 preview = null;
             }
             // If the probe fails OR the user has nothing worth preserving,
-            // skip the modal so the old zero-friction flow is unchanged.
+            // skip the modal so the first-run flow stays zero-friction.
+            const keepAll = { action: 'proceed', resets: { pnl: false, offers: false, counters: false } };
             if (!preview || !preview.success || !preview.has_data) {
-                return 'keep';
+                return keepAll;
             }
+
+            const fills = Number(preview.fills || 0);
+            const trips = Number(preview.round_trips || 0);
+            const pnlRaw = parseFloat(preview.realised_pnl_xch || 0) || 0;
+            const pos = parseFloat(preview.net_position_cat || 0) || 0;
+            const offerRows = Number(preview.offer_history_rows || 0);
+            const hasPnl = Boolean(preview.has_pnl_data);
+            const hasOffers = offerRows > 0;
+            const catName = escapeHtml((settingsCAT?.name || currentCAT?.name || 'CAT'));
+
             const detailsEl = document.getElementById('prepHistoryChoiceDetails');
             if (detailsEl) {
-                const fills = Number(preview.fills || 0);
-                const trips = Number(preview.round_trips || 0);
-                const pnlRaw = parseFloat(preview.realised_pnl_xch || 0) || 0;
-                const pos = parseFloat(preview.net_position_cat || 0) || 0;
-                const pnl = pnlRaw.toFixed(4);
                 const posTxt = Math.abs(pos) >= 1
                     ? pos.toLocaleString(undefined, { maximumFractionDigits: 0 })
                     : pos.toFixed(3);
+                const summaryBits = [];
+                if (hasPnl) {
+                    summaryBits.push(
+                        `<li><strong>${fills.toLocaleString()}</strong> fills · <strong>${trips.toLocaleString()}</strong> round trips · <strong>${pnlRaw.toFixed(4)}</strong> XCH P&amp;L · net <strong>${posTxt}</strong> ${catName}</li>`
+                    );
+                }
+                if (hasOffers) {
+                    summaryBits.push(
+                        `<li><strong>${offerRows.toLocaleString()}</strong> closed offer rows in history</li>`
+                    );
+                }
                 detailsEl.innerHTML = [
-                    `<p style="margin: 0 0 8px 0;">You have existing trading data from this run:</p>`,
-                    `<ul style="margin: 0 0 10px 18px; padding: 0;">`,
-                    `<li><strong>${fills.toLocaleString()}</strong> fills</li>`,
-                    `<li><strong>${trips.toLocaleString()}</strong> round trips</li>`,
-                    `<li><strong>${pnl}</strong> XCH realised PnL</li>`,
-                    `<li>Net position: <strong>${posTxt}</strong> ${escapeHtml((settingsCAT?.name || currentCAT?.name || 'CAT'))}</li>`,
-                    `</ul>`,
-                    `<p style="margin: 0 0 6px 0;"><strong>Keep history</strong> — re-prep coins only; fills, PnL, and position survive. Pick this for a routine re-run after Smart Settings.</p>`,
-                    `<p style="margin: 0;"><strong>Start fresh</strong> — wipe all fills, round-trips, price history, and reset position to zero. Pick this when switching CAT or rebasing after a bad run.</p>`,
+                    `<p style="margin: 0 0 8px 0;">You have existing data from prior runs:</p>`,
+                    `<ul style="margin: 0 0 10px 18px; padding: 0;">${summaryBits.join('')}</ul>`,
+                    `<p style="margin: 0;">Tick anything you want to wipe before coin prep runs. Leave everything unchecked to preserve it all — that's the routine re-prep path.</p>`,
                 ].join('');
             }
+
+            // Show/hide each row based on whether there's data to reset.
+            // Counters always show (no way to probe in-memory state cheaply).
+            const pnlRow = document.getElementById('prepResetPnlRow');
+            const offersRow = document.getElementById('prepResetOffersRow');
+            const pnlCb = document.getElementById('prepResetPnlCb');
+            const offersCb = document.getElementById('prepResetOffersCb');
+            const countersCb = document.getElementById('prepResetCountersCb');
+            const pnlCount = document.getElementById('prepResetPnlCount');
+            const offersCount = document.getElementById('prepResetOffersCount');
+
+            if (pnlRow) pnlRow.style.display = hasPnl ? '' : 'none';
+            if (offersRow) offersRow.style.display = hasOffers ? '' : 'none';
+            if (pnlCb) pnlCb.checked = false;
+            if (offersCb) offersCb.checked = false;
+            if (countersCb) countersCb.checked = false;
+            if (pnlCount) {
+                pnlCount.textContent = hasPnl
+                    ? ` — ${fills.toLocaleString()} fills, ${pnlRaw.toFixed(4)} XCH`
+                    : '';
+            }
+            if (offersCount) {
+                offersCount.textContent = hasOffers
+                    ? ` — ${offerRows.toLocaleString()} row${offerRows === 1 ? '' : 's'}`
+                    : '';
+            }
+
             return new Promise((resolve) => {
                 const modal = document.getElementById('prepHistoryChoiceModal');
-                const keepBtn = document.getElementById('prepHistoryKeepBtn');
-                const freshBtn = document.getElementById('prepHistoryFreshBtn');
+                const continueBtn = document.getElementById('prepHistoryContinueBtn');
                 const cancelBtn = document.getElementById('prepHistoryCancelBtn');
-                const cleanup = (choice) => {
-                    if (modal) modal.classList.remove('active');
-                    keepBtn.onclick = null;
-                    freshBtn.onclick = null;
-                    cancelBtn.onclick = null;
-                    resolve(choice);
+
+                const syncLabel = () => {
+                    if (!continueBtn) return;
+                    const anyChecked = (pnlCb?.checked || offersCb?.checked || countersCb?.checked);
+                    continueBtn.textContent = anyChecked
+                        ? 'Apply resets and prep coins'
+                        : 'Continue — keep everything';
+                    continueBtn.classList.toggle('btn-danger', anyChecked);
+                    continueBtn.classList.toggle('btn-primary', !anyChecked);
                 };
-                keepBtn.onclick = () => cleanup('keep');
-                freshBtn.onclick = () => cleanup('fresh');
-                cancelBtn.onclick = () => cleanup('cancel');
+                const onChange = () => syncLabel();
+                [pnlCb, offersCb, countersCb].forEach(cb => { if (cb) cb.addEventListener('change', onChange); });
+
+                const cleanup = (result) => {
+                    if (modal) modal.classList.remove('active');
+                    continueBtn.onclick = null;
+                    cancelBtn.onclick = null;
+                    [pnlCb, offersCb, countersCb].forEach(cb => { if (cb) cb.removeEventListener('change', onChange); });
+                    resolve(result);
+                };
+                continueBtn.onclick = () => cleanup({
+                    action: 'proceed',
+                    resets: {
+                        pnl: !!(pnlCb && pnlCb.checked),
+                        offers: !!(offersCb && offersCb.checked),
+                        counters: !!(countersCb && countersCb.checked),
+                    },
+                });
+                cancelBtn.onclick = () => cleanup({ action: 'cancel' });
+                syncLabel();
                 if (modal) modal.classList.add('active');
-                // Auto-focus the safe default so Enter picks "keep".
-                setTimeout(() => { try { keepBtn.focus(); } catch (_) {} }, 50);
+                setTimeout(() => { try { continueBtn.focus(); } catch (_) {} }, 50);
             });
         }
 
@@ -28693,18 +28771,19 @@ function closeCtgErrorModal() {
                 btn.textContent = 'Checking history…';
             }
 
-            // Pre-prep: ask the user whether to preserve or wipe their
-            // trading history. Returns immediately with 'keep' when there's
-            // no data to protect, so first-run UX stays frictionless.
+            // Pre-prep: show the tri-checkbox history modal. Returns
+            // { action: 'proceed'|'cancel', resets: {pnl, offers, counters} }.
+            // When there's no data worth preserving it short-circuits to
+            // 'proceed' with all resets false so first-run UX is frictionless.
             const historyChoice = await askPrepHistoryChoice();
-            if (historyChoice === 'cancel') {
+            if (!historyChoice || historyChoice.action === 'cancel') {
                 if (btn) {
                     btn.disabled = false;
                     btn.textContent = 'Yes, Prepare Coins';
                 }
                 return;
             }
-            const fullReset = (historyChoice === 'fresh');
+            const resets = historyChoice.resets || {};
             if (btn) btn.textContent = 'Starting...';
 
             try {
@@ -28715,7 +28794,9 @@ function closeCtgErrorModal() {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         coin_multiplier: coinMultiplier,
-                        full_reset: fullReset,
+                        reset_pnl: !!resets.pnl,
+                        reset_offer_history: !!resets.offers,
+                        reset_counters: !!resets.counters,
                     })
                 });
                 const data = await response.json();

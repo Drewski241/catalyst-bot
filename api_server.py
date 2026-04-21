@@ -4928,6 +4928,19 @@ def api_pnl_reset_preview():
         except Exception:
             round_trips = 0
 
+        # Count terminal-state offer rows so the pre-prep modal can decide
+        # whether to offer the "clear offer history" checkbox.
+        offer_history_rows = 0
+        try:
+            offer_history_rows = int((conn.execute(
+                "SELECT COUNT(*) AS cnt FROM offers "
+                "WHERE status IN ('cancelled', 'filled', 'expired') "
+                "   OR lifecycle_state IN ('cancelled', 'filled', 'expired', "
+                "                          'phantom_rejected', 'user_cancelled')"
+            ).fetchone()["cnt"]) or 0)
+        except Exception:
+            offer_history_rows = 0
+
         realised_pnl_xch = Decimal("0")
         net_position_cat = Decimal("0")
         try:
@@ -4945,15 +4958,18 @@ def api_pnl_reset_preview():
         except Exception:
             net_position_cat = Decimal("0")
 
-        has_data = (fills > 0 or round_trips > 0
-                    or realised_pnl_xch != 0 or net_position_cat != 0)
+        has_pnl_data = (fills > 0 or round_trips > 0
+                        or realised_pnl_xch != 0 or net_position_cat != 0)
+        has_data = bool(has_pnl_data or offer_history_rows > 0)
         return jsonify({
             "success": True,
-            "has_data": bool(has_data),
+            "has_data": has_data,
+            "has_pnl_data": bool(has_pnl_data),
             "fills": fills,
             "round_trips": round_trips,
             "realised_pnl_xch": str(realised_pnl_xch),
             "net_position_cat": str(net_position_cat),
+            "offer_history_rows": offer_history_rows,
         })
     except Exception as e:
         return _api_error(e, request.path)
@@ -11840,13 +11856,22 @@ def api_coin_prep_trigger():
         except Exception:
             _prep_req_data = {}
             _prep_coin_multiplier = 1.0
-        # full_reset=True means "Start Fresh" — clear fills / round-trips /
-        # position baseline alongside the coin-shape reset. Default False
-        # (2026-04-19) so a routine re-prep keeps the user's trading history.
+        # Historical flag: full_reset=True means "Start Fresh" — wipes fills /
+        # round-trips / position baseline alongside the coin-shape reset.
+        # Default False (2026-04-19) so a routine re-prep keeps the user's
+        # trading history. 2026-04-21: superseded by the granular flags
+        # below (reset_pnl / reset_offer_history / reset_counters) driven by
+        # the pre-prep choice modal. full_reset is still honoured as an
+        # alias for reset_pnl so older clients keep working.
         _prep_full_reset = bool(_prep_req_data.get("full_reset", False))
+        _prep_reset_pnl = bool(_prep_req_data.get("reset_pnl", _prep_full_reset))
+        _prep_reset_offers = bool(_prep_req_data.get("reset_offer_history", False))
+        _prep_reset_counters = bool(_prep_req_data.get("reset_counters", False))
         log_event("info", "coin_prep_multiplier",
                   f"Coin prep multiplier from GUI: {_prep_coin_multiplier}× "
-                  f"(full_reset={_prep_full_reset})")
+                  f"(reset_pnl={_prep_reset_pnl}, "
+                  f"reset_offers={_prep_reset_offers}, "
+                  f"reset_counters={_prep_reset_counters})")
 
         # If a previous worker is still running, kill it first.
         # Two workers operating on the same wallet simultaneously causes
@@ -11903,16 +11928,90 @@ def api_coin_prep_trigger():
         try:
             _reset_fresh_run_session(
                 clear_coins=True,
-                clear_price_history=_prep_full_reset,
+                clear_price_history=_prep_reset_pnl,
                 clear_inventory=True,
                 cancel_open_offers=True,
-                preserve_history=(not _prep_full_reset),
-                reason=("fresh_start_cleanup" if _prep_full_reset
+                preserve_history=(not _prep_reset_pnl),
+                reason=("fresh_start_cleanup" if _prep_reset_pnl
                         else "coin_prep_reprep_cleanup"),
             )
         except Exception as _clean_err:
             log_event("warning", "fresh_start_cleanup_failed",
                       f"DB cleanup before coin prep failed: {_clean_err}")
+
+        # Optional: delete terminal-state offer rows. Same SQL as the
+        # standalone /api/reset/offer-history endpoint — live offers are
+        # already handled by the cancel_open_offers path above, so this
+        # only touches cancelled/filled/expired/phantom rows that would
+        # otherwise bloat the history view.
+        if _prep_reset_offers:
+            try:
+                conn = get_connection()
+                cur = conn.execute(
+                    "DELETE FROM offers "
+                    "WHERE status IN ('cancelled', 'filled', 'expired') "
+                    "   OR lifecycle_state IN ('cancelled', 'filled', 'expired', "
+                    "                          'phantom_rejected', 'user_cancelled')"
+                )
+                deleted = int(cur.rowcount or 0)
+                conn.commit()
+                log_event("info", "coin_prep_offer_history_cleared",
+                          f"Pre-prep: cleared {deleted} terminal-state offer rows")
+            except Exception as _hist_err:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                log_event("warning", "coin_prep_offer_history_failed",
+                          f"Pre-prep offer-history clear failed: {_hist_err}")
+
+        # Optional: reset in-memory runtime counters (sniper / fill-tracker /
+        # watchdog streaks / risk-manager position). Mirrors the counters
+        # step of /api/reset/full. Best-effort — missing attrs aren't fatal.
+        if _prep_reset_counters:
+            _counters_reset = []
+            try:
+                if bot is not None:
+                    _rm = getattr(bot, "risk_manager", None)
+                    if _rm is not None and hasattr(_rm, "reset_position"):
+                        _rm.reset_position()
+                        _counters_reset.append("risk_manager.position")
+                    _sn = getattr(bot, "sniper", None)
+                    if _sn is not None:
+                        try:
+                            with getattr(_sn, "_snipe_lock", _SNIPE_LOCK_NOOP):
+                                _sn._total_snipes = 0
+                                _sn._total_skipped = 0
+                                if hasattr(_sn, "_snipe_history"):
+                                    _sn._snipe_history.clear()
+                                if hasattr(_sn, "_active_snipe_ids"):
+                                    _sn._active_snipe_ids.clear()
+                                _sn._last_snipe_time = 0
+                            _counters_reset.append("sniper.counters")
+                        except Exception:
+                            pass
+                    _ft = getattr(bot, "fill_tracker", None)
+                    if _ft is not None:
+                        try:
+                            if hasattr(_ft, "_mass_disappearance_count"):
+                                _ft._mass_disappearance_count = 0
+                            if hasattr(_ft, "_mass_disappearance_first_at"):
+                                _ft._mass_disappearance_first_at = None
+                            _counters_reset.append("fill_tracker.counters")
+                        except Exception:
+                            pass
+                    try:
+                        if hasattr(bot, "_watchdog_violation_streaks"):
+                            bot._watchdog_violation_streaks.clear()
+                            _counters_reset.append("watchdog.streaks")
+                    except Exception:
+                        pass
+                log_event("info", "coin_prep_counters_reset",
+                          f"Pre-prep counter resets: "
+                          f"{','.join(_counters_reset) or 'none'}")
+            except Exception as _c_err:
+                log_event("warning", "coin_prep_counters_failed",
+                          f"Pre-prep counter reset partial: {_c_err}")
 
         # Balance gate removed — the /api/coin-prep/verify endpoint already checks
         # balance accurately before the confirm button is shown, and uses the same
