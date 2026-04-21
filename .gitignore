@@ -115,6 +115,8 @@ tmp_greenfloor_review/
 tools/
 website
 simulation/
+# Personal launcher with hardcoded paths — not useful off the dev machine
+CATalyst.vbs
 !catalyst.spec
 !splash.html
 
