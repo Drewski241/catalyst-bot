@@ -9547,7 +9547,7 @@
                     </div>
 
                     <!-- ══ SECTION: Safety & Limits ══ -->
-                    <div class="v4-settings-section v4-settings-blue">
+                    <div id="settings-section-safety" class="v4-settings-section v4-settings-blue">
                         <div class="v4-settings-section-title" style="color: var(--status-info);">Safety & Limits <span class="cc-help">?<span class="cc-tooltip">Emergency protection settings. These circuit breakers halt trading if something unexpected happens — price crashes, spikes, or moves outside your comfort zone.</span></span></div>
                         <!-- F76 (2026-04-17): expose DRY_RUN / ENABLE_BUY / ENABLE_SELL. These
                              config flags were already consumed by bot_loop and boost_manager
@@ -14469,7 +14469,13 @@
 
                 // Smart action: adapts to market conditions.
                 //  • Arb gap present (≥50 bps) → "Close the Gap" (probe for arb floor)
-                //  • Arb gap calm, spread wide, no fills → "Tighten Spread" (adjust real book)
+                //  • Arb gap calm, BASE wide, no fills → "Tighten Spread" (reduce BASE_SPREAD_BPS)
+                //
+                // Gate and target derivation use `configBaseBps` (the actual
+                // BASE_SPREAD_BPS config) — NOT the adjusted `baseBps` which
+                // reflects competitor/pool widening. Anchoring on the adjusted
+                // spread produced targets wider than BASE and the "Tighten"
+                // button silently widened the user's config.
                 if (!_gapCloserActive && baseBps > 400 && !_spreadCooldownActive) {
                     const safeRoom = baseBps - Math.max(arbGapBps + 20, 80);
                     if (arbGapBps >= 50 && safeRoom > 150) {
@@ -14481,16 +14487,16 @@
                             action: 'Close the Gap',
                             actionType: 'activateGapCloser'
                         });
-                    } else if (arbGapBps < 50 && fillsHr === 0 && safeRoom > 100) {
-                        // No arb gap, but spread is wide with zero fills — tighten the real book
-                        const rawTargetBps = Math.max(minBps, Math.round(baseBps * 0.85));
+                    } else if (arbGapBps < 50 && fillsHr === 0 && safeRoom > 100 && configBaseBps > 400) {
+                        // No arb gap, but BASE is wide with zero fills — tighten the actual config
+                        const rawTargetBps = Math.max(minBps, Math.round(configBaseBps * 0.85));
                         const targetBps = Math.round(rawTargetBps / 25) * 25;
-                        if (targetBps > 0 && targetBps < baseBps) {
+                        if (targetBps > 0 && targetBps < configBaseBps) {
                             pushSuggestion({
                                 type: 'info',
                                 icon: '📐',
-                                msg: 'No arb risk (' + fmtPct(arbGapBps) + ') and your spread (' + fmtPct(baseBps) + ') is wide with zero fills. Tightening your actual book is more effective than probing with small offers in a quiet market.',
-                                action: 'Tighten to ' + fmtPct(targetBps),
+                                msg: 'No arb risk (' + fmtPct(arbGapBps) + ') and your base spread (' + fmtPct(configBaseBps) + ') is wide with zero fills. Tightening the base is more effective than probing with small offers in a quiet market.',
+                                action: 'Tighten base to ' + fmtPct(targetBps),
                                 actionType: 'applySpread',
                                 actionValue: String(targetBps)
                             });
@@ -14579,22 +14585,27 @@
                             action: null
                         });
                     } else if (spreadGapBps > 75) {
+                        // Target derivation uses configBaseBps (the BASE_SPREAD_BPS
+                        // setting) so the click actually reduces the config. Using
+                        // the adjusted `baseBps` produced targets higher than BASE
+                        // and silently widened the config.
+                        //
                         // Round to nearest 25 bps so small wobbles in competitor
                         // spread don't shuffle the displayed/clicked target every
                         // cycle (was causing the Recommendations panel to flicker).
                         const rawTargetBps = Math.max(
                             minBps,
-                            Math.min(baseBps - 25, Math.round(competitorBps * 1.15))
+                            Math.min(configBaseBps - 25, Math.round(competitorBps * 1.15))
                         );
                         const targetBps = Math.round(rawTargetBps / 25) * 25;
-                        if (targetBps > 0 && targetBps < baseBps) {
+                        if (targetBps > 0 && targetBps < configBaseBps) {
                             pushSuggestion({
                                 type: 'warning',
                                 icon: '>>',
                                 msg: (tokenEstablished
                                     ? 'No fills recently while competitors are tighter at ' + competitorPct.toFixed(1) + '%. Spacescan shows a healthier token regime, so a modest tighten is reasonable.'
                                     : 'No fills recently while competitors are tighter at ' + competitorPct.toFixed(1) + '%. A modest tighten is the safer first move.'),
-                                action: 'Tighten to ' + fmtPct(targetBps),
+                                action: 'Tighten base to ' + fmtPct(targetBps),
                                 actionType: 'applySpread',
                                 actionValue: String(targetBps)
                             });
@@ -14609,7 +14620,7 @@
                     }
                 }
 
-                if (competitorCount === 0 && arbGapBps < 40 && baseBps < 500 && !_spreadCooldownActive) {
+                if (competitorCount === 0 && arbGapBps < 40 && configBaseBps < 500 && !_spreadCooldownActive) {
                     if (tokenQuiet || tokenThin) {
                         pushSuggestion({
                             type: 'info',
@@ -14618,13 +14629,15 @@
                             action: null
                         });
                     } else {
-                        const targetBps = Math.min(maxBps, Math.max(500, baseBps + 100));
-                        if (targetBps > baseBps) {
+                        // Target derived from configBaseBps (the BASE_SPREAD_BPS setting)
+                        // so the click writes a value strictly above the current config.
+                        const targetBps = Math.min(maxBps, Math.max(500, configBaseBps + 100));
+                        if (targetBps > configBaseBps) {
                             pushSuggestion({
                                 type: 'success',
                                 icon: 'OK',
                                 msg: 'No competitors are showing on Dexie and arb is calm. You can widen slightly without losing queue position.',
-                                action: 'Widen to ' + fmtPct(targetBps),
+                                action: 'Widen base to ' + fmtPct(targetBps),
                                 actionType: 'applySpread',
                                 actionValue: String(targetBps)
                             });
@@ -14780,30 +14793,33 @@
                     return;
                 }
                 case 'reserveFloor':
-                    // Reserve floor hit — open Settings and scroll to Safety section
-                    if (typeof switchView === 'function') switchView('settings');
+                    // Reserve floor hit — open Settings and scroll to Safety section.
+                    // Prefer v4SwitchView (the real view switcher in this build);
+                    // openConfig() also works but shows a modal when the bot is
+                    // running, so avoid it here.
+                    if (typeof v4SwitchView === 'function') v4SwitchView('settings');
+                    else if (typeof switchView === 'function') switchView('settings');
                     else {
-                        const settingsTab = document.querySelector('[data-view="settings"], [onclick*="settings"]');
+                        const settingsTab = document.querySelector('[data-view="settings"]');
                         if (settingsTab) settingsTab.click();
                     }
                     setTimeout(() => {
-                        const safetyEl = document.querySelector('.safety-section, [data-section="safety"]')
-                            || Array.from(document.querySelectorAll('h3,h4')).find(el => el.textContent.includes('Safety'));
+                        const safetyEl = document.getElementById('settings-section-safety');
                         if (safetyEl) safetyEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
                     }, 300);
                     return;
                 case 'openSettings': {
                     // Navigate to Settings view and optionally scroll to a section
                     const section = String(rawValue || '');
-                    if (typeof switchView === 'function') switchView('settings');
+                    if (typeof v4SwitchView === 'function') v4SwitchView('settings');
+                    else if (typeof switchView === 'function') switchView('settings');
                     else {
-                        const settingsTab = document.querySelector('[data-view="settings"], [onclick*="settings"]');
+                        const settingsTab = document.querySelector('[data-view="settings"]');
                         if (settingsTab) settingsTab.click();
                     }
                     if (section === 'safety') {
                         setTimeout(() => {
-                            const safetyEl = document.querySelector('.safety-section, [data-section="safety"]')
-                                || Array.from(document.querySelectorAll('h3,h4')).find(el => el.textContent.includes('Safety'));
+                            const safetyEl = document.getElementById('settings-section-safety');
                             if (safetyEl) safetyEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
                         }, 300);
                     }
@@ -14820,7 +14836,8 @@
                 case 'openLiveControls': {
                     // Scroll to and expand Live Controls, then highlight the gap-closer button
                     // First switch to dashboard view if not already there
-                    if (typeof switchView === 'function') switchView('dashboard');
+                    if (typeof v4SwitchView === 'function') v4SwitchView('dashboard');
+                    else if (typeof switchView === 'function') switchView('dashboard');
                     const liveControlsEl = document.getElementById('liveControlsBody');
                     // Remove collapsed class (v4 collapse mechanism) AND inline display:none
                     if (liveControlsEl) {
@@ -14850,8 +14867,22 @@
         let _saSpreadActionCooldownUntil = 0;  // Suppress re-suggest after acting
 
         function saApplySpread(bps) {
-            document.getElementById('lcSpreadSlider').value = bps;
-            lcSpreadInput(document.getElementById('lcSpreadSlider'));
+            // The slider's max attribute silently clamps `slider.value = bps`
+            // when bps > slider.max. If we route through the slider without
+            // raising its max first, a target above the current MAX_SPREAD_BPS
+            // silently becomes MAX, while the MAX auto-bump below uses the
+            // un-clamped `bps` — producing two inconsistent writes. Raise the
+            // slider.max upfront so the value we post matches the value we
+            // decided to apply.
+            const slider = document.getElementById('lcSpreadSlider');
+            if (slider) {
+                const sliderMax = parseInt(slider.max, 10) || 0;
+                if (bps > sliderMax) {
+                    slider.max = bps;
+                }
+                slider.value = bps;
+                lcSpreadInput(slider);
+            }
             // Actually apply the spread change via API, not just move the slider
             lcApplySpread();
 
