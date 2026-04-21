@@ -6644,9 +6644,9 @@ def api_market_summary():
         pass
 
     # --- Dexie orderbook best bid & ask (compute from actual amounts) ---
-    # The Dexie v1 'price' field is unreliable (inverted for buy offers).
-    # Instead, parse offered/requested arrays and compute XCH/CAT directly,
-    # the same proven approach used in market_intel.py.
+    # The Dexie v1 'price' field is inverted for buy offers, so we parse
+    # the offered/requested arrays and compute XCH/CAT directly — the same
+    # approach used in market_intel.py.
     def _extract_xch_per_cat(offer, cat_id):
         """Extract XCH/CAT price from a Dexie v1 offer's amounts."""
         xch_amt = 0.0
