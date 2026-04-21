@@ -691,6 +691,34 @@ def init_database():
         except Exception:
             pass
 
+    # Repair pass: reconcile lifecycle_state with terminal status values.
+    # `update_offer_status()` writes both fields atomically, but legacy
+    # code paths (or older migrations) set `status` directly and left
+    # `lifecycle_state` stuck at 'open'. Rows like this bloat
+    # `get_open_offers()` noise and pollute dashboard queries — the
+    # affected DB had 1,880 such rows. Idempotent, runs once per init.
+    try:
+        cur = conn.execute(
+            "UPDATE offers SET lifecycle_state = CASE status "
+            "    WHEN 'cancelled' THEN 'cancelled' "
+            "    WHEN 'filled'    THEN 'filled' "
+            "    WHEN 'expired'   THEN 'expired' "
+            "    ELSE lifecycle_state END "
+            "WHERE status IN ('cancelled', 'filled', 'expired') "
+            "  AND (lifecycle_state IS NULL "
+            "       OR lifecycle_state = 'open' "
+            "       OR lifecycle_state = 'refresh_due')"
+        )
+        repaired = cur.rowcount or 0
+        if repaired > 0:
+            conn.commit()
+            log_event("info", "db_lifecycle_repair",
+                      f"Reconciled {repaired} offer rows where status was "
+                      f"terminal but lifecycle_state was still open/refresh_due")
+    except Exception as _repair_err:
+        log_event("warning", "db_lifecycle_repair_failed",
+                  f"Lifecycle_state repair pass failed (non-fatal): {_repair_err}")
+
     conn.commit()
     log_event("info", "database_init", "Database initialized successfully")
 

@@ -10075,6 +10075,44 @@
                         </div>
                     </div>
 
+                    <!-- ══ SECTION: Data Management ══ -->
+                    <div class="v4-settings-section v4-settings-red">
+                        <div class="v4-settings-section-title" style="color: var(--sell-color);">Data Management <span class="cc-help">?<span class="cc-tooltip">Reset tracking data without touching coin prep or wallet state. All three actions require the bot to be stopped and ask for confirmation. None of these touch on-chain state or settings.</span></span></div>
+                        <div class="v4-settings-hint" style="margin-bottom: 12px;">Clear accumulated tracking data. Each option is independent — pick the one that matches what you want to reset. The bot must be stopped first.</div>
+
+                        <div style="display: grid; grid-template-columns: 1fr; gap: 10px;">
+                            <div style="padding: 10px 12px; background: rgba(248,113,113,0.05); border: 1px solid rgba(248,113,113,0.2); border-radius: 6px;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px;">
+                                    <div style="flex: 1;">
+                                        <div style="font-weight: 600; font-size: 0.95em;">Reset P&amp;L Counters</div>
+                                        <div class="v4-settings-hint" style="margin-top: 2px;">Wipes fill history, round-trips, price history, inventory snapshots, and the position baseline. Open offers, coins, and settings are kept.</div>
+                                    </div>
+                                    <button class="btn" id="btnResetPnl" onclick="handleResetPnL()" style="padding: 8px 14px; background: rgba(248,113,113,0.15); border: 1px solid rgba(248,113,113,0.4); color: var(--sell-color); border-radius: 6px; white-space: nowrap;">Reset P&amp;L</button>
+                                </div>
+                            </div>
+
+                            <div style="padding: 10px 12px; background: rgba(248,113,113,0.05); border: 1px solid rgba(248,113,113,0.2); border-radius: 6px;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px;">
+                                    <div style="flex: 1;">
+                                        <div style="font-weight: 600; font-size: 0.95em;">Clear Offer History</div>
+                                        <div class="v4-settings-hint" style="margin-top: 2px;">Deletes all closed, cancelled, and expired offer rows. Live (open) offers remain. Keeps P&amp;L counters and all other data untouched.</div>
+                                    </div>
+                                    <button class="btn" id="btnResetOfferHistory" onclick="handleClearOfferHistory()" style="padding: 8px 14px; background: rgba(248,113,113,0.15); border: 1px solid rgba(248,113,113,0.4); color: var(--sell-color); border-radius: 6px; white-space: nowrap;">Clear History</button>
+                                </div>
+                            </div>
+
+                            <div style="padding: 10px 12px; background: rgba(248,113,113,0.08); border: 1px solid rgba(248,113,113,0.35); border-radius: 6px;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px;">
+                                    <div style="flex: 1;">
+                                        <div style="font-weight: 600; font-size: 0.95em; color: var(--sell-color);">Full Reset</div>
+                                        <div class="v4-settings-hint" style="margin-top: 2px;">Both of the above, plus runtime stat counters (sniper history, watchdog streaks, fill-tracker state). Coin designations, settings, and wallet state are preserved.</div>
+                                    </div>
+                                    <button class="btn" id="btnResetFull" onclick="handleFullReset()" style="padding: 8px 14px; background: rgba(248,113,113,0.25); border: 1px solid var(--sell-color); color: var(--sell-color); border-radius: 6px; white-space: nowrap; font-weight: 600;">Full Reset</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                 </div>
 
                 <!-- Sticky footer — always visible at bottom, never scrolls away -->
@@ -27559,6 +27597,84 @@
                 btn.style.cursor = '';
                 btn.textContent = defaultLabel;
             }
+        }
+
+        // ── Data Management reset handlers ─────────────────────────────────
+        // Three destructive buttons in Settings → Data Management. Each
+        // confirms via the shared showStyledConfirm modal, POSTs to the
+        // matching /api/reset/* endpoint with the RESET token, and shows
+        // the result as a toast. All three are gated server-side on the
+        // bot being stopped; if the bot is running the endpoint returns
+        // 409 and we surface the message.
+        async function _runReset(endpoint, label, successMsgBuilder) {
+            try {
+                const resp = await apiFetch(`${API_URL}/${endpoint}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ confirm: 'RESET' }),
+                });
+                const data = await resp.json();
+                if (!resp.ok || !data.success) {
+                    const msg = data?.message || data?.error || 'Reset failed.';
+                    showToast(`${label} failed: ${msg}`, 'error', 5000);
+                    return;
+                }
+                const succ = typeof successMsgBuilder === 'function'
+                    ? successMsgBuilder(data)
+                    : (data.message || `${label} complete.`);
+                showToast(succ, 'success', 5000);
+            } catch (e) {
+                showToast(`${label} failed: ${e?.message || e}`, 'error', 5000);
+            }
+        }
+
+        async function handleResetPnL() {
+            const confirmed = await showStyledConfirm({
+                icon: '🧮',
+                title: 'Reset P&L Counters',
+                message: 'This permanently wipes fill history, round-trips, '
+                       + 'inventory snapshots, price history and the position '
+                       + 'baseline. Open offers, coins, and settings are kept.',
+                extraText: 'Cannot be undone.',
+                confirmText: 'Reset P&L',
+                style: 'danger',
+            });
+            if (!confirmed) return;
+            await _runReset('pnl/reset', 'P&L reset');
+        }
+
+        async function handleClearOfferHistory() {
+            const confirmed = await showStyledConfirm({
+                icon: '🗑️',
+                title: 'Clear Offer History',
+                message: 'This permanently deletes every closed, cancelled, '
+                       + 'expired, and phantom-rejected offer row in the '
+                       + 'database. Live (open) offers are kept. P&L counters '
+                       + 'and coin state are not touched.',
+                extraText: 'Cannot be undone. The bot must be stopped.',
+                confirmText: 'Clear History',
+                style: 'danger',
+            });
+            if (!confirmed) return;
+            await _runReset('reset/offer-history', 'Clear offer history',
+                d => `Cleared ${d.deleted} offer rows.`);
+        }
+
+        async function handleFullReset() {
+            const confirmed = await showStyledConfirm({
+                icon: '💣',
+                title: 'Full Reset',
+                message: 'This combines P&L reset and offer history clear, '
+                       + 'plus resets runtime stat counters (sniper history, '
+                       + 'watchdog streaks, fill-tracker state). Coin '
+                       + 'designations, settings, and wallet state are '
+                       + 'preserved.',
+                extraText: 'Cannot be undone. The bot must be stopped.',
+                confirmText: 'Full Reset',
+                style: 'danger',
+            });
+            if (!confirmed) return;
+            await _runReset('reset/full', 'Full reset');
         }
 
         function handleSaveClick() {

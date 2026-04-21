@@ -5005,6 +5005,207 @@ def api_pnl_reset():
         return _api_error(e, request.path)
 
 
+@app.route("/api/reset/offer-history", methods=["POST"])
+def api_reset_offer_history():
+    """Delete terminal-state offer rows (cancelled / filled / expired /
+    phantom_rejected) from the DB. Keeps open offers intact.
+
+    Use case: user wants a clean offer-history view without touching
+    P&L counters or coin state. After a long run the `offers` table can
+    accumulate thousands of cancelled rows (the 2026-04-21 repair found
+    1,880 on one DB) which bloats diagnostic queries and the GUI.
+
+    Gated on bot-not-running to avoid racing with live cancel/expiry
+    writes. Requires ``{confirm: 'RESET'}`` body token.
+    """
+    slog("GUI_ACTION", ">>> BUTTON: Clear Offer History")
+    try:
+        if bot and bot.is_running():
+            return jsonify({
+                "success": False,
+                "error": "bot_running",
+                "message": "Stop the bot before clearing offer history.",
+            }), 409
+
+        payload = request.get_json(silent=True) or {}
+        if (payload.get("confirm") or "").strip().upper() != "RESET":
+            return jsonify({
+                "success": False,
+                "error": "confirmation_required",
+                "message": "Send {confirm: 'RESET'} to confirm the wipe.",
+            }), 400
+
+        conn = get_connection()
+        try:
+            # Count before delete for the summary.
+            before = conn.execute(
+                "SELECT COUNT(*) AS n FROM offers "
+                "WHERE status IN ('cancelled', 'filled', 'expired') "
+                "   OR lifecycle_state IN ('cancelled', 'filled', 'expired', "
+                "                          'phantom_rejected', 'user_cancelled')"
+            ).fetchone()
+            n_before = int((before["n"] if before else 0) or 0)
+
+            cur = conn.execute(
+                "DELETE FROM offers "
+                "WHERE status IN ('cancelled', 'filled', 'expired') "
+                "   OR lifecycle_state IN ('cancelled', 'filled', 'expired', "
+                "                          'phantom_rejected', 'user_cancelled')"
+            )
+            deleted = int(cur.rowcount or 0)
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+
+        log_event("info", "offer_history_cleared",
+                  f"Cleared {deleted} terminal-state offer rows "
+                  f"(was {n_before} matching)")
+        return jsonify({
+            "success": True,
+            "message": f"Cleared {deleted} closed/cancelled/expired offer rows.",
+            "deleted": deleted,
+        })
+    except Exception as e:
+        log_event("warning", "offer_history_clear_failed",
+                  f"Clear offer history failed: {e}")
+        return _api_error(e, request.path)
+
+
+@app.route("/api/reset/full", methods=["POST"])
+def api_reset_full():
+    """Full reset: P&L counters + offer history + runtime stat counters.
+
+    Wipes everything a user would want gone for a genuinely fresh start
+    — but stops short of touching coin designations, wallet state, or
+    settings. Chains the existing ``/api/pnl/reset`` semantics with
+    offer-history deletion and in-memory counter resets on
+    risk_manager / sniper / fill_tracker.
+
+    Gated on bot-not-running. Requires ``{confirm: 'RESET'}``.
+    """
+    slog("GUI_ACTION", ">>> BUTTON: Full Reset")
+    try:
+        if bot and bot.is_running():
+            return jsonify({
+                "success": False,
+                "error": "bot_running",
+                "message": "Stop the bot before running a full reset.",
+            }), 409
+
+        payload = request.get_json(silent=True) or {}
+        if (payload.get("confirm") or "").strip().upper() != "RESET":
+            return jsonify({
+                "success": False,
+                "error": "confirmation_required",
+                "message": "Send {confirm: 'RESET'} to confirm the wipe.",
+            }), 400
+
+        # Step 1: PnL reset (fills + round_trips + price_history + inventory).
+        summary = _reset_fresh_run_session(
+            clear_coins=False,
+            clear_price_history=True,
+            clear_inventory=True,
+            cancel_open_offers=False,
+            preserve_history=False,
+            reason="full_reset",
+        )
+
+        # Step 2: delete terminal-state offer rows.
+        conn = get_connection()
+        offers_deleted = 0
+        try:
+            cur = conn.execute(
+                "DELETE FROM offers "
+                "WHERE status IN ('cancelled', 'filled', 'expired') "
+                "   OR lifecycle_state IN ('cancelled', 'filled', 'expired', "
+                "                          'phantom_rejected', 'user_cancelled')"
+            )
+            offers_deleted = int(cur.rowcount or 0)
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
+        # Step 3: reset in-memory counters on bot components. The bot is
+        # not running at this point (gate above), so we reset whatever
+        # instances exist. All of these are best-effort — a missing
+        # component is not a failure condition.
+        counters_reset = []
+        try:
+            if bot is not None:
+                _rm = getattr(bot, "risk_manager", None)
+                if _rm is not None and hasattr(_rm, "reset_position"):
+                    _rm.reset_position()
+                    counters_reset.append("risk_manager.position")
+                _sn = getattr(bot, "sniper", None)
+                if _sn is not None:
+                    try:
+                        with getattr(_sn, "_snipe_lock", _SNIPE_LOCK_NOOP):
+                            _sn._total_snipes = 0
+                            _sn._total_skipped = 0
+                            if hasattr(_sn, "_snipe_history"):
+                                _sn._snipe_history.clear()
+                            if hasattr(_sn, "_active_snipe_ids"):
+                                _sn._active_snipe_ids.clear()
+                            _sn._last_snipe_time = 0
+                        counters_reset.append("sniper.counters")
+                    except Exception:
+                        pass
+                _ft = getattr(bot, "fill_tracker", None)
+                if _ft is not None:
+                    try:
+                        if hasattr(_ft, "_mass_disappearance_count"):
+                            _ft._mass_disappearance_count = 0
+                        if hasattr(_ft, "_mass_disappearance_first_at"):
+                            _ft._mass_disappearance_first_at = None
+                        counters_reset.append("fill_tracker.counters")
+                    except Exception:
+                        pass
+                # Watchdog persistence streaks — wipe so a fresh start
+                # doesn't inherit stale tier-drift alerts.
+                try:
+                    if hasattr(bot, "_watchdog_violation_streaks"):
+                        bot._watchdog_violation_streaks.clear()
+                        counters_reset.append("watchdog.streaks")
+                except Exception:
+                    pass
+        except Exception as _c_err:
+            log_event("debug", "full_reset_counters_partial",
+                      f"Some in-memory counter resets failed (non-fatal): {_c_err}")
+
+        log_event("info", "full_reset_done",
+                  f"Full reset: fills={summary.get('fills_cleared', 0)}, "
+                  f"round_trips={summary.get('round_trips_cleared', 0)}, "
+                  f"offers_deleted={offers_deleted}, "
+                  f"counters_reset={','.join(counters_reset) or 'none'}")
+        return jsonify({
+            "success": True,
+            "message": (f"Cleared {summary.get('fills_cleared', 0)} fills, "
+                        f"{offers_deleted} offer rows, and reset "
+                        f"{len(counters_reset)} in-memory counters."),
+            "offers_deleted": offers_deleted,
+            "counters_reset": counters_reset,
+            **_serialize_dict(summary),
+        })
+    except Exception as e:
+        log_event("warning", "full_reset_failed",
+                  f"Full reset failed: {e}")
+        return _api_error(e, request.path)
+
+
+# Sentinel context manager for the sniper lock fallback above.
+class _SNIPE_LOCK_NOOP_CLS:
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+_SNIPE_LOCK_NOOP = _SNIPE_LOCK_NOOP_CLS()
+
+
 @app.route("/api/session/fresh-start", methods=["POST"])
 def api_session_fresh_start():
     """Begin a brand new run without carrying forward old session state."""
