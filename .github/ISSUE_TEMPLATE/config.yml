@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Ask a question
+    url: https://github.com/Lowestofttim/catalyst-bot/discussions/categories/q-a
+    about: Questions about configuration, setup, or usage belong in Q&A Discussions.
+  - name: Suggest a feature
+    url: https://github.com/Lowestofttim/catalyst-bot/discussions/categories/ideas
+    about: Open-ended feature ideas belong in Ideas Discussions before becoming issues.
+  - name: Show off a config or result
+    url: https://github.com/Lowestofttim/catalyst-bot/discussions/categories/show-and-tell
+    about: Share dashboards, P&L, custom configs with the community.
