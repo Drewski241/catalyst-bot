@@ -1048,6 +1048,201 @@ def check_funds_advisory(auto_repair: bool = True) -> HealthCheck:
     )
 
 
+# ── Check 7: Splash daemon hook fires ─────────────────────────────────
+
+# How many offers the daemon must have gossiped before we're confident the
+# hook silence isn't just peer-sparse bootstrap. 10 offers × 5s poll ≈ 50s
+# of live P2P activity — well above any startup lull.
+_SPLASH_HOOK_MIN_SEEN = 10
+# How many of those offers must have reached our webhook before we
+# consider the hook "working". 1 is enough to prove the pipeline.
+_SPLASH_HOOK_MIN_DELIVERED = 1
+
+
+def check_splash_daemon(auto_repair: bool = True) -> HealthCheck:
+    """Detect silent Splash daemon states and surface them to the operator.
+
+    Three distinct silent failures look identical from the counter-on-the-
+    dashboard view ("0 received"):
+
+      A. Daemon not running or metrics endpoint unreachable → misconfigured
+         or crashed, user needs to restart it.
+      B. Daemon running but zero peers → network/firewall blocking inbound
+         P2P on port 11511.
+      C. Daemon has peers AND has seen offers AND our webhook has delivered
+         zero to the DB → offer-hook is broken (version mismatch, network
+         loopback issue, or daemon bug). User gets actionable guidance.
+
+    Read-only: no repair to perform, just accurate classification via the
+    alert store so the Market Intel panel isn't silently lying.
+    """
+    events_bus = None
+    try:
+        from api_server import events as events_bus  # type: ignore
+    except Exception:
+        events_bus = None
+
+    def _emit_alert(alert_id, title, message, severity="warning"):
+        if events_bus is None or not auto_repair:
+            return
+        try:
+            events_bus.alert(alert_id, severity, title, message)
+        except Exception:
+            pass
+
+    def _clear_alert(alert_id):
+        if events_bus is None:
+            return
+        try:
+            store = getattr(events_bus, "_alert_store", None)
+            if store is not None:
+                store.clear(alert_id)
+        except Exception:
+            pass
+
+    # Pull current snapshot from the running bot. No-bot or no-splash_node
+    # means Splash management is off entirely — skip the check.
+    try:
+        import api_server
+        bot = getattr(api_server, "bot", None)
+    except Exception:
+        bot = None
+
+    if bot is None or getattr(bot, "splash_node", None) is None:
+        # Clear any stale alerts — Splash is not in scope.
+        for aid in ("splash_unreachable", "splash_no_peers", "splash_hook_broken"):
+            _clear_alert(aid)
+        return HealthCheck(
+            name="splash_daemon",
+            category="wallet",
+            status="pass",
+            severity="info",
+            message="Splash management not active.",
+        )
+
+    # SPLASH_RECEIVE_ENABLED off → user opted out of inbound, don't nag.
+    if not bool(getattr(cfg, "SPLASH_RECEIVE_ENABLED", False)):
+        for aid in ("splash_unreachable", "splash_no_peers", "splash_hook_broken"):
+            _clear_alert(aid)
+        return HealthCheck(
+            name="splash_daemon",
+            category="wallet",
+            status="pass",
+            severity="info",
+            message="Splash inbound listening disabled.",
+        )
+
+    metrics = {}
+    try:
+        metrics = bot.splash_node.get_metrics() or {}
+    except Exception:
+        metrics = {}
+
+    reachable = bool(metrics.get("reachable", False))
+    peers = int(metrics.get("peers", 0) or 0)
+    offers_seen = int(metrics.get("offers_received", 0) or 0)
+
+    # Webhook delivery count (DB-side).
+    delivered_total = 0
+    try:
+        from database import get_splash_incoming_stats
+        asset_id = str(getattr(cfg, "CAT_ASSET_ID", "") or "").strip().lower()
+        stats = get_splash_incoming_stats(asset_id=asset_id) or {}
+        delivered_total = int(stats.get("total", 0) or 0)
+    except Exception:
+        delivered_total = 0
+
+    findings = []
+    alerts_raised = []
+
+    # Case A: daemon metrics endpoint unreachable (daemon down or port
+    # misconfigured). Only alert when the process is supposed to be up.
+    if not reachable:
+        last_err = str(metrics.get("last_error") or "no metrics snapshot yet")
+        findings.append(f"metrics endpoint unreachable ({last_err})")
+        _emit_alert(
+            alert_id="splash_unreachable",
+            title="Splash daemon metrics unreachable",
+            message=(
+                f"Can't read splash.exe metrics at "
+                f"{metrics.get('metrics_url') or 'the configured port'}. "
+                f"Restart the Splash node from Market Intel, or check that "
+                f"port {getattr(cfg, 'SPLASH_METRICS_PORT', 4001)} isn't "
+                f"firewalled. Reason: {last_err}"
+            ),
+            severity="warning",
+        )
+        alerts_raised.append("splash_unreachable")
+    else:
+        _clear_alert("splash_unreachable")
+
+    # Case B: reachable but zero peers — network/firewall issue.
+    if reachable and peers == 0:
+        findings.append("daemon has 0 peers")
+        _emit_alert(
+            alert_id="splash_no_peers",
+            title="Splash daemon has no peers",
+            message=(
+                "Splash is running but not connected to any P2P peers. "
+                "Check that your firewall/router allows inbound TCP on "
+                f"port {getattr(cfg, 'SPLASH_P2P_PORT', 11511)}. Without "
+                "peers the bot can't receive offers from the Splash network."
+            ),
+            severity="warning",
+        )
+        alerts_raised.append("splash_no_peers")
+    else:
+        _clear_alert("splash_no_peers")
+
+    # Case C: daemon has seen plenty of offers but the webhook has zero —
+    # the --offer-hook path is broken (version mismatch, bind issue, etc).
+    if (reachable and peers > 0
+            and offers_seen >= _SPLASH_HOOK_MIN_SEEN
+            and delivered_total < _SPLASH_HOOK_MIN_DELIVERED):
+        findings.append(
+            f"daemon seen {offers_seen} offers but webhook got "
+            f"{delivered_total}"
+        )
+        _emit_alert(
+            alert_id="splash_hook_broken",
+            title="Splash offer-hook not firing",
+            message=(
+                f"Splash daemon has seen {offers_seen:,} offers from its "
+                f"{peers} peers but only {delivered_total} have reached "
+                f"the bot's webhook. The --offer-hook path is likely "
+                f"broken — check the splash binary version, or restart "
+                f"the node. Inbound offers won't be processed until this "
+                f"is resolved."
+            ),
+            severity="warning",
+        )
+        alerts_raised.append("splash_hook_broken")
+    else:
+        _clear_alert("splash_hook_broken")
+
+    if not findings:
+        return HealthCheck(
+            name="splash_daemon",
+            category="wallet",
+            status="pass",
+            severity="info",
+            message=(f"Splash healthy: peers={peers}, "
+                     f"offers_seen={offers_seen}, "
+                     f"delivered={delivered_total}"),
+        )
+
+    return HealthCheck(
+        name="splash_daemon",
+        category="wallet",
+        status="warn",
+        severity="warning",
+        message="; ".join(findings),
+        anomaly_count=len(findings),
+        repaired_count=0,  # out-of-band: user must act
+        repair_log=[f"raised:{a}" for a in alerts_raised],
+    )
+
+
 # ── Top-level runner ───────────────────────────────────────────────────
 
 # Cache to avoid running checks more often than needed (the bot loop
@@ -1099,6 +1294,7 @@ def run_runtime_checks(auto_repair: bool = True,
     report.checks.append(check_ladder_overbuild(auto_repair=auto_repair))
     report.checks.append(check_topup_budget_drift(auto_repair=auto_repair))
     report.checks.append(check_funds_advisory(auto_repair=auto_repair))
+    report.checks.append(check_splash_daemon(auto_repair=auto_repair))
 
     report.duration_ms = (time.time() - start) * 1000.0
     _last_run_lock_ts = time.time()

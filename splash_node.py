@@ -58,6 +58,21 @@ class SplashNode:
         self._last_output_lines: list = []
         self._max_output_lines: int = 50
 
+        # Metrics: cached from Splash's Prometheus-ish JSON endpoint
+        # populated by --listen-metrics. See _poll_metrics for the poller.
+        # Fields as returned by splash v0.2.0:
+        #   peers              — current peer count
+        #   offers_broadcasted — cumulative offers sent (outbound)
+        #   offers_received    — cumulative offers received from peers
+        #   total_connections  — lifetime peer connections
+        # Plus our own:
+        #   last_polled_at, last_error, metrics_url
+        self._metrics_bind: Optional[str] = None  # set at launch
+        self._metrics: dict = {}
+        self._metrics_lock = threading.Lock()
+        self._metrics_thread: Optional[threading.Thread] = None
+        self._metrics_poll_secs: float = 5.0
+
     # -------------------------------------------------------------------
     # Binary discovery
     # -------------------------------------------------------------------
@@ -365,10 +380,20 @@ class SplashNode:
         # P2P listen port (optional)
         p2p_port = getattr(cfg, "SPLASH_P2P_PORT", 11511)
 
+        # Prometheus metrics port (loopback only). Splash v0.2.0+ exposes
+        # peer count, offers seen, gossip rate, and bandwidth counters via
+        # --listen-metrics. Without these numbers the operator has no way
+        # to tell whether a silent "0 received" counter means the daemon
+        # is starved of peers or its offer-hook is broken. We wire them
+        # into the Market Intel panel via the stats endpoint below.
+        metrics_port = int(getattr(cfg, "SPLASH_METRICS_PORT", 4001) or 4001)
+        self._metrics_bind = f"127.0.0.1:{metrics_port}"
+
         cmd = [
             binary,
             "--listen-offer-submission", submit_bind,
             "--listen-address", f"/ip4/0.0.0.0/tcp/{p2p_port}",
+            "--listen-metrics", self._metrics_bind,
         ]
 
         # Only add --offer-hook if SPLASH_RECEIVE_ENABLED is True.
@@ -431,6 +456,18 @@ class SplashNode:
 
         log_event("info", "splash_node_running",
                   f"Splash node running (PID: {self._pid})")
+
+        # Start metrics poller thread. Pulls the JSON `/metrics` endpoint
+        # every few seconds so the GUI + bot_health can reason about peer
+        # count and offer throughput without re-hitting splash on every
+        # dashboard request. Runs as a daemon — exits with the process.
+        if self._metrics_thread is None or not self._metrics_thread.is_alive():
+            self._metrics_thread = threading.Thread(
+                target=self._poll_metrics,
+                daemon=True,
+                name="splash-metrics",
+            )
+            self._metrics_thread.start()
 
         # Start output reader thread
         reader = threading.Thread(
@@ -536,7 +573,81 @@ class SplashNode:
         health = self.check_health()
         health["last_output"] = self._last_output_lines[-10:] if self._last_output_lines else []
         health["manager_running"] = self._running
+        health["metrics"] = self.get_metrics()
         return health
+
+    def get_metrics(self) -> Dict:
+        """Snapshot of the latest Splash internal metrics.
+
+        Source: the daemon's `--listen-metrics` HTTP endpoint, polled every
+        few seconds by the poller thread. Gives the GUI and bot_health a
+        real window into daemon health: peer count, offers_received/broadcasted,
+        and total_connections. Without this the only visible signal is
+        our DB row count, which is silent when splash has peers but the
+        offer-hook isn't firing.
+        """
+        with self._metrics_lock:
+            return dict(self._metrics)
+
+    def _poll_metrics(self) -> None:
+        """Poll splash.exe's `/metrics` endpoint into `_metrics` forever.
+
+        Exits when the managed process is no longer running. Short-circuits
+        to a zeroed snapshot if the endpoint isn't reachable yet (splash
+        needs a couple of seconds after Popen before binding the port).
+        """
+        import urllib.request
+        import json as _json
+
+        if not self._metrics_bind:
+            return
+        url = f"http://{self._metrics_bind}/metrics"
+
+        while True:
+            if not self.is_running():
+                # Process is gone — stop polling. A fresh start spawns a
+                # new poller via _launch_process().
+                return
+
+            snapshot: dict = {
+                "peers": 0,
+                "offers_broadcasted": 0,
+                "offers_received": 0,
+                "total_connections": 0,
+                "last_polled_at": time.time(),
+                "last_error": None,
+                "metrics_url": url,
+                "reachable": False,
+            }
+            try:
+                with urllib.request.urlopen(url, timeout=3) as resp:
+                    raw = resp.read().decode("utf-8", errors="replace")
+                parsed = _json.loads(raw)
+                if isinstance(parsed, dict):
+                    snapshot["peers"] = int(parsed.get("peers", 0) or 0)
+                    snapshot["offers_broadcasted"] = int(
+                        parsed.get("offers_broadcasted", 0) or 0)
+                    snapshot["offers_received"] = int(
+                        parsed.get("offers_received", 0) or 0)
+                    snapshot["total_connections"] = int(
+                        parsed.get("total_connections", 0) or 0)
+                    snapshot["reachable"] = True
+            except Exception as e:
+                snapshot["last_error"] = str(e)[:120]
+
+            with self._metrics_lock:
+                # Preserve previously-observed cumulative highs in case the
+                # endpoint hiccuped and returned zeros on a single poll.
+                prev = self._metrics
+                for k in ("offers_broadcasted", "offers_received",
+                          "total_connections"):
+                    if not snapshot["reachable"]:
+                        snapshot[k] = int(prev.get(k, 0) or 0)
+                self._metrics = snapshot
+
+            # Sleep between polls. No tight loop on error — the same
+            # interval applies so a dead endpoint doesn't hot-loop.
+            time.sleep(max(1.0, float(self._metrics_poll_secs)))
 
     def get_recent_output(self, lines: int = 20) -> list:
         """Get recent output lines from Splash for debugging."""

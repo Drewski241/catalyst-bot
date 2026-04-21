@@ -2346,6 +2346,21 @@ class BotLoop:
         stats["pair_label"] = self._current_splash_pair_label()
         stats["poll_secs"] = getattr(self, "_splash_receive_interval", 5)
         stats["batch_size"] = getattr(self, "_splash_receive_batch_size", 10)
+
+        # Daemon-side metrics (peer count, offers_received/broadcasted,
+        # reachability) — scraped from splash.exe's --listen-metrics
+        # endpoint by the SplashNode poller. Empty dict when the node
+        # isn't running or the endpoint isn't configured. The GUI uses
+        # these to distinguish "splash silent because no peers" from
+        # "splash has peers but offer-hook broken".
+        try:
+            if getattr(self, "splash_node", None) is not None:
+                stats["node_metrics"] = self.splash_node.get_metrics() or {}
+            else:
+                stats["node_metrics"] = {}
+        except Exception:
+            stats["node_metrics"] = {}
+
         return stats
 
     def _resolve_splash_view_offer(self):

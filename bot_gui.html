@@ -9202,6 +9202,22 @@
                                 <div id="splashIncomingLast" style="font-size: 13px; font-weight: 600; color: rgba(255,255,255,0.7);">-</div>
                             </div>
                         </div>
+                        <!-- Daemon-side metrics from splash.exe --listen-metrics -->
+                        <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.06);">
+                            <div>
+                                <div style="color: rgba(255,255,255,0.5); font-size: 11px;">Peers</div>
+                                <div id="splashPeers" style="font-size: 13px; font-weight: 600; color: var(--accent-cyan);">-</div>
+                            </div>
+                            <div>
+                                <div style="color: rgba(255,255,255,0.5); font-size: 11px;">Daemon Offers Seen</div>
+                                <div id="splashOffersSeen" style="font-size: 13px; font-weight: 600; color: rgba(255,255,255,0.7);">-</div>
+                            </div>
+                            <div>
+                                <div style="color: rgba(255,255,255,0.5); font-size: 11px;">Daemon Offers Sent</div>
+                                <div id="splashOffersSent" style="font-size: 13px; font-weight: 600; color: rgba(255,255,255,0.7);">-</div>
+                            </div>
+                        </div>
+                        <div id="splashPeersHint" style="margin-top: 6px; font-size: 11px; color: var(--status-warning);"></div>
                         <div id="splashIncomingHint" style="margin-top: 8px; font-size: 11px; color: rgba(255,255,255,0.45);">Relevant = inbound peer offers that match the current CAT/XCH pair.</div>
                     </div>
                     <div id="splashStatusHint" style="margin-top: 10px; font-size: 11px; color: rgba(255,255,255,0.45);">Posted / failed / skipped are session counters. Queue and cached live offers explain quiet runs.</div>
@@ -21127,6 +21143,45 @@
                 if (el('splashIncomingHint')) {
                     const pairLabel = receive.pair_label || 'CAT/XCH';
                     el('splashIncomingHint').textContent = 'Relevant = inbound peer offers that match ' + pairLabel + '.';
+                }
+
+                // Daemon-side metrics from splash.exe's --listen-metrics
+                // endpoint. These distinguish "splash has no peers" from
+                // "splash has peers but offer-hook broken" — key signal
+                // when the DB's received counter is stuck at 0.
+                const nm = receive.node_metrics || {};
+                if (el('splashPeers')) {
+                    el('splashPeers').textContent = nm.reachable
+                        ? (nm.peers || 0)
+                        : (nm.last_polled_at ? 'unreachable' : '-');
+                }
+                if (el('splashOffersSeen')) {
+                    el('splashOffersSeen').textContent = nm.reachable
+                        ? (nm.offers_received || 0)
+                        : '-';
+                }
+                if (el('splashOffersSent')) {
+                    el('splashOffersSent').textContent = nm.reachable
+                        ? (nm.offers_broadcasted || 0)
+                        : '-';
+                }
+                if (el('splashPeersHint')) {
+                    const parts = [];
+                    if (nm.reachable) {
+                        const seen = Number(nm.offers_received || 0);
+                        const got = Number(receive.total || 0);
+                        if (seen > 0 && got === 0) {
+                            parts.push('Daemon has seen ' + seen.toLocaleString()
+                                + ' offers but the webhook has delivered 0 — offer-hook may be broken.');
+                        } else if ((nm.peers || 0) === 0) {
+                            parts.push('Daemon has no peers — check network/firewall on port 11511.');
+                        } else if (seen === 0) {
+                            parts.push('Peers connected but no offers seen yet — gossip may be sparse.');
+                        }
+                    } else if (nm.last_error) {
+                        parts.push('Metrics endpoint unreachable: ' + nm.last_error);
+                    }
+                    el('splashPeersHint').textContent = parts.join(' ');
                 }
                 if (el('splashListenToggle')) {
                     const btn = el('splashListenToggle');
