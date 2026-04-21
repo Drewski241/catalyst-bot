@@ -105,7 +105,7 @@ class TierSizesReverseBuyTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        os.chdir(r"C:\chia_liquidity_bot_v2_v4_tauri")
+        os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         if os.getcwd() not in sys.path:
             sys.path.insert(0, os.getcwd())
 

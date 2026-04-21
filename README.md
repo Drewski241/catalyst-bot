@@ -162,8 +162,6 @@ Between cycles, the coin prep subprocess runs asynchronously and the mempool wat
 | `database.py` | SQLite state layer (WAL mode) |
 | `config.py` | Typed `.env` loader with hot reload |
 
-Pure Python. The `_v2_v4_tauri` in the directory name is historical — this is not a Tauri/Rust project.
-
 ---
 
 ## Running modes

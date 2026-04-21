@@ -30,7 +30,6 @@ tmp_db_*
 
 # --- Log files ---
 *.log
-tauri_backend_stdout.log
 coin_prep_output.log
 bot_superlog_*.log
 crash.log
@@ -59,9 +58,6 @@ dist/
 build/
 *.egg
 
-# --- Rust / Tauri build artefacts ---
-src-tauri/target/
-
 # --- Alternate build output directories ---
 build2/
 dist2/
@@ -73,8 +69,6 @@ smoke_test_state.json
 _backups/
 _archive/
 backups_pre_*/
-_tauri_release_runtime_monitor/
-tauri-shell/
 
 # --- OS / editor junk ---
 .DS_Store
@@ -91,9 +85,6 @@ desktop.ini
 *.spec
 dist/
 build/
-
-# --- Runtime lock files (NOT Cargo.lock — that should be committed for apps) ---
-.tauri-instance.lock
 
 # --- Compiled binaries (not suitable for source repo) ---
 # splash.exe ships as a separate download, not via git
