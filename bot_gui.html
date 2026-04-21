@@ -10441,6 +10441,53 @@
         </div>
     </div>
 
+            <!-- Deposit Advisor Modal (2026-04-21) -->
+    <div class="modal" id="depositAdvisorModal">
+        <div class="v4-modal-shell">
+            <div class="v4-modal-inner">
+                <div class="v4-modal-hero">
+                    <div class="v4-modal-icon">💰</div>
+                    <div class="v4-modal-title">Allocate deposit</div>
+                    <div class="v4-modal-body" id="depositAdvisorSummary" style="text-align: left; font-size: 0.95em; line-height: 1.55;">
+                        Loading deposit details…
+                    </div>
+                </div>
+                <div style="padding: 0 24px 10px; display: flex; flex-direction: column; gap: 8px;">
+                    <!-- Preset choice: radios drive the slider below -->
+                    <label style="display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: rgba(16,185,129,0.08); border: 1px solid rgba(16,185,129,0.25); border-radius: 6px; cursor: pointer;">
+                        <input type="radio" name="depositAdvisorChoice" value="all_pool" checked>
+                        <span><strong>All to trading pool</strong><br><span class="v4-settings-hint">Raises the topup budget so the bot can split this coin into tier coins and trade with it.</span></span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: rgba(148,163,184,0.08); border: 1px solid rgba(148,163,184,0.25); border-radius: 6px; cursor: pointer;">
+                        <input type="radio" name="depositAdvisorChoice" value="all_reserve">
+                        <span><strong>All to hard reserve</strong><br><span class="v4-settings-hint">Raises the untouchable reserve floor. The bot will never spend from this.</span></span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: rgba(139,92,246,0.08); border: 1px solid rgba(139,92,246,0.25); border-radius: 6px; cursor: pointer;">
+                        <input type="radio" name="depositAdvisorChoice" value="split">
+                        <span><strong>Split between both</strong><br><span class="v4-settings-hint">Use the slider below to pick the ratio.</span></span>
+                    </label>
+                    <!-- Slider only active when 'split' is selected -->
+                    <div id="depositAdvisorSplitRow" style="padding: 8px 12px; opacity: 0.35; pointer-events: none;">
+                        <div style="display: flex; justify-content: space-between; font-size: 0.85em; color: var(--text-secondary); margin-bottom: 4px;">
+                            <span>Trading pool: <strong id="depositAdvisorPoolPctLabel">50%</strong></span>
+                            <span>Reserve: <strong id="depositAdvisorReservePctLabel">50%</strong></span>
+                        </div>
+                        <input type="range" id="depositAdvisorSplitSlider" min="0" max="100" step="5" value="50" style="width: 100%;">
+                    </div>
+                    <!-- Live allocation preview -->
+                    <div id="depositAdvisorPreview" style="padding: 8px 12px; background: rgba(59,130,246,0.06); border: 1px solid rgba(59,130,246,0.25); border-radius: 6px; font-size: 0.9em;">
+                        <div style="color: var(--text-secondary); font-size: 0.85em;">Preview</div>
+                        <div id="depositAdvisorPreviewBody" style="margin-top: 4px; line-height: 1.5;">—</div>
+                    </div>
+                </div>
+                <div class="v4-modal-actions" style="display: flex; flex-direction: column; gap: 10px; padding: 10px 24px 20px;">
+                    <button id="depositAdvisorApplyBtn" class="btn btn-start btn-primary" style="padding: 12px; font-size: 1em; font-weight: 700;">Apply allocation</button>
+                    <button id="depositAdvisorCancelBtn" class="btn btn-config btn-secondary" style="padding: 10px; font-size: 0.95em;">Decide later</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
             <!-- Cancel All Offers Confirmation Modal -->
     <div class="modal" id="cancelConfirmModal">
         <div class="v4-modal-shell v4-modal-shell--warning">
@@ -23491,6 +23538,23 @@
             },
             run_doctor: () => showDoctorReport(),
             show_api_stats: () => showApiStatsReport(),
+            // Deposit advisory — opens a modal letting the user split a
+            // newly-arrived coin between the topup budget (TOPUP_POOL_*)
+            // and the hard reserve (*_RESERVE). rawValue is pipe-
+            // separated: "<wallet_type>|<coin_id>|<amount_mojos>|<unit>|<budget_cfg>|<reserve_cfg>"
+            // — matches what bot_health.check_unclaimed_deposits packs.
+            allocate_deposit: (rawValue) => {
+                const parts = String(rawValue || '').split('|');
+                if (parts.length < 6) return;
+                openDepositAdvisorModal({
+                    walletType: parts[0],
+                    coinId: parts[1],
+                    amountMojos: parseInt(parts[2], 10) || 0,
+                    unit: parts[3],
+                    budgetCfg: parts[4],
+                    reserveCfg: parts[5],
+                });
+            },
             // F72/F74 Cancel-Recovery: delegate to the ShapeFixOrchestrator
             // via /api/watchdog/cancel-mismatched-offers. The endpoint
             // returns immediately with a flow_id; progress arrives via
@@ -23600,6 +23664,116 @@
                 }
             }
         };
+
+        // Deposit advisor modal: opens when the user clicks Allocate on
+        // a "New deposit detected" alert. Reads the coin details passed
+        // in from the alert's action_value, renders a 3-option chooser,
+        // and POSTs the result to /api/deposit-advisory/allocate. The
+        // backend atomically bumps TOPUP_POOL_* and/or *_RESERVE and
+        // marks this coin_id as advised so the alert doesn't re-fire.
+        function openDepositAdvisorModal(info) {
+            const modal = document.getElementById('depositAdvisorModal');
+            const summary = document.getElementById('depositAdvisorSummary');
+            const splitRow = document.getElementById('depositAdvisorSplitRow');
+            const slider = document.getElementById('depositAdvisorSplitSlider');
+            const poolLbl = document.getElementById('depositAdvisorPoolPctLabel');
+            const resLbl = document.getElementById('depositAdvisorReservePctLabel');
+            const preview = document.getElementById('depositAdvisorPreviewBody');
+            const applyBtn = document.getElementById('depositAdvisorApplyBtn');
+            const cancelBtn = document.getElementById('depositAdvisorCancelBtn');
+            if (!modal) return;
+
+            // Unit conversion: XCH has 12-decimal mojos, CAT uses its
+            // configured decimals (CAT_DECIMALS, typically 3).
+            const isCat = info.walletType === 'cat';
+            const scale = isCat ? 1000 : 1e12;  // fallback when GUI doesn't have CAT_DECIMALS live
+            const amount = info.amountMojos / scale;
+            const shortId = info.coinId.slice(0, 10) + '…' + info.coinId.slice(-6);
+
+            summary.innerHTML =
+                '<p style="margin: 0 0 6px 0;">Detected <strong>' +
+                amount.toLocaleString(undefined, { maximumFractionDigits: isCat ? 3 : 8 }) +
+                ' ' + escapeHtml(info.unit) + '</strong> in a new coin (<code style="font-family: var(--font-mono); font-size: 0.88em;">' +
+                escapeHtml(shortId) + '</code>).</p>' +
+                '<p style="margin: 0;">Choose how to allocate it. The bot\'s topup worker can only spend from the <em>trading pool</em> budget; funds marked as <em>hard reserve</em> are untouchable.</p>';
+
+            // Wire up radio → slider state. "split" enables the slider;
+            // others freeze it at 100/0 or 0/100 for preview consistency.
+            const updatePreview = () => {
+                const choice = (document.querySelector('input[name="depositAdvisorChoice"]:checked') || {}).value;
+                let pct = 0;
+                if (choice === 'all_pool') pct = 100;
+                else if (choice === 'all_reserve') pct = 0;
+                else pct = parseInt(slider.value, 10) || 0;
+
+                splitRow.style.opacity = (choice === 'split') ? '1' : '0.35';
+                splitRow.style.pointerEvents = (choice === 'split') ? 'auto' : 'none';
+
+                poolLbl.textContent = pct + '%';
+                resLbl.textContent = (100 - pct) + '%';
+
+                const toPool = amount * pct / 100;
+                const toReserve = amount - toPool;
+                const fmt = (v) => v.toLocaleString(undefined, { maximumFractionDigits: isCat ? 3 : 8 });
+                preview.innerHTML =
+                    '<div>Trading pool gets <strong style="color: var(--status-success);">+' + fmt(toPool) + ' ' + escapeHtml(info.unit) + '</strong></div>' +
+                    '<div>Hard reserve gets <strong style="color: var(--accent-cyan);">+' + fmt(toReserve) + ' ' + escapeHtml(info.unit) + '</strong></div>';
+            };
+
+            // Bind once per open — clear any stale listeners.
+            document.querySelectorAll('input[name="depositAdvisorChoice"]').forEach(r => {
+                r.onchange = updatePreview;
+            });
+            slider.oninput = updatePreview;
+            // Reset to defaults on every open.
+            document.querySelector('input[name="depositAdvisorChoice"][value="all_pool"]').checked = true;
+            slider.value = 50;
+            updatePreview();
+
+            const close = () => { modal.classList.remove('active'); };
+            cancelBtn.onclick = close;
+
+            applyBtn.onclick = async () => {
+                const choice = (document.querySelector('input[name="depositAdvisorChoice"]:checked') || {}).value;
+                let toPoolPct = 0;
+                if (choice === 'all_pool') toPoolPct = 100;
+                else if (choice === 'all_reserve') toPoolPct = 0;
+                else toPoolPct = parseInt(slider.value, 10) || 0;
+
+                applyBtn.disabled = true;
+                applyBtn.textContent = 'Applying…';
+                try {
+                    const resp = await apiFetch('/api/deposit-advisory/allocate', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            coin_id: info.coinId,
+                            wallet_type: info.walletType,
+                            amount_mojos: info.amountMojos,
+                            to_pool_pct: toPoolPct,
+                            budget_cfg: info.budgetCfg,
+                            reserve_cfg: info.reserveCfg,
+                        }),
+                    });
+                    const data = await resp.json();
+                    if (data.success) {
+                        showToast('Deposit allocated — ' + info.budgetCfg + ' now ' + data.new_budget +
+                                  ', ' + info.reserveCfg + ' now ' + data.new_reserve, 'success');
+                        close();
+                    } else {
+                        showToast('Allocation failed: ' + (data.error || 'unknown'), 'error');
+                        applyBtn.disabled = false;
+                        applyBtn.textContent = 'Apply allocation';
+                    }
+                } catch (e) {
+                    showToast('Allocation request failed: ' + formatError(e), 'error');
+                    applyBtn.disabled = false;
+                    applyBtn.textContent = 'Apply allocation';
+                }
+            };
+
+            modal.classList.add('active');
+        }
 
         async function showDoctorReport() {
             try {

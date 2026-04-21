@@ -5222,6 +5222,155 @@ class _SNIPE_LOCK_NOOP_CLS:
 _SNIPE_LOCK_NOOP = _SNIPE_LOCK_NOOP_CLS()
 
 
+@app.route("/api/deposit-advisory/allocate", methods=["POST"])
+def api_deposit_advisory_allocate():
+    """Apply an allocation decision for a detected external deposit.
+
+    Body:
+        {
+          "coin_id":        "0x...",    # required
+          "wallet_type":    "xch" | "cat",
+          "amount_mojos":   int,        # echoed from the alert
+          "to_pool_pct":    0-100,      # % of amount to add to TOPUP_POOL_*
+          "budget_cfg":     "TOPUP_POOL_XCH" | "TOPUP_POOL_CAT",
+          "reserve_cfg":    "XCH_RESERVE" | "CAT_RESERVE"
+        }
+
+    Adds `amount × to_pool_pct / 100` to the topup budget and the rest to
+    the hard reserve floor. Records the coin_id in
+    `deposit_advisory_advised_coins` (comma-separated list in bot_settings)
+    so subsequent health passes don't re-prompt. Clears the matching
+    alert. This is the only path that modifies XCH_RESERVE / CAT_RESERVE
+    / TOPUP_POOL_* outside of Smart Settings — gated on loopback-only
+    access like the rest of /api.
+    """
+    from decimal import Decimal as _D
+    from database import get_setting as _get_setting, set_setting as _set_setting
+    slog("GUI_ACTION", ">>> BUTTON: Deposit Advisory Allocate")
+
+    try:
+        payload = request.get_json(silent=True) or {}
+        coin_id = str(payload.get("coin_id") or "").strip().lower()
+        wallet_type = str(payload.get("wallet_type") or "").strip().lower()
+        amount_mojos = int(payload.get("amount_mojos") or 0)
+        to_pool_pct = float(payload.get("to_pool_pct") or 0)
+        budget_cfg = str(payload.get("budget_cfg") or "").strip()
+        reserve_cfg = str(payload.get("reserve_cfg") or "").strip()
+
+        if not coin_id or wallet_type not in ("xch", "cat") or amount_mojos <= 0:
+            return jsonify({"success": False,
+                            "error": "invalid_payload"}), 400
+        if budget_cfg not in ("TOPUP_POOL_XCH", "TOPUP_POOL_CAT"):
+            return jsonify({"success": False,
+                            "error": "invalid_budget_cfg"}), 400
+        if reserve_cfg not in ("XCH_RESERVE", "CAT_RESERVE"):
+            return jsonify({"success": False,
+                            "error": "invalid_reserve_cfg"}), 400
+        if not (0.0 <= to_pool_pct <= 100.0):
+            return jsonify({"success": False,
+                            "error": "pct_out_of_range"}), 400
+
+        # Determine the right unit scale for this side.
+        if wallet_type == "cat":
+            scale = _D(10) ** _D(str(getattr(cfg, "CAT_DECIMALS", 3)))
+        else:
+            scale = _D("1000000000000")
+
+        amount_asset = _D(amount_mojos) / scale
+        to_pool_asset = amount_asset * _D(str(to_pool_pct)) / _D("100")
+        to_reserve_asset = amount_asset - to_pool_asset
+
+        # Add to existing budget/reserve — never overwrite. The user's
+        # Smart-Settings-configured values stay as the baseline; this is
+        # an additive top-up.
+        current_budget = _D(str(getattr(cfg, budget_cfg, 0) or 0))
+        current_reserve = _D(str(getattr(cfg, reserve_cfg, 0) or 0))
+        new_budget = current_budget + to_pool_asset
+        new_reserve = current_reserve + to_reserve_asset
+
+        # Persist. cfg.update is atomic per key and refreshes in-memory.
+        # Format with enough decimal places so CAT_DECIMALS=3 values
+        # don't round-trip into floats.
+        if wallet_type == "cat":
+            budget_str = f"{new_budget:.3f}"
+            reserve_str = f"{new_reserve:.3f}"
+        else:
+            budget_str = f"{new_budget:.8f}".rstrip("0").rstrip(".")
+            reserve_str = f"{new_reserve:.8f}".rstrip("0").rstrip(".")
+            if not budget_str:
+                budget_str = "0"
+            if not reserve_str:
+                reserve_str = "0"
+
+        # cfg.update() on TOPUP_POOL_* resets the session spend counter
+        # to zero as a side effect — correct for Smart Settings (where
+        # the user is declaring a fresh allocation) but wrong here:
+        # a deposit is ADDITIVE. Snapshot the pre-update spent counter
+        # so we can restore it after the side effect wipes it. Without
+        # this, the bot would think the whole new budget is fresh and
+        # try to spend (old_spent + deposit) worth of coins — safe
+        # because the hard reserve guard catches it, but noisy.
+        spend_key = ("topup_pool_cat_spent_mojos" if wallet_type == "cat"
+                     else "topup_pool_xch_spent_mojos")
+        pre_spent = 0
+        try:
+            pre_spent = int(str(_get_setting(spend_key, "0") or "0"))
+        except Exception:
+            pre_spent = 0
+
+        budget_ok = cfg.update(budget_cfg, budget_str,
+                               source="deposit_advisory",
+                               note=f"deposit {coin_id[:16]}... to pool")
+        reserve_ok = cfg.update(reserve_cfg, reserve_str,
+                                source="deposit_advisory",
+                                note=f"deposit {coin_id[:16]}... to reserve")
+
+        # Restore the pre-update spend counter so the budget add is truly
+        # additive. Only applies when to_pool_pct > 0 (we actually bumped
+        # the budget); pure-reserve allocations don't touch spent.
+        if to_pool_pct > 0 and budget_ok:
+            try:
+                _set_setting(spend_key, str(pre_spent))
+            except Exception:
+                pass
+        if not budget_ok and not reserve_ok:
+            return jsonify({"success": False,
+                            "error": "config_write_failed"}), 500
+
+        # Mark this coin as advised so the health check stops re-prompting.
+        try:
+            raw = _get_setting("deposit_advisory_advised_coins", "") or ""
+            existing = [s.strip() for s in raw.split(",") if s.strip()]
+            if coin_id not in existing:
+                existing.append(coin_id)
+                _set_setting("deposit_advisory_advised_coins",
+                             ",".join(existing))
+        except Exception:
+            pass  # advisor is tolerant of this failing
+
+        # Clear the matching alert.
+        try:
+            alerts.clear(f"deposit_advisory_{coin_id}")
+        except Exception:
+            pass
+
+        log_event("info", "deposit_advisory_allocated",
+                  f"Deposit {coin_id[:16]}... allocated: "
+                  f"{to_pool_asset} to {budget_cfg} (now {budget_str}), "
+                  f"{to_reserve_asset} to {reserve_cfg} (now {reserve_str})")
+
+        return jsonify({
+            "success": True,
+            "coin_id": coin_id,
+            "to_pool_asset": str(to_pool_asset),
+            "to_reserve_asset": str(to_reserve_asset),
+            "new_budget": budget_str,
+            "new_reserve": reserve_str,
+        })
+    except Exception as e:
+        return _api_error(e, request.path)
+
+
 @app.route("/api/session/fresh-start", methods=["POST"])
 def api_session_fresh_start():
     """Begin a brand new run without carrying forward old session state."""

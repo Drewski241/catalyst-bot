@@ -1370,6 +1370,245 @@ def check_spacescan_cache_stale(auto_repair: bool = True) -> HealthCheck:
     )
 
 
+# ── Check 9: unclaimed deposits → three-way allocation prompt ─────────
+
+# A new coin counts as a "significant deposit" candidate when its amount
+# meets BOTH conditions:
+#   - >= 10× the smallest configured trading tier size
+#   - first_seen within the last 15 minutes
+# AND it hasn't already been advised on (persisted list), AND no internal
+# misfit absorption happened in the last 90 seconds (that creates a new
+# reserve coin too but it's internal bucket reshuffle, not new capital).
+_DEPOSIT_ADVISORY_TIER_MULTIPLE = 10
+_DEPOSIT_ADVISORY_FRESH_SECS = 15 * 60
+_DEPOSIT_ADVISORY_ABSORB_COOLDOWN_SECS = 90
+
+
+def _advised_deposits() -> set:
+    """Load the persisted set of coin_ids already shown to the user."""
+    try:
+        from database import get_setting
+        raw = get_setting("deposit_advisory_advised_coins", "") or ""
+    except Exception:
+        return set()
+    return {s.strip() for s in raw.split(",") if s.strip()}
+
+
+def _recent_absorb(key: str, now_ts: float) -> bool:
+    """True if a misfit absorption happened within the cooldown window."""
+    try:
+        from database import get_setting
+        ts = int(str(get_setting(key, "0") or "0"))
+    except Exception:
+        ts = 0
+    return (now_ts - ts) < _DEPOSIT_ADVISORY_ABSORB_COOLDOWN_SECS
+
+
+def check_unclaimed_deposits(auto_repair: bool = True) -> HealthCheck:
+    """Prompt the user to allocate newly-arrived funds.
+
+    When an external deposit lands (coin-watcher detects a NEW coin and
+    the classifier promotes it to `reserve`), the coin sits in the
+    topup-pool bucket but won't be spendable by the topup worker until
+    the TOPUP_POOL_* budget is raised to match. This check surfaces a
+    one-click allocation prompt so the operator can decide:
+
+      - add all to trading pool (raises TOPUP_POOL_*),
+      - keep as hard reserve (raises *_RESERVE),
+      - split some %% to each.
+
+    The alert is persistent and coin-scoped — dismissing acts on that
+    specific coin_id and doesn't re-fire. Applying the allocation goes
+    through `/api/deposit-advisory/allocate`.
+    """
+    try:
+        from database import get_connection
+    except Exception:
+        return HealthCheck(
+            name="unclaimed_deposits", category="wallet", status="pass",
+            severity="info", message="Database unavailable.",
+        )
+
+    events_bus = None
+    try:
+        from api_server import events as events_bus  # type: ignore
+    except Exception:
+        events_bus = None
+
+    def _emit_alert(alert_id, title, message, action_value, severity="info"):
+        if events_bus is None or not auto_repair:
+            return
+        try:
+            events_bus.alert(alert_id, severity, title, message,
+                             action="allocate_deposit",
+                             action_label="Allocate",
+                             action_value=action_value)
+        except Exception as e:
+            slog("BOT_HEALTH",
+                 f"Failed to emit deposit advisory {alert_id}: {e}",
+                 level="warn")
+
+    def _clear_alert(alert_id):
+        if events_bus is None:
+            return
+        try:
+            store = getattr(events_bus, "_alert_store", None)
+            if store is not None:
+                store.clear(alert_id)
+        except Exception:
+            pass
+
+    findings = []
+    alerts_raised = []
+    now_ts = time.time()
+    advised = _advised_deposits()
+    live_alert_ids = set()
+
+    for wallet_type, budget_cfg, reserve_cfg, is_cat in (
+        ("xch", "TOPUP_POOL_XCH", "XCH_RESERVE", False),
+        ("cat", "TOPUP_POOL_CAT", "CAT_RESERVE", True),
+    ):
+        # Skip if the side is disabled — no point prompting for a pair
+        # the user isn't trading.
+        if wallet_type == "xch" and not bool(getattr(cfg, "ENABLE_BUY", True)):
+            continue
+        if wallet_type == "cat" and not bool(getattr(cfg, "ENABLE_SELL", True)):
+            continue
+
+        # Internal cooldown — skip if misfit absorption just created a
+        # fresh reserve coin (that's not an external deposit).
+        absorb_key = f"last_misfit_absorb_{wallet_type}_at"
+        if _recent_absorb(absorb_key, now_ts):
+            continue
+
+        # Compute the smallest tier size for this wallet type so we have
+        # a meaningful "significant" floor.
+        try:
+            if is_cat:
+                scale = Decimal(10) ** Decimal(str(getattr(cfg, "CAT_DECIMALS", 3)))
+            else:
+                scale = Decimal("1000000000000")
+            inner_xch = Decimal(str(
+                getattr(cfg, "SELL_INNER_SIZE_XCH" if is_cat else "BUY_INNER_SIZE_XCH", 0)
+                or getattr(cfg, "INNER_SIZE_XCH", 0)
+                or "0"
+            ))
+            # For CAT the tier size is inner_xch / price; fall back to
+            # 1/10 of the current CAT_RESERVE when price isn't available
+            # (same heuristic used in check_funds_advisory).
+            if is_cat:
+                try:
+                    price = Decimal(str(getattr(cfg, "LAST_QUOTED_MID", 0) or 0))
+                except Exception:
+                    price = Decimal("0")
+                if price > 0 and inner_xch > 0:
+                    inner_size_asset = inner_xch / price
+                else:
+                    inner_size_asset = Decimal(str(
+                        getattr(cfg, "CAT_RESERVE", 0) or 0
+                    )) * Decimal("0.1")
+                smallest_mojos = int(inner_size_asset * scale)
+            else:
+                smallest_mojos = int(inner_xch * scale)
+            if smallest_mojos <= 0:
+                continue  # no tier sizing signal — skip silently
+            threshold_mojos = smallest_mojos * _DEPOSIT_ADVISORY_TIER_MULTIPLE
+        except Exception:
+            continue
+
+        try:
+            conn = get_connection()
+            rows = conn.execute(
+                "SELECT coin_id, amount_mojos, first_seen "
+                "FROM coins "
+                "WHERE wallet_type=? AND status='free' "
+                "  AND designation='reserve' "
+                "  AND amount_mojos >= ? "
+                "  AND first_seen >= datetime('now', ?) "
+                "ORDER BY first_seen DESC",
+                (wallet_type, int(threshold_mojos),
+                 f"-{int(_DEPOSIT_ADVISORY_FRESH_SECS)} seconds"),
+            ).fetchall()
+        except Exception as e:
+            slog("BOT_HEALTH",
+                 f"Deposit advisory query failed for {wallet_type}: {e}",
+                 level="warn")
+            continue
+
+        for row in rows:
+            coin_id = row["coin_id"] or ""
+            if not coin_id or coin_id in advised:
+                continue
+
+            amount_mojos = int(row["amount_mojos"] or 0)
+            display_amount = Decimal(amount_mojos) / scale
+            unit = (str(getattr(cfg, "CAT_NAME", "") or "CAT") if is_cat
+                    else "XCH")
+
+            alert_id = f"deposit_advisory_{coin_id}"
+            live_alert_ids.add(alert_id)
+
+            short_id = coin_id[:10] + "..." + coin_id[-6:]
+            pool_current = Decimal(str(
+                getattr(cfg, budget_cfg, 0) or 0
+            ))
+            reserve_current = Decimal(str(
+                getattr(cfg, reserve_cfg, 0) or 0
+            ))
+            message = (
+                f"Detected {display_amount:,.4f} {unit} in reserve coin "
+                f"{short_id}. It's sitting in the topup pool but the "
+                f"budget ({pool_current:,} {unit}) doesn't cover it yet. "
+                f"Choose: add to trading pool, keep as hard reserve "
+                f"({reserve_current:,} {unit}), or split."
+            )
+            # action_value carries enough for the GUI to open the modal
+            # without another API round-trip.
+            action_value = (f"{wallet_type}|{coin_id}|{amount_mojos}|"
+                            f"{unit}|{budget_cfg}|{reserve_cfg}")
+            _emit_alert(
+                alert_id=alert_id,
+                title=f"New {unit} deposit — allocate?",
+                message=message,
+                action_value=action_value,
+                severity="info",
+            )
+            alerts_raised.append(alert_id)
+            findings.append(
+                f"{unit} {display_amount:,.4f} in {short_id}"
+            )
+
+    # Clear any previously-raised advisory alerts whose coins have since
+    # been allocated (now in the advised list) — keeps the UI from stuck
+    # alerts after the user clicks Allocate on one.
+    if events_bus is not None:
+        try:
+            store = getattr(events_bus, "_alert_store", None)
+            if store is not None:
+                active = list(store.get_active())
+                for item in active:
+                    _id = str(item.get("id", ""))
+                    if _id.startswith("deposit_advisory_") and _id not in live_alert_ids:
+                        store.clear(_id)
+        except Exception:
+            pass
+
+    if not findings:
+        return HealthCheck(
+            name="unclaimed_deposits", category="wallet", status="pass",
+            severity="info",
+            message="No unallocated deposits.",
+        )
+    return HealthCheck(
+        name="unclaimed_deposits", category="wallet", status="warn",
+        severity="warning",
+        message="; ".join(findings),
+        anomaly_count=len(findings),
+        repaired_count=0,  # user action required
+        repair_log=[f"raised:{a}" for a in alerts_raised],
+    )
+
+
 # ── Top-level runner ───────────────────────────────────────────────────
 
 # Cache to avoid running checks more often than needed (the bot loop
@@ -1423,6 +1662,7 @@ def run_runtime_checks(auto_repair: bool = True,
     report.checks.append(check_funds_advisory(auto_repair=auto_repair))
     report.checks.append(check_splash_daemon(auto_repair=auto_repair))
     report.checks.append(check_spacescan_cache_stale(auto_repair=auto_repair))
+    report.checks.append(check_unclaimed_deposits(auto_repair=auto_repair))
 
     report.duration_ms = (time.time() - start) * 1000.0
     _last_run_lock_ts = time.time()

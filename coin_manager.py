@@ -6366,6 +6366,17 @@ class CoinManager:
                 # blocks tier refills even when the reserve physically has
                 # coins — the bug we chased for the 2026-04-21 session.
                 self._record_topup_pool_refund(is_cat, int(total_misfit))
+                # Stamp a timestamp the deposit-advisor check uses to avoid
+                # false-positive prompts on the brand-new reserve coin that
+                # absorption just created (internal bucket reshuffle, not a
+                # genuine deposit from outside).
+                try:
+                    from database import set_setting as _set_setting
+                    _abs_key = ("last_misfit_absorb_cat_at" if is_cat
+                                else "last_misfit_absorb_xch_at")
+                    _set_setting(_abs_key, str(int(time.time())))
+                except Exception:
+                    pass  # advisory is best-effort — don't block absorption
                 return True
 
             # Log the actual Sage error (not just "Unknown") for diagnosis
