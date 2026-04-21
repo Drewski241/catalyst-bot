@@ -1587,6 +1587,7 @@ def check_unclaimed_deposits(auto_repair: bool = True) -> HealthCheck:
             findings.append(
                 f"{unit} {display_amount:,.4f} in {short_id}"
             )
+            raised_this_pass += 1
 
     # Clear any previously-raised advisory alerts whose coins have since
     # been allocated (now in the advised list) — keeps the UI from stuck

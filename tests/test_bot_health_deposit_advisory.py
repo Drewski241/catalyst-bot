@@ -346,6 +346,52 @@ class UnclaimedDepositsTests(unittest.TestCase):
         self.assertIn("deposit_advisory_0xdeadbeef", bus2.cleared)
 
     # ------------------------------------------------------------------
+    # Stale deposit (pre-restart): still surfaces
+    # ------------------------------------------------------------------
+
+    def test_deposit_from_before_restart_still_prompts(self):
+        """A coin first_seen hours ago, never advised on, must still
+        trigger the prompt. Removing the freshness window was the fix —
+        this test pins the behaviour so it doesn't regress."""
+        # Row with a first_seen from yesterday — way past any plausible
+        # time window.
+        row = _FakeRow({
+            "coin_id": "0xancient",
+            "amount_mojos": 750_000_000,
+            "first_seen": "2026-04-20 08:00:00",
+            "wallet_type": "cat",
+        })
+        bus, cleanup = self._install(rows=[row])
+        try:
+            check = bot_health.check_unclaimed_deposits(auto_repair=True)
+        finally:
+            cleanup()
+        self.assertEqual(check.anomaly_count, 1)
+        self.assertIn("deposit_advisory_0xancient", bus.alerts)
+
+    # ------------------------------------------------------------------
+    # Flood cap: too many candidates → only the first N surface at once
+    # ------------------------------------------------------------------
+
+    def test_alert_flood_is_capped_per_pass(self):
+        """When there are 20 pending reserves, only _MAX_ALERTS_PER_PASS
+        fire this pass. The rest surface on subsequent passes as those
+        are allocated."""
+        rows = [_FakeRow({
+            "coin_id": f"0xcoin{i:03d}",
+            "amount_mojos": 750_000_000,
+            "first_seen": "2026-04-21 20:13:01",
+            "wallet_type": "cat",
+        }) for i in range(20)]
+        bus, cleanup = self._install(rows=rows)
+        try:
+            check = bot_health.check_unclaimed_deposits(auto_repair=True)
+        finally:
+            cleanup()
+        self.assertEqual(check.anomaly_count,
+                         bot_health._DEPOSIT_ADVISORY_MAX_ALERTS_PER_PASS)
+
+    # ------------------------------------------------------------------
     # Read-only mode: detects but doesn't emit
     # ------------------------------------------------------------------
 
