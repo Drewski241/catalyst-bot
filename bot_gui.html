@@ -23201,11 +23201,8 @@
         // Detailed logs go to the Logs tab. Debug goes to the superlog file.
         // =================================================================
         const _laMax = 60;          // Retain last 60 entries — feed mirrors Logs page
-        const _laWindow = 5;        // Display window — lines shown at once
-        const _laCycleMs = 3500;    // Auto-advance cadence when buffer > window
+        const _laWindow = 5;        // Display window — newest N lines always visible
         let _laBuffer = [];         // Entries (newest first)
-        let _laCycleOffset = 0;     // Where in the buffer the displayed window starts
-        let _laCycleTimer = null;   // setInterval handle for auto-advance
 
         // Translate technical events into friendly one-liners.
         // Returns { icon, msg, cls } or null to skip the event.
@@ -23610,23 +23607,11 @@
             });
             if (_laBuffer.length > _laMax) _laBuffer.length = _laMax;
 
-            // Reset the cycle window so the freshly-arrived event is on screen
-            _laCycleOffset = 0;
-            _laEnsureCycleTimer();
             _laRender();
 
             // Pulse the indicator
             const pulse = document.getElementById('laPulse');
             if (pulse) pulse.classList.add('active');
-        }
-
-        function _laEnsureCycleTimer() {
-            if (_laCycleTimer) return;
-            _laCycleTimer = setInterval(() => {
-                if (_laBuffer.length <= _laWindow) return;  // nothing to cycle
-                _laCycleOffset = (_laCycleOffset + 1) % _laBuffer.length;
-                _laRender();
-            }, _laCycleMs);
         }
 
         function _laRender() {
@@ -23638,17 +23623,11 @@
                 return;
             }
 
-            // Fixed-height window of _laWindow entries. When the buffer has
-            // more than _laWindow entries the window auto-advances (see
-            // _laEnsureCycleTimer) and wraps circularly so older events
-            // cycle back into view without ever introducing a scrollbar.
-            const n = _laBuffer.length;
-            const count = Math.min(_laWindow, n);
-            const offset = n > 0 ? (((_laCycleOffset % n) + n) % n) : 0;
-            const visible = [];
-            for (let i = 0; i < count; i++) {
-                visible.push(_laBuffer[(offset + i) % n]);
-            }
+            // Rolling feed: always show the newest _laWindow entries.
+            // New events flow in at the top; old events drop off the bottom.
+            // No cycling/wrap-around — that created a jarring forward/backward
+            // motion whenever a new event arrived mid-cycle.
+            const visible = _laBuffer.slice(0, _laWindow);
 
             let html = '';
             for (const e of visible) {
@@ -23668,7 +23647,6 @@
 
         function laClear() {
             _laBuffer = [];
-            _laCycleOffset = 0;
             const body = document.getElementById('laBody');
             if (body) body.innerHTML = '<div class="la-empty">Waiting for activity...</div>';
         }
