@@ -4033,8 +4033,16 @@ def get_setting(key: str, default: str = None) -> str:
     return row[0] if row else default
 
 
-def set_setting(key: str, value: str):
-    """Set a setting value (insert or update)."""
+def set_setting(key: str, value: str) -> bool:
+    """Set a setting value (insert or update).
+
+    Returns True on successful commit, False if the write failed.
+    Callers that maintain counters (topup_pool_*_spent_mojos refunds,
+    etc.) MUST check the return value — the old signature returned
+    None and silently swallowed the exception, which let topup budget
+    counters drift without any signal, eventually producing permanent
+    refill lock-out that looked like smart-settings misconfiguration.
+    """
     try:
         conn = get_connection()
         conn.execute(
@@ -4044,11 +4052,26 @@ def set_setting(key: str, value: str):
             (key, value, _sqlite_ts(datetime.now(timezone.utc)))
         )
         conn.commit()
-    except Exception:
+        return True
+    except Exception as _set_err:
         try:
             conn.rollback()
         except Exception:
             pass
+        try:
+            log_event(
+                "warning",
+                "set_setting_failed",
+                f"bot_settings write failed for key={key!r}: {_set_err}. "
+                f"Callers that maintain counters should treat this as a "
+                f"hard failure and re-queue the intended update.",
+                data={"key": key},
+            )
+        except Exception:
+            # Logging itself may fail during a disk-full scenario — don't
+            # cascade the failure further. Returning False is enough.
+            pass
+        return False
 
 
 # ---------------------------------------------------------------------------

@@ -3555,6 +3555,16 @@ class CoinManager:
         est_xch_total = self._xch_coins + active_buy_count
         est_cat_total = self._cat_coins + active_sell_count
 
+        # --- Side-scope awareness ---
+        # LIQUIDITY_MODE controls which sides the bot actually quotes.
+        # buy_only → XCH coins are used, CAT coins are not.
+        # sell_only → CAT coins are used, XCH coins are not.
+        # Without this check the bot would keep trying to prep full
+        # inventory on a disabled side, failing, and re-firing needs_prep
+        # every cycle — wasting wallet operations and log noise.
+        buy_enabled = bool(getattr(cfg, "ENABLE_BUY", True))
+        sell_enabled = bool(getattr(cfg, "ENABLE_SELL", True))
+
         # --- Dynamic target: mirrors start_coin_prep() logic ---
         max_buy = int(getattr(cfg, "MAX_ACTIVE_BUY_OFFERS", 25))
         max_sell = int(getattr(cfg, "MAX_ACTIVE_SELL_OFFERS", 25))
@@ -3563,7 +3573,7 @@ class CoinManager:
             max_per_side = max(max_buy, max_sell)
             tier_counts = get_weighted_tier_prep_counts(max_per_side, multiplier)
             target_xch = max(cfg.XCH_TARGET_COINS, sum(tier_counts.values()))
-            target_cat = target_xch  # symmetric: CAT mirrors XCH total
+            target_cat = target_xch  # symmetric baseline: CAT mirrors XCH total
         else:
             computed = int((max_buy + max_sell) * float(multiplier))
             computed = max(computed, max_buy + max_sell)
@@ -3571,8 +3581,19 @@ class CoinManager:
             target_xch = max(cfg.XCH_TARGET_COINS, computed)
             target_cat = max(cfg.CAT_TARGET_COINS, computed)
 
-        needs_xch = est_xch_total < int(target_xch * 0.1) if target_xch > 0 else False
-        needs_cat = est_cat_total < int(target_cat * 0.1) if target_cat > 0 else False
+        # Zero out the target for a disabled side so needs_coin_prep()
+        # does not keep reporting that it "needs" inventory we will never
+        # use. A small positive floor for the enabled side is left intact
+        # below via the `if target > 0` guard.
+        if not buy_enabled:
+            target_xch = 0
+        if not sell_enabled:
+            target_cat = 0
+
+        needs_xch = (buy_enabled and target_xch > 0
+                     and est_xch_total < int(target_xch * 0.1))
+        needs_cat = (sell_enabled and target_cat > 0
+                     and est_cat_total < int(target_cat * 0.1))
 
         if needs_xch or needs_cat:
             log_event("warning", "low_coins_total",
@@ -3969,13 +3990,34 @@ class CoinManager:
     # -------------------------------------------------------------------
 
     def start_topup(self, active_buy_count: int = 0,
-                    active_sell_count: int = 0) -> bool:
-        """Start a live coin top-up in a background thread."""
+                    active_sell_count: int = 0,
+                    is_drip: Optional[bool] = None) -> bool:
+        """Start a live coin top-up in a background thread.
+
+        ``is_drip`` lets the caller force the drip/emergency classification
+        explicitly. Callers that reached here via needs_coin_prep() or a
+        health-check retry do NOT go through needs_topup() and therefore
+        never reset the self._topup_is_drip flag — it would keep whatever
+        value the previous run left behind, so an emergency started right
+        after a drip run would wrongly skip the emergency cooldown/backoff
+        semantics. When the caller doesn't specify, we default to
+        is_drip=False (treat as emergency) which is the safer side: the
+        full cooldown is enforced and _last_topup_time is stamped.
+        """
         with self._lock:
             if self._topup_running:
                 return False
             self._topup_running = True
             self._topup_stop_requested = False
+            if is_drip is not None:
+                self._topup_is_drip = bool(is_drip)
+            else:
+                # Default: treat as emergency unless the calling code path
+                # has just set _topup_is_drip via needs_topup() within the
+                # same tick. We can't detect that precisely, so we reset
+                # here to False and let needs_topup() flip it back via an
+                # explicit is_drip argument in future revisions.
+                self._topup_is_drip = False
         # Emergency runs stamp _last_topup_time to enforce the full cooldown.
         # Drip runs already stamped _last_drip_time in needs_topup() — leave
         # _last_topup_time unchanged so the emergency gate is unaffected.
@@ -4686,6 +4728,50 @@ class CoinManager:
             # causing the re-fetch to see "no reserve" and silently abort.
             fresh_inv = _classify_coins(fresh_records, trading_size_mojos // 2 or 1)
 
+            # Sieve out coins that DB already designated as tier_spare or
+            # tier_active — otherwise the refetch path, which only uses
+            # size-based classification, would happily pick a healthy
+            # inner-tier spare as the funding pool for an outer-tier
+            # split, degrading the other tier's coin inventory. DB
+            # designations are authoritative: only `reserve`, `unknown`,
+            # or empty designations are safe to use as a topup funding
+            # source. Fall back to raw classification if the DB query
+            # fails (fail-open) so a DB blip can't block every topup.
+            try:
+                from database import get_connection as _db_conn_fresh
+                _wallet_type_str = "cat" if is_cat else "xch"
+                _rows_fresh = _db_conn_fresh().execute(
+                    "SELECT coin_id, designation, assigned_tier FROM coins "
+                    "WHERE wallet_type=? AND status IN ('free', 'locked')",
+                    (_wallet_type_str,),
+                ).fetchall()
+                _reserved_for_tiers = {
+                    str(_r["coin_id"]).lower()
+                    for _r in _rows_fresh
+                    if (_r["designation"] or "").lower() in ("tier_spare", "tier_active")
+                }
+                if _reserved_for_tiers:
+                    _safe_reserve = []
+                    for _c in fresh_inv["reserve"]:
+                        _cid = _coin_id_from_record(_c)
+                        if str(_cid or "").lower() not in _reserved_for_tiers:
+                            _safe_reserve.append(_c)
+                    if len(_safe_reserve) < len(fresh_inv["reserve"]):
+                        log_event(
+                            "debug",
+                            f"topup_{name.lower()}_reserve_tier_sieve",
+                            f"Refetch: excluded "
+                            f"{len(fresh_inv['reserve']) - len(_safe_reserve)} "
+                            f"coins already designated as tier_spare/tier_active "
+                            f"to avoid poaching another tier's stock",
+                        )
+                    fresh_inv["reserve"] = _safe_reserve
+            except Exception:
+                # Fail open: if DB is unreachable, fall back to local sizing.
+                # The worst-case is the legacy poaching behaviour, which is
+                # still no worse than refusing every topup on a DB blip.
+                pass
+
             if not fresh_inv["reserve"]:
                 log_event("warning", f"topup_{name.lower()}_reserve_gone",
                           f"{name} topup pool coin vanished between scan and split — "
@@ -5044,36 +5130,53 @@ class CoinManager:
             return True
 
         # ---- Gate 1: Hard reserve guard ----
+        # FAIL CLOSED on balance query errors. Previously a wallet RPC
+        # flake let total_mojos fall through as None and the reserve check
+        # silently skipped — the user's hard XCH/CAT_RESERVE floor could
+        # be blown through exactly when Sage was already degraded. Refuse
+        # the split until a fresh balance can be read.
         try:
             bal_raw = get_wallet_balance(wallet_id)
             wb = (bal_raw or {}).get("wallet_balance") or {}
             total_mojos = int(wb.get("confirmed_wallet_balance", 0) or 0)
         except Exception as exc:
-            log_event("debug", f"topup_{name.lower()}_balance_query_failed",
-                      f"Could not query wallet {wallet_id} balance for reserve guard: {exc}")
-            # Fail open on the balance query — topup proceeds under legacy rules
-            total_mojos = None
+            log_event(
+                "warning",
+                f"topup_{name.lower()}_balance_query_failed",
+                f"Could not query wallet {wallet_id} balance for reserve guard: "
+                f"{exc}. Refusing split — retry on next cycle once wallet RPC "
+                f"is responsive. (fail-closed replaces former fail-open path.)",
+            )
+            return False
 
-        if total_mojos is not None:
-            if is_cat:
-                scale = Decimal(10) ** Decimal(str(getattr(cfg, "CAT_DECIMALS", 3)))
-                reserve_mojos = int(
-                    Decimal(str(getattr(cfg, "CAT_RESERVE", 0) or 0)) * scale
-                )
-                reserve_label = "CAT_RESERVE"
-            else:
-                reserve_mojos = int(
-                    Decimal(str(getattr(cfg, "XCH_RESERVE", 0) or 0))
-                    * Decimal("1000000000000")
-                )
-                reserve_label = "XCH_RESERVE"
+        if is_cat:
+            scale = Decimal(10) ** Decimal(str(getattr(cfg, "CAT_DECIMALS", 3)))
+            reserve_mojos = int(
+                Decimal(str(getattr(cfg, "CAT_RESERVE", 0) or 0)) * scale
+            )
+            reserve_label = "CAT_RESERVE"
+        else:
+            reserve_mojos = int(
+                Decimal(str(getattr(cfg, "XCH_RESERVE", 0) or 0))
+                * Decimal("1000000000000")
+            )
+            reserve_label = "XCH_RESERVE"
 
-            # "After split" = current total minus the tx fee we'll spend on
-            # the split. The split itself keeps the total unchanged (coin
-            # value is preserved across the spend bundle), so the only
-            # actual decrement is the fee. We conservatively assume a
-            # worst-case double-fee (pool creation + split). Use the
-            # configured tx fee as a floor.
+        # "After split" = current total minus the tx fee we'll spend on
+        # the split. The split itself keeps the total unchanged (coin
+        # value is preserved across the spend bundle), so the only
+        # actual decrement is the fee. We conservatively assume a
+        # worst-case double-fee (pool creation + split). Use the
+        # configured tx fee as a floor.
+        #
+        # UNITS: fees are paid from the XCH wallet even for CAT topups,
+        # so the CAT balance is unaffected by the XCH fee. Subtracting
+        # XCH-mojos from a CAT-mojos total used to produce false reserve
+        # refusals near the CAT reserve floor (sell-side tier starvation
+        # during otherwise healthy operation).
+        if is_cat:
+            fee_budget_mojos = 0
+        else:
             try:
                 from wallet_sage import get_effective_transaction_fee_mojos as _est_fee
                 single_fee_mojos = int(_est_fee() or 0)
@@ -5084,19 +5187,21 @@ class CoinManager:
                 )
             fee_budget_mojos = max(1, single_fee_mojos) * 2
 
-            post_split_total = total_mojos - fee_budget_mojos
-            if reserve_mojos > 0 and post_split_total < reserve_mojos:
-                # Would drop below the user's hard floor — REFUSE.
-                log_event(
-                    "warning",
-                    f"topup_{name.lower()}_blocked_by_reserve",
-                    f"{name} split refused: splitting would drop wallet to "
-                    f"{post_split_total / 1e12:.6f} XCH-eq which is below "
-                    f"{reserve_label}={reserve_mojos / 1e12:.4f} XCH-eq. "
-                    f"User-configured hard reserve honoured. Increase "
-                    f"wallet balance or lower {reserve_label} to allow splits.",
-                )
-                return False
+        post_split_total = total_mojos - fee_budget_mojos
+        if reserve_mojos > 0 and post_split_total < reserve_mojos:
+            # Would drop below the user's hard floor — REFUSE.
+            unit = "CAT" if is_cat else "XCH"
+            scale_display = float(scale) if is_cat else 1e12
+            log_event(
+                "warning",
+                f"topup_{name.lower()}_blocked_by_reserve",
+                f"{name} split refused: splitting would drop wallet to "
+                f"{post_split_total / scale_display:.6f} {unit} which is below "
+                f"{reserve_label}={reserve_mojos / scale_display:.4f} {unit}. "
+                f"User-configured hard reserve honoured. Increase "
+                f"wallet balance or lower {reserve_label} to allow splits.",
+            )
+            return False
 
         # ---- Gate 2: Topup pool budget ----
         try:
@@ -5454,11 +5559,30 @@ class CoinManager:
                       f"({owned_count}/{num_to_create} owned, selectable lagging)")
             return True
 
-        log_event("info", f"{tag}_osstep_timeout",
-                  f"One-step split not confirmed after {wait_max}s "
-                  f"(tx={'confirmed' if tx_state['confirmed'] else 'pending'}, "
-                  f"{owned_count}/{num_to_create} owned, "
-                  f"{sel_count}/{num_to_create} selectable)")
+        # IMPORTANT: returning False here means the caller does NOT record
+        # the intended spend against the topup-pool budget counter. If the
+        # TX is actually in the mempool and confirms after this timeout,
+        # the funding coin is consumed without the counter catching it —
+        # subsequent cycles will think they have more budget than reality.
+        # The check_topup_budget_drift self-heal (bot_health.py) reconciles
+        # this drift against actual reserve size on each runtime-check
+        # pass, so the damage is bounded. We log a warning so an operator
+        # staring at the bot during a flake can spot the situation.
+        log_event(
+            "warning",
+            f"{tag}_osstep_timeout",
+            f"One-step split not confirmed after {wait_max}s "
+            f"(tx={'confirmed' if tx_state['confirmed'] else 'pending'}, "
+            f"{owned_count}/{num_to_create} owned, "
+            f"{sel_count}/{num_to_create} selectable). If the TX "
+            f"eventually lands the topup-budget counter may drift; "
+            f"bot_health.check_topup_budget_drift will reconcile on the "
+            f"next runtime-check pass.",
+            data={"tag": tag, "wait_max": wait_max,
+                  "tx_confirmed": tx_state["confirmed"],
+                  "owned": owned_count, "needed": num_to_create,
+                  "selectable": sel_count},
+        )
         return False
 
     def _two_step_split(self, name: str, wallet_id: int,
@@ -6069,23 +6193,30 @@ class CoinManager:
         tier filters exclude them), but defence-in-depth: if a leak occurs, we
         refuse to combine those coins. They remain untouched in their dedicated
         pools.
+
+        IMPORTANT: DB coin IDs are stored normalised with a `0x` prefix via
+        norm_coin_id (database.py:34). Earlier this function stripped the
+        prefix before the IN-query, so the lookup matched zero rows and the
+        "protected" set was silently empty — making the defensive guard inert
+        whenever a sniper or fee coin actually leaked into a combine input.
+        We now query with the prefixed form and compare prefixed-to-prefixed.
         """
         try:
-            from database import get_connection
-            normalised = []
+            from database import get_connection, norm_coin_id
+            # Build a (original → normalised_with_0x) map so we can reject
+            # each original id without losing its caller-facing format.
+            orig_to_norm = {}
             for cid in coin_ids or []:
                 if not cid:
                     continue
-                c = str(cid).lower()
-                if c.startswith("0x"):
-                    c = c[2:]
-                normalised.append(c)
-            if not normalised:
+                orig_to_norm[cid] = norm_coin_id(str(cid))
+            if not orig_to_norm:
                 return []
-            placeholders = ",".join(["?"] * len(normalised))
+            normalised_list = list(orig_to_norm.values())
+            placeholders = ",".join(["?"] * len(normalised_list))
             rows = get_connection().execute(
                 f"SELECT coin_id, assigned_tier FROM coins WHERE coin_id IN ({placeholders})",
-                normalised,
+                normalised_list,
             ).fetchall()
             protected = {
                 str(r["coin_id"]).lower()
@@ -6094,14 +6225,22 @@ class CoinManager:
             }
             if not protected:
                 return list(coin_ids or [])
-            # Preserve caller's original formatting (with/without 0x) for matched IDs
             out = []
-            for original in (coin_ids or []):
-                c = str(original).lower()
-                if c.startswith("0x"):
-                    c = c[2:]
-                if c not in protected:
-                    out.append(original)
+            skipped = 0
+            for original, normalised in orig_to_norm.items():
+                if normalised in protected:
+                    skipped += 1
+                    continue
+                out.append(original)
+            if skipped:
+                log_event(
+                    "warning",
+                    "protected_coin_filter_skipped",
+                    f"Defensive combine guard removed {skipped} sniper/fee "
+                    f"coin(s) from a consolidation input",
+                    data={"skipped_count": skipped,
+                          "remaining": len(out)},
+                )
             return out
         except Exception:
             # On any DB error, fail open — return original list (don't block topup)
