@@ -20697,11 +20697,22 @@
                             if (descWrap) descWrap.style.display = 'block';
                         }
                         if (d.website) {
+                            // Token_overview sometimes returns bare domains
+                            // (e.g. "www.monkeyzoo.net") with no scheme.
+                            // Without the protocol prefix the browser resolves
+                            // the href against localhost:5000, and our
+                            // sanitizeExternalHref then rejects it as same-
+                            // origin — silently killing the click. Normalize
+                            // to https:// whenever a scheme is missing.
+                            let _rawUrl = String(d.website).trim();
+                            if (_rawUrl && !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(_rawUrl)) {
+                                _rawUrl = 'https://' + _rawUrl.replace(/^\/+/, '');
+                            }
                             const siteEl = document.getElementById('snapshotWebsite');
                             const siteLbl = document.getElementById('snapshotWebsiteLabel');
-                            if (siteEl) siteEl.href = d.website;
+                            if (siteEl) siteEl.href = _rawUrl;
                             if (siteLbl) {
-                                try { siteLbl.textContent = new URL(d.website).hostname.replace(/^www\./, ''); }
+                                try { siteLbl.textContent = new URL(_rawUrl).hostname.replace(/^www\./, ''); }
                                 catch (_) { siteLbl.textContent = 'Website'; }
                             }
                             if (siteWrap) siteWrap.style.display = 'flex';
