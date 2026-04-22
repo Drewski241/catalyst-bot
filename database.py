@@ -3958,6 +3958,46 @@ def cleanup_old_trading_pace(days: int = 7) -> int:
         return 0
 
 
+def cleanup_old_events(days: int = 30, severity_keep_days: int = 90) -> int:
+    """Remove old rows from the events table.
+
+    Without retention, every log_event() append over weeks/months grows
+    the DB without bound, slows GUI queries, and bloats backups. We
+    keep the full 30-day info/debug history plus a 90-day tail of
+    errors/warnings so incident investigations still have context, but
+    anything older than that is pruned.
+
+    Returns the number of rows deleted.
+    """
+    try:
+        conn = get_connection()
+        now = datetime.now(timezone.utc)
+        info_cutoff = (now - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        severity_cutoff = (now - timedelta(days=severity_keep_days)).strftime("%Y-%m-%d %H:%M:%S")
+        # Delete older info/debug/success events first.
+        cur_info = conn.execute(
+            "DELETE FROM events "
+            "WHERE timestamp < ? "
+            "  AND (severity IS NULL OR severity NOT IN ('error', 'warning', 'critical'))",
+            (info_cutoff,),
+        )
+        # Then prune the long tail of errors/warnings beyond the incident window.
+        cur_sev = conn.execute(
+            "DELETE FROM events "
+            "WHERE timestamp < ? "
+            "  AND severity IN ('error', 'warning', 'critical')",
+            (severity_cutoff,),
+        )
+        conn.commit()
+        return (cur_info.rowcount or 0) + (cur_sev.rowcount or 0)
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return 0
+
+
 def backup_database(backup_path: str = None) -> str:
     """Create a backup of the database.
 

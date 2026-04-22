@@ -4043,7 +4043,19 @@ class CoinManager:
         return True
 
     def stop_topup(self, wait_secs: float = 10.0) -> bool:
-        """Request any running top-up worker to stop."""
+        """Request any running top-up worker to stop.
+
+        ESCAPE HATCH: when the worker is wedged on a wallet RPC call, the
+        join() times out and the thread stays alive. Previously we left
+        ``_topup_running`` at True in that case, which made every
+        subsequent is_busy() check return True and permanently locked the
+        topup/prep path behind the zombie until the operator restarted
+        the bot. Now we clear the running flag once the join timeout
+        elapses and emit a critical log so the operator knows a zombie
+        topup thread may be mutating the wallet in the background.
+        The underlying thread is a daemon, so it terminates at process
+        exit regardless.
+        """
         thread = None
         with self._lock:
             if not self._topup_running:
@@ -4053,6 +4065,26 @@ class CoinManager:
         log_event("info", "topup_stop_requested", "Stopping background coin top-up")
         if thread and thread.is_alive() and wait_secs > 0:
             thread.join(timeout=wait_secs)
+        if thread and thread.is_alive():
+            log_event(
+                "critical",
+                "topup_stop_zombie",
+                f"Coin top-up worker {thread.name!r} did not stop within "
+                f"{wait_secs:.0f}s. Clearing the busy latch so future topup/"
+                f"prep paths are not locked out behind this zombie; the "
+                f"thread is a daemon and will die when its blocking RPC "
+                f"returns or at process exit.",
+                data={"thread": thread.name, "wait_secs": wait_secs},
+            )
+        with self._lock:
+            # Force-release the busy latch even if the worker is still
+            # alive. A new topup cannot be queued while the old worker is
+            # still mutating the wallet (the wallet RPCs themselves
+            # serialise), but is_busy() will now correctly report idle so
+            # the rest of the bot does not wedge waiting on the latch.
+            self._topup_running = False
+            self._topup_stop_requested = False
+            self._topup_thread = None
         return True
 
     def _topup_should_stop(self) -> bool:
@@ -6773,6 +6805,11 @@ class CoinManager:
                 env=env,
                 **hidden_subprocess_kwargs(),
             )
+            # Stamp launch time so check_coin_prep_status() can enforce a
+            # maximum runtime — without a ceiling, a wedged subprocess used
+            # to pin _prep_running True indefinitely, blocking all coin
+            # maintenance paths until a manual restart.
+            self._prep_process_started_at = time.time()
 
             # Drain the worker's stdout pipe continuously so the worker never
             # blocks on a full pipe buffer.  The worker delivers real-time log
@@ -6810,9 +6847,57 @@ class CoinManager:
             return False
 
     def check_coin_prep_status(self) -> Dict:
-        """Check if coin prep subprocess is still running."""
+        """Check if coin prep subprocess is still running.
+
+        Enforces a hard runtime ceiling so a wedged coin_prep_worker
+        subprocess cannot pin ``_prep_running`` True forever and lock
+        out all future topup/prep paths until a manual restart.
+        When the age exceeds COIN_PREP_MAX_RUNTIME_SECS (default 10
+        minutes) the subprocess is killed and the running flag is
+        released. The operator gets a critical log with enough detail
+        to investigate if the kill recurs.
+        """
         if not self._prep_process:
             return {"running": False}
+
+        # Runtime-ceiling escape hatch.
+        max_runtime = float(
+            getattr(cfg, "COIN_PREP_MAX_RUNTIME_SECS", 600) or 600
+        )
+        started_at = float(
+            getattr(self, "_prep_process_started_at", 0) or 0
+        )
+        if (self._prep_process.poll() is None
+                and started_at > 0
+                and (time.time() - started_at) > max_runtime):
+            age = time.time() - started_at
+            log_event(
+                "critical",
+                "coin_prep_runtime_exceeded",
+                f"coin_prep_worker subprocess (PID {self._prep_process.pid}) "
+                f"has been running for {age:.0f}s, exceeding the "
+                f"{max_runtime:.0f}s runtime ceiling. Killing the subprocess "
+                f"and releasing _prep_running so coin maintenance can resume. "
+                f"Investigate the worker if this recurs — it usually means "
+                f"a wallet RPC hang inside the subprocess.",
+                data={"pid": self._prep_process.pid,
+                      "age_secs": age,
+                      "ceiling_secs": max_runtime},
+            )
+            try:
+                self._prep_process.kill()
+                try:
+                    self._prep_process.wait(timeout=5)
+                except Exception:
+                    pass
+            except Exception as _kill_err:
+                log_event("warning", "coin_prep_kill_failed",
+                          f"Could not kill wedged coin prep worker: {_kill_err}")
+            with self._lock:
+                self._prep_running = False
+            self._prep_process = None
+            return {"running": False, "exit_code": -1,
+                    "killed_for_runtime": True}
 
         poll = self._prep_process.poll()
 

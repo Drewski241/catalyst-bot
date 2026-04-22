@@ -6563,16 +6563,53 @@ class BotLoop:
             # Without this, a timed-out thread keeps mutating the wallet while
             # the new cycle spawns replacements — doubling offers or causing
             # MEMPOOL_CONFLICT.
-            stale = [t for t in self._ladder_threads if t.is_alive()]
-            if stale:
-                names = ", ".join(t.name for t in stale)
+            #
+            # ESCAPE HATCH: a genuinely wedged wallet RPC call used to pin
+            # the thread indefinitely, which kept this guard returning every
+            # cycle and silently left the side underquoted until the operator
+            # restarted the bot. Track each thread's start time and, once it
+            # has been alive past a hard ceiling (default 4 × the 60s join
+            # timeout = 240s), stop deferring to it. We log CRITICAL so the
+            # operator knows the old thread is a zombie, then proceed with a
+            # fresh ladder build. The daemon flag means the zombie dies when
+            # its RPC finally returns (or at process exit) — we accept the
+            # minor risk of duplicate offer creation in that window, which
+            # the trim pass + mempool-conflict detection already handle.
+            _now = time.time()
+            _zombie_age_ceiling = float(
+                getattr(cfg, "LADDER_THREAD_ZOMBIE_SECS", 240) or 240
+            )
+            live_now = []
+            zombies = []
+            for t in self._ladder_threads:
+                if not t.is_alive():
+                    continue
+                _start = float(getattr(t, "_catalyst_start_at", 0) or 0)
+                if _start > 0 and (_now - _start) >= _zombie_age_ceiling:
+                    zombies.append((t, _now - _start))
+                else:
+                    live_now.append(t)
+            if zombies:
+                for t, age in zombies:
+                    log_event(
+                        "critical", "ladder_thread_zombie",
+                        f"Ladder thread {t.name!r} has been alive for "
+                        f"{age:.0f}s (> {_zombie_age_ceiling:.0f}s zombie "
+                        f"ceiling). Proceeding with a fresh ladder build; "
+                        f"the stuck thread is now a daemon zombie and will "
+                        f"be released when its wallet RPC returns.",
+                        data={"thread": t.name, "age_secs": age,
+                              "ceiling_secs": _zombie_age_ceiling},
+                    )
+            if live_now:
+                names = ", ".join(t.name for t in live_now)
                 log_event("warning", "ladder_overlap_skip",
                           f"Skipping ladder creation — previous threads still alive: {names}")
                 # Count as a stall so recovery escalates if threads stay hung
                 if work_items:
                     self._mark_recovery_create_stall()
                 return
-            self._ladder_threads.clear()
+            self._ladder_threads = [t for t, _ in zombies]  # keep zombies referenced
 
             threads = []
             for side, needed, spread in work_items:
@@ -6582,9 +6619,11 @@ class BotLoop:
                     name=f"create-{side}",
                     daemon=True,  # Don't block process exit
                 )
+                # Stamp start time so the zombie detector above can compute age.
+                t._catalyst_start_at = time.time()
                 threads.append(t)
 
-            self._ladder_threads = threads
+            self._ladder_threads.extend(threads)
 
             # Start all threads and wait for completion
             for t in threads:
@@ -6594,7 +6633,9 @@ class BotLoop:
                 if t.is_alive():
                     log_event("warning", "ladder_thread_timeout",
                               f"Ladder creation thread {t.name!r} still alive after 60s timeout — "
-                              f"wallet RPC may be hung; continuing main loop")
+                              f"wallet RPC may be hung; continuing main loop "
+                              f"(will be escalated to zombie at "
+                              f"{_zombie_age_ceiling:.0f}s if it stays stuck)")
 
         # Process results from both sides
         _notify_amm_after_create = False
@@ -7010,9 +7051,16 @@ class BotLoop:
 
         # ---- Prune unbounded tables ----
         try:
-            from database import cleanup_old_pool_snapshots, cleanup_old_trading_pace
+            from database import (
+                cleanup_old_pool_snapshots,
+                cleanup_old_trading_pace,
+                cleanup_old_events,
+            )
             cleanup_old_pool_snapshots(days=30)
             cleanup_old_trading_pace(days=7)
+            # Events table was growing unbounded on long-running installs —
+            # 30 days of full history, 90 days of error/warning tail.
+            cleanup_old_events(days=30, severity_keep_days=90)
         except Exception:
             pass
 
