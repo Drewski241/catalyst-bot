@@ -29020,7 +29020,8 @@ function closeCtgErrorModal() {
             const offerRows = Number(preview.offer_history_rows || 0);
             const hasPnl = Boolean(preview.has_pnl_data);
             const hasOffers = offerRows > 0;
-            const catName = escapeHtml((settingsCAT?.name || currentCAT?.name || 'CAT'));
+            const selCat = (typeof getSettingsSelectedCAT === 'function') ? getSettingsSelectedCAT() : null;
+            const catName = escapeHtml((selCat?.name || currentCAT?.name || 'CAT'));
 
             const detailsEl = document.getElementById('prepHistoryChoiceDetails');
             if (detailsEl) {
