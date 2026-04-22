@@ -13725,6 +13725,44 @@ if __name__ == "__main__":
     # Initialise
     init_database()
 
+    # One-shot migration: mark all currently-designated reserve coins as
+    # already-advised. Earlier coin-prep runs designated these coins but
+    # didn't register them with the deposit advisor, so bot_health kept
+    # re-raising "New XCH/CAT deposit" alerts for coins that were not
+    # actually new. Runs once per install, gated by a settings flag.
+    try:
+        from database import get_setting, set_setting, get_reserve_coins
+        if not get_setting("deposit_advisory_startup_backfill_v1"):
+            raw = get_setting("deposit_advisory_advised_coins", "") or ""
+            advised = {s.strip() for s in raw.split(",") if s.strip()}
+            added = 0
+            for _wt in ("xch", "cat"):
+                try:
+                    for _rc in (get_reserve_coins(_wt) or []):
+                        _cid = _rc.get("coin_id") or ""
+                        if _cid and _cid not in advised:
+                            advised.add(_cid)
+                            added += 1
+                except Exception:
+                    pass
+            if added:
+                set_setting("deposit_advisory_advised_coins", ",".join(sorted(advised)))
+                print(f"  [DepositAdvisory] Backfilled {added} existing reserve coin(s)")
+            set_setting("deposit_advisory_startup_backfill_v1", "1")
+            # Best-effort: clear any currently-live advisory alerts so the
+            # UI updates immediately instead of waiting for the next cycle.
+            try:
+                store = getattr(events, "_alert_store", None)
+                if store is not None:
+                    for item in list(store.get_active()):
+                        _id = str(item.get("id", ""))
+                        if _id.startswith("deposit_advisory_"):
+                            store.clear(_id)
+            except Exception:
+                pass
+    except Exception as _e:
+        print(f"  [DepositAdvisory] Backfill skipped: {_e}")
+
     # Record session start time — console only shows events from THIS session
     _session_start_time = datetime.now(timezone.utc).isoformat()
 
