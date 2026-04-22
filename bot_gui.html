@@ -20258,6 +20258,11 @@
                                 ticker_id: serverCat.ticker_id || ''
                             };
                             console.log('[INIT] Restored active CAT from server:', currentCAT.name);
+                            // Refresh the Volume & Token Info strip now that
+                            // currentCAT is populated — without this, a restart
+                            // with a persisted pair left the strip stuck on
+                            // "Select a trading pair…" forever.
+                            try { updateTokenSnapshot(currentCAT); } catch (_) {}
 
                             // Update CAT name labels
                             document.querySelectorAll('#catNameBalance, #catNameBalance2').forEach(label => {
@@ -20624,11 +20629,37 @@
             // the "Gathering Dexie volume data…" placeholder up instead of
             // hiding the whole strip.
             bar.style.display = '';
+            cat = cat || (typeof currentCAT !== 'undefined' ? currentCAT : null);
             if (!cat || !cat.asset_id) {
                 bar.classList.add('is-loading');
                 const placeholder = document.getElementById('snapshotPlaceholder');
                 if (placeholder && placeholder.firstChild) {
                     placeholder.firstChild.nodeValue = 'Select a trading pair to load volume data';
+                }
+                return;
+            }
+            // Volume + range metadata lives on the CAT selector's option
+            // attributes (populated from the Dexie v3 enrichment in
+            // loadCATs). When `cat` was restored from the bot-status poll
+            // it may be missing those fields, so hydrate them on demand.
+            const needsVolHydrate = (cat.vol_7d_xch === undefined && cat.vol_30d_xch === undefined);
+            if (needsVolHydrate && typeof getCatMetaByAssetId === 'function') {
+                const meta = getCatMetaByAssetId(cat.asset_id) || {};
+                if (meta.vol_7d_xch !== undefined) cat.vol_7d_xch = meta.vol_7d_xch;
+                if (meta.vol_30d_xch !== undefined) cat.vol_30d_xch = meta.vol_30d_xch;
+                if (meta.price_high_7d !== undefined) cat.price_high_7d = meta.price_high_7d;
+                if (meta.price_low_7d !== undefined) cat.price_low_7d = meta.price_low_7d;
+                if (meta.dexie_asset_id !== undefined) cat.dexie_asset_id = meta.dexie_asset_id;
+            }
+            // If meta isn't ready yet (CAT selector not enriched), stay on
+            // the "gathering" placeholder so the user sees progress rather
+            // than a frozen row of em-dashes.
+            const metaReady = (cat.vol_7d_xch !== undefined && cat.vol_30d_xch !== undefined);
+            if (!metaReady) {
+                bar.classList.add('is-loading');
+                const placeholder = document.getElementById('snapshotPlaceholder');
+                if (placeholder && placeholder.firstChild) {
+                    placeholder.firstChild.nodeValue = 'Gathering Dexie volume data';
                 }
                 return;
             }
@@ -20878,6 +20909,11 @@
                             label.textContent = currentCAT.name;
                         });
                         updateTokenIcons(currentCAT.asset_id);
+                        // Keep the Volume & Token Info strip in sync once the
+                        // bot is running — handles the case where currentCAT
+                        // is first hydrated via the status poll (no pair-
+                        // selector event fires to drive the snapshot).
+                        try { updateTokenSnapshot(currentCAT); } catch (_) {}
                         
                         // Auto-sync dropdown if server has an active CAT but dropdown isn't set
                         const selector = document.getElementById('catSelector');
