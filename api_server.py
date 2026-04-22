@@ -440,14 +440,24 @@ def _get_spacescan_market_context(asset_id: str = "", ticker_id: str = "",
         "price_gap_bps": 0.0,
         "regime_hint": "unknown",
         "message": "Spacescan token context not loaded",
+        "cache_age_secs": None,
+        "stale": False,
     }
     if not asset_id:
         return context
 
     try:
-        from database import get_market_analysis_cache
+        from database import get_market_analysis_cache, get_market_analysis_cache_age_secs
         spacescan = get_market_analysis_cache(asset_id, "spacescan") or {}
         analysis = get_market_analysis_cache(asset_id, "full_analysis") or {}
+        # Advisor tips that depend on Spacescan should degrade gracefully when
+        # the cache is old. 12h is well inside the 24h TTL but clearly past
+        # "fresh" — beyond this threshold we tag the context stale so the
+        # front-end can suppress or annotate the dependent advisories.
+        _age = get_market_analysis_cache_age_secs(asset_id, "spacescan")
+        if _age is not None:
+            context["cache_age_secs"] = int(_age)
+            context["stale"] = bool(_age > 12 * 3600)
         if not spacescan:
             # Spacescan raw data not cached at all — return empty context rather than
             # triggering a full background data collection here. Smart Defaults

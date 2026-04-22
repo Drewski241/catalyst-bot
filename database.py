@@ -4313,6 +4313,31 @@ def get_market_analysis_cache(asset_id: str, analysis_type: str) -> Optional[Dic
         return None
 
 
+def get_market_analysis_cache_age_secs(asset_id: str, analysis_type: str) -> Optional[int]:
+    """Age in seconds of the latest non-expired cache entry for this pair.
+
+    Returns None on cache miss or expiry. Used by the advisor layer so tips
+    that depend on Spacescan / full_analysis data can flag themselves when
+    the underlying cache is old (e.g. Spacescan returned 429s for hours and
+    the app is still serving from the 24h cache).
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT CAST((julianday('now') - julianday(created_at)) * 86400 AS INTEGER) AS age_secs "
+            "FROM market_analysis_cache "
+            "WHERE asset_id = ? AND analysis_type = ? "
+            "  AND expires_at > datetime('now') "
+            "ORDER BY created_at DESC LIMIT 1",
+            (asset_id, analysis_type)
+        ).fetchone()
+        if row and row["age_secs"] is not None:
+            return max(0, int(row["age_secs"]))
+        return None
+    except Exception:
+        return None
+
+
 def set_market_analysis_cache(asset_id: str, analysis_type: str,
                                data: dict, ttl_minutes: int = 60) -> bool:
     """Store a market analysis result with an expiry time.

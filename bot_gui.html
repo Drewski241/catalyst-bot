@@ -14278,6 +14278,18 @@
             const scActivity = String(sc.activity_level || 'unknown').toLowerCase();
             const scHolders = parseInt(sc.holder_count || 0, 10) || 0;
             const scPriceGapBps = parseFloat(sc.price_gap_bps || 0) || 0;
+            // Freshness of the Spacescan cache — set by api_server's
+            // _get_spacescan_market_context. When Spacescan has been rate-
+            // limited for hours the 24h cache can serve values that no
+            // longer reflect the token. scStale guards advisor tips that
+            // depend on holder/activity/price-gap data so they don't claim
+            // confidence the data doesn't deserve.
+            const scAgeSecs = (sc.cache_age_secs === null || sc.cache_age_secs === undefined)
+                ? null : (parseInt(sc.cache_age_secs, 10) || 0);
+            const scStale = !!sc.stale;
+            const scStaleNote = scStale && scAgeSecs
+                ? ' (Spacescan data is ~' + Math.round(scAgeSecs / 3600) + 'h old — treat as context, not truth)'
+                : '';
             // F40 (2026-04-08): supply + market-cap context for low-cap risk warning.
             const scCirculating = parseFloat(sc.circulating_supply || mhMetrics.spacescan_circulating_supply || 0) || 0;
             const marketCapXch = parseFloat(mhMetrics.market_cap_xch || 0) || 0;
@@ -14295,9 +14307,13 @@
             const sellAtEdge = ourBestAsk > 0 && competitorBestAsk > 0
                 && (ourBestAsk <= competitorBestAsk || sellEdgeBps <= edgeToleranceBps);
             const bothSidesAtEdge = buyAtEdge && sellAtEdge;
-            const tokenThin = scHasData && (scRisk === 'thin' || scRisk === 'risky' || scHolders <= 20);
-            const tokenQuiet = scHasData && (scActivity === 'quiet' || scActivity === 'dormant');
-            const tokenEstablished = scHasData && scRisk === 'healthy' && (scActivity === 'active' || scActivity === 'moderate');
+            // When the Spacescan cache is stale, down-weight the derived
+            // regime signals so we don't speak with unearned confidence.
+            // Tips gated on these flags fall through to Dexie-only reasoning.
+            const _scTrustworthy = scHasData && !scStale;
+            const tokenThin = _scTrustworthy && (scRisk === 'thin' || scRisk === 'risky' || scHolders <= 20);
+            const tokenQuiet = _scTrustworthy && (scActivity === 'quiet' || scActivity === 'dormant');
+            const tokenEstablished = _scTrustworthy && scRisk === 'healthy' && (scActivity === 'active' || scActivity === 'moderate');
 
             // Coins + wallet data
             const coins = dashboard.coins || {};
@@ -14329,6 +14345,15 @@
                 }
             }
 
+            // Skip advisor pushes whose concern is already surfaced by a
+            // live backend alert in the Recommendations panel — otherwise
+            // the same concern renders twice (once as backend alert, once
+            // as advisor-derived action). Keep a single source of truth.
+            const _hasBackendAlert = (id) => {
+                const a = _activeAlerts && _activeAlerts[String(id)];
+                return !!(a && !a.dismissed);
+            };
+
             // ── Price rail check — highest priority, blocks everything ──
             const hardMax = parseFloat(safety.hard_max_price) || 0;
             const hardMin = parseFloat(safety.hard_min_price) || 0;
@@ -14356,7 +14381,9 @@
             }
 
             // ── Circuit breaker — risk manager has halted trading ──
-            if (isRunning && circuitBreakerActive) {
+            // Skip if the backend already raised the circuit_breaker alert;
+            // it surfaces on the Recommendations panel with the same context.
+            if (isRunning && circuitBreakerActive && !_hasBackendAlert('circuit_breaker')) {
                 const cbBlockedSide = String(mhMetrics.circuit_breaker_blocked_side || '').toLowerCase();
                 const isPartialCB = cbBlockedSide === 'buy' || cbBlockedSide === 'sell';
                 const correctingSide = cbBlockedSide === 'buy' ? 'sell' : 'buy';
@@ -14384,7 +14411,10 @@
             }
 
             // ── No spendable coins — bot has nothing to offer ──
-            if (isRunning && xchFree === 0 && xchLocked === 0 && targetOpenBuys > 0) {
+            // Skip when buy_disabled/sell_disabled is already on the Recommendations
+            // panel; both concerns point the user to the same Settings section.
+            if (isRunning && xchFree === 0 && xchLocked === 0 && targetOpenBuys > 0
+                && !_hasBackendAlert('buy_disabled')) {
                 pushSuggestion({
                     type: 'error',
                     icon: '!!',
@@ -14393,7 +14423,8 @@
                     actionType: 'openSettings',
                     actionValue: 'safety'
                 });
-            } else if (isRunning && catFree === 0 && catLocked === 0 && targetOpenSells > 0) {
+            } else if (isRunning && catFree === 0 && catLocked === 0 && targetOpenSells > 0
+                       && !_hasBackendAlert('sell_disabled')) {
                 pushSuggestion({
                     type: 'error',
                     icon: '!!',
@@ -14407,7 +14438,9 @@
             // ── Reserve floor hit — one side going quiet ──
             // XCH_RESERVE and CAT_RESERVE are absolute amounts (XCH / display-unit),
             // NOT percentages. Compare spendable directly against the floor value.
-            if (isRunning && xchSpendable > 0 && xchReservePct > 0) {
+            // Skip reserve-floor advisor pushes when bot_loop has already
+            // raised the reserve_floor backend alert for the same reason.
+            if (isRunning && xchSpendable > 0 && xchReservePct > 0 && !_hasBackendAlert('reserve_floor')) {
                 const xchReserveAmt = xchReservePct; // absolute XCH floor
                 if (xchSpendable <= xchReserveAmt * 1.05) {
                     pushSuggestion({
@@ -14420,7 +14453,7 @@
                     });
                 }
             }
-            if (isRunning && catSpendable > 0 && catReservePct > 0) {
+            if (isRunning && catSpendable > 0 && catReservePct > 0 && !_hasBackendAlert('reserve_floor')) {
                 const catReserveAmt = catReservePct; // absolute CAT display-unit floor
                 if (catSpendable <= catReserveAmt * 1.05) {
                     pushSuggestion({
@@ -14434,12 +14467,23 @@
                 }
             }
 
-            // ── Long uptime with zero fills — something may be misconfigured ──
-            if (isRunning && uptimeSecs > 7200 && totalFills === 0 && liveOpenBuys > 0 && liveOpenSells > 0) {
+            // ── Long uptime, fills very sparse — something may be misconfigured ──
+            // Previously this only fired when totalFills === 0, which meant a bot
+            // running all day with a handful of fills never saw the nudge even
+            // when the market regime had shifted. Relax to also cover very slow
+            // fill rates (< 0.2/hr, i.e. under ~1 fill per 5 hours) once uptime
+            // is long enough that sparse fills are surprising.
+            const _fillsVerySparse = totalFills === 0
+                || (fillsHr > 0 && fillsHr < 0.2 && totalFills < Math.max(3, uptimeSecs / 14400));
+            if (isRunning && uptimeSecs > 7200 && _fillsVerySparse && liveOpenBuys > 0 && liveOpenSells > 0) {
+                const _hoursUp = Math.round(uptimeSecs / 3600);
+                const _fillsCopy = totalFills === 0
+                    ? 'zero fills'
+                    : `only ${totalFills} fill${totalFills === 1 ? '' : 's'} (${fillsHr.toFixed(2)}/hr)`;
                 pushSuggestion({
                     type: 'warning',
                     icon: '?',
-                    msg: `The bot has been running ${Math.round(uptimeSecs / 3600)}h with a full ladder but zero fills. This can mean your spread is too wide for the current market, your prices are out of range, or the token is currently very quiet. Try Smart Settings to recalibrate, or check the Dexie orderbook to see where competitors are priced.`,
+                    msg: `The bot has been running ${_hoursUp}h with a full ladder but ${_fillsCopy}. This can mean your spread is too wide for the current market, your prices are out of range, or the token is currently very quiet. Try Smart Settings to recalibrate, or check the Dexie orderbook to see where competitors are priced.`,
                     action: null
                 });
             }
@@ -14519,7 +14563,10 @@
                     }
                 }
 
-                if (scHasData && scPriceGapBps >= 1500 && arbGapBps < 100) {
+                // Suppress the price-gap tip when the Spacescan cache is
+                // stale — the "explorer price" we'd compare against is no
+                // longer a reliable sanity check.
+                if (scHasData && !scStale && scPriceGapBps >= 1500 && arbGapBps < 100) {
                     pushSuggestion({
                         type: 'info',
                         icon: 'SC',
@@ -14536,7 +14583,10 @@
                 // operator understand WHY their fills look weird on tiny
                 // tokens. Threshold: warn at >1% of mcap, escalate at >5%.
                 const tradeSize = parseFloat(trading.default_trade_xch || 0) || 0;
-                if (marketCapXch > 0 && tradeSize > 0) {
+                // market_cap_xch is derived from Spacescan supply × executable mid.
+                // When the Spacescan cache is stale the denominator is unreliable,
+                // so the trade-size-vs-mcap tip would make false claims — skip it.
+                if (marketCapXch > 0 && tradeSize > 0 && !scStale) {
                     const tradePctOfMcap = (tradeSize / marketCapXch) * 100;
                     if (tradePctOfMcap >= 5) {
                         pushSuggestion({
@@ -14589,14 +14639,19 @@
                 // contradictory. Gate the entire branch on competitorBps > 0.
                 const spreadGapBps = baseBps - competitorBps;
                 if (fillsHr === 0 && competitorCount > 0 && competitorBps > 0 && arbGapBps < 60 && !bothSidesAtEdge && !_spreadCooldownActive) {
-                    if (tokenQuiet || tokenThin) {
+                    // The Spacescan "token still maturing" tip relies on
+                    // holder/activity levels that may be stale (rate-limited
+                    // 24h cache). If the cache is past the 12h freshness
+                    // threshold, fall through to the competitor-spread or
+                    // close-to-market branches instead of asserting token health.
+                    if ((tokenQuiet || tokenThin) && !scStale) {
                         const parts = [];
                         if (tokenThin) parts.push('holder depth is still thin');
                         if (tokenQuiet) parts.push('on-chain activity is quiet');
                         pushSuggestion({
                             type: 'info',
                             icon: 'SC',
-                            msg: 'No fills recently, but Spacescan shows this token is still maturing: ' + parts.join(' and ') + '. Patience is safer than tightening just to chase flow.',
+                            msg: 'No fills recently, but Spacescan shows this token is still maturing: ' + parts.join(' and ') + '. Patience is safer than tightening just to chase flow.' + scStaleNote,
                             action: null
                         });
                     } else if (spreadGapBps > 75) {
@@ -14636,11 +14691,14 @@
                 }
 
                 if (competitorCount === 0 && arbGapBps < 40 && configBaseBps < 500 && !_spreadCooldownActive) {
-                    if (tokenQuiet || tokenThin) {
+                    // Skip the "stay disciplined" Spacescan tip when the
+                    // underlying holder/activity data is stale — the token
+                    // regime may have shifted while the cache sat stale.
+                    if ((tokenQuiet || tokenThin) && !scStale) {
                         pushSuggestion({
                             type: 'info',
                             icon: 'SC',
-                            msg: 'Dexie looks empty right now, but Spacescan still shows a quiet or thin token regime. Keep spreads disciplined rather than widening just because the visible book is sparse.',
+                            msg: 'Dexie looks empty right now, but Spacescan still shows a quiet or thin token regime. Keep spreads disciplined rather than widening just because the visible book is sparse.' + scStaleNote,
                             action: null
                         });
                     } else {
