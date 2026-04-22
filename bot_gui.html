@@ -1602,6 +1602,38 @@
         }
         .v4-data-strip-link:hover { text-decoration: underline; }
 
+        /* Placeholder state — bars are always visible; while data is being
+           fetched we show this friendly "gathering…" message and hide the
+           real body. When real data arrives the JS toggles off the
+           .is-loading class on the outer strip. */
+        .v4-data-strip-placeholder {
+            display: none;
+            padding: 6px 4px 2px;
+            font-size: 12px;
+            color: var(--text-tertiary);
+            font-style: italic;
+            text-align: center;
+        }
+        .v4-data-strip.is-loading .v4-data-strip-placeholder { display: block; }
+        .v4-data-strip.is-loading .v4-data-strip-body { display: none; }
+        .v4-data-strip-placeholder-dots::after {
+            content: '…';
+            display: inline-block;
+            animation: v4-data-strip-dots 1.4s steps(4, end) infinite;
+            letter-spacing: 0.05em;
+            width: 1.6em;
+            text-align: left;
+            overflow: hidden;
+            vertical-align: bottom;
+        }
+        @keyframes v4-data-strip-dots {
+            0%   { content: '.'; }
+            25%  { content: '..'; }
+            50%  { content: '…'; }
+            75%  { content: '…'; }
+            100% { content: '.'; }
+        }
+
         /* Stacked-cell variant for the Dexie volume/token-info strip —
            keeps the familiar "label above value" visual rhythm of the
            previous dashboard instead of the inline key:value row. */
@@ -8396,11 +8428,12 @@
                     </div>
 
                     <!-- ===== TIBETSWAP LIVE AMM: live pool state ===== -->
-                    <div id="ammStatusBar" class="v4-data-strip v4-data-strip--amm" style="display: none;">
+                    <div id="ammStatusBar" class="v4-data-strip v4-data-strip--amm is-loading">
                         <div class="v4-data-strip-header">
                             <span class="v4-data-strip-title">TibetSwap Live AMM</span>
                             <span class="v4-data-strip-source" title="Prices and reserves pulled from the TibetSwap AMM pool for the selected pair">Source · TibetSwap</span>
                         </div>
+                        <div class="v4-data-strip-placeholder" id="ammPlaceholder">Gathering TibetSwap pool data<span class="v4-data-strip-placeholder-dots"></span></div>
                         <div class="v4-data-strip-body">
                             <span class="v4-data-strip-field">
                                 <span class="v4-data-strip-key">Price</span>
@@ -8424,11 +8457,12 @@
                     </div>
 
                     <!-- ===== DEXIE VOLUME & TOKEN INFO: static pair metadata ===== -->
-                    <div id="tokenSnapshotBar" class="v4-data-strip v4-data-strip--volume v4-data-strip--stacked" style="display: none;">
+                    <div id="tokenSnapshotBar" class="v4-data-strip v4-data-strip--volume v4-data-strip--stacked is-loading">
                         <div class="v4-data-strip-header">
                             <span class="v4-data-strip-title">Volume &amp; Token Info</span>
                             <span class="v4-data-strip-source" title="Volume, range, and description sourced from the Dexie v3 trading API for this pair">Source · Dexie</span>
                         </div>
+                        <div class="v4-data-strip-placeholder" id="snapshotPlaceholder">Gathering Dexie volume data<span class="v4-data-strip-placeholder-dots"></span></div>
                         <div class="v4-data-strip-body v4-data-strip-body--stacked">
                             <div class="v4-data-strip-cell">
                                 <div class="v4-data-strip-cell-label">7d Volume</div>
@@ -16515,10 +16549,19 @@
             const subtleColor = 'rgba(255,255,255,0.45)';
             _latestFastArbGapBps = null;
 
-            // Hide token snapshot when clearing pair state (no pair selected)
+            // When clearing pair state, put the snapshot bar back into its
+            // loading/placeholder state. It stays visible — only the body
+            // swaps to the "Select a trading pair…" message.
             if (waitingForSelection) {
                 const snapshotBar = document.getElementById('tokenSnapshotBar');
-                if (snapshotBar) snapshotBar.style.display = 'none';
+                if (snapshotBar) {
+                    snapshotBar.style.display = '';
+                    snapshotBar.classList.add('is-loading');
+                    const ph = document.getElementById('snapshotPlaceholder');
+                    if (ph && ph.firstChild) {
+                        ph.firstChild.nodeValue = 'Select a trading pair to load volume data';
+                    }
+                }
             }
             const heroMid = document.getElementById('heroMidPrice');
             if (heroMid) {
@@ -20577,10 +20620,19 @@
             const bar = document.getElementById('tokenSnapshotBar');
             if (!bar) return;
 
+            // The bar stays visible always. If no pair is selected, keep
+            // the "Gathering Dexie volume data…" placeholder up instead of
+            // hiding the whole strip.
+            bar.style.display = '';
             if (!cat || !cat.asset_id) {
-                bar.style.display = 'none';
+                bar.classList.add('is-loading');
+                const placeholder = document.getElementById('snapshotPlaceholder');
+                if (placeholder && placeholder.firstChild) {
+                    placeholder.firstChild.nodeValue = 'Select a trading pair to load volume data';
+                }
                 return;
             }
+            bar.classList.remove('is-loading');
 
             // Populate static stats from the cat object (already available)
             const vol7dEl = document.getElementById('snapshotVol7d');
@@ -30182,12 +30234,26 @@ function updateAmmStatusBar(data) {
     const bar = document.getElementById('ammStatusBar');
     if (!bar) return;
 
+    // The bar stays visible always. When no usable data, we keep the
+    // "Gathering TibetSwap pool data…" placeholder overlay (is-loading
+    // class) up instead of hiding the whole strip.
+    bar.style.display = '';
     if (!data || !data.available) {
-        bar.style.display = 'none';
+        bar.classList.add('is-loading');
+        const placeholder = document.getElementById('ammPlaceholder');
+        if (placeholder) {
+            // Distinguish "no pool exists" from "fetching" — the former is
+            // a permanent state for tokens with no TibetSwap listing.
+            placeholder.firstChild && (placeholder.firstChild.nodeValue =
+                (data && data.reason === 'no_pool')
+                    ? 'No TibetSwap pool for this token'
+                    : 'Gathering TibetSwap pool data');
+            const dots = placeholder.querySelector('.v4-data-strip-placeholder-dots');
+            if (dots) dots.style.display = (data && data.reason === 'no_pool') ? 'none' : '';
+        }
         return;
     }
-
-    bar.style.display = 'block';
+    bar.classList.remove('is-loading');
 
     // Price
     const priceEl = document.getElementById('ammLivePrice');
