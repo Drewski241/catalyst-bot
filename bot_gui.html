@@ -2743,47 +2743,153 @@
             border: 1px dashed rgba(251, 191, 36, 0.28);
             pointer-events: none;
         }
-        /* Settings sub-tab switcher (Live | Setup) */
+        /* Settings header — collapses title, token pill, and Live|Setup
+           sub-tab switcher onto a single row so the whole control strip
+           fits above the fold without scrolling. */
+        .v4-settings-header--row {
+            display: flex;
+            align-items: flex-end;
+            justify-content: space-between;
+            gap: 16px;
+            flex-wrap: wrap;
+            margin-bottom: 16px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid var(--border-subtle);
+        }
+        .v4-settings-header-titles {
+            display: flex;
+            align-items: baseline;
+            gap: 12px;
+            flex-wrap: wrap;
+            min-width: 0;
+        }
+        .v4-settings-header-heading {
+            font-size: var(--text-xl);
+            margin: 0;
+            line-height: 1.1;
+        }
+        .v4-settings-header-pill {
+            align-self: center;
+            margin: 0;
+        }
+        /* Settings sub-tab switcher (Live | Setup) — compact pill-style
+           buttons with clear colour accents when active. Designed to sit
+           inline with the header title / token pill. */
         .v4-settings-subtabs {
             display: inline-flex;
-            gap: 4px;
-            padding: 4px;
-            background: rgba(148,163,184,0.06);
-            border: 1px solid var(--border-subtle);
-            border-radius: 999px;
-            margin-bottom: 16px;
+            gap: 8px;
+            align-items: stretch;
+            flex-wrap: wrap;
+            margin-left: auto;
         }
         .v4-settings-subtab {
             appearance: none;
-            border: none;
-            background: transparent;
+            background: var(--bg-surface);
+            border: 1px solid var(--border-subtle);
             color: var(--text-secondary);
-            font-size: 12px;
-            font-weight: 600;
-            letter-spacing: 0.4px;
-            padding: 6px 14px;
-            border-radius: 999px;
+            padding: 8px 14px;
+            border-radius: 10px;
             cursor: pointer;
             display: inline-flex;
             align-items: center;
-            gap: 6px;
+            gap: 10px;
+            font-family: inherit;
+            transition: border-color var(--transition-fast), background var(--transition-fast),
+                        color var(--transition-fast), box-shadow var(--transition-fast);
+        }
+        .v4-settings-subtab:hover {
+            border-color: rgba(255,255,255,0.22);
+            color: var(--text-primary);
+        }
+        .v4-settings-subtab-icon {
+            width: 22px;
+            height: 22px;
+            border-radius: 6px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(148,163,184,0.12);
+            color: var(--text-tertiary);
+            flex-shrink: 0;
             transition: background var(--transition-fast), color var(--transition-fast);
         }
-        .v4-settings-subtab:hover { color: var(--text-primary); }
-        .v4-settings-subtab.is-active {
-            background: var(--bg-surface);
+        .v4-settings-subtab-icon svg { display: block; }
+        .v4-settings-subtab-title {
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 0.3px;
             color: var(--text-primary);
-            box-shadow: 0 1px 2px rgba(0,0,0,0.25);
+            line-height: 1;
         }
-        .v4-settings-subtab .v4-subtab-dot {
-            width: 7px;
-            height: 7px;
+        .v4-settings-subtab-state {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 9.5px;
+            font-weight: 700;
+            letter-spacing: 0.6px;
+            text-transform: uppercase;
+            color: var(--text-tertiary);
+            padding: 3px 7px;
+            border-radius: 999px;
+            background: rgba(148,163,184,0.08);
+            border: 1px solid transparent;
+            white-space: nowrap;
+        }
+        .v4-settings-subtab-state .v4-subtab-dot {
+            width: 6px;
+            height: 6px;
             border-radius: 50%;
-            background: rgba(148,163,184,0.4);
+            background: rgba(148,163,184,0.45);
         }
-        .v4-settings-subtab.is-active[data-tab="live"] .v4-subtab-dot { background: var(--status-success); box-shadow: 0 0 6px rgba(16,185,129,0.6); }
-        .v4-settings-subtab.is-active[data-tab="setup"] .v4-subtab-dot { background: var(--accent-primary); }
+        /* Active styling — Live = emerald (matches running badge); Setup = blue */
+        .v4-settings-subtab.is-active[data-tab="live"] {
+            border-color: rgba(16,185,129,0.6);
+            background: linear-gradient(135deg, rgba(16,185,129,0.12), rgba(16,185,129,0.02));
+            box-shadow: 0 0 0 1px rgba(16,185,129,0.25) inset, 0 4px 10px rgba(16,185,129,0.12);
+        }
+        .v4-settings-subtab.is-active[data-tab="live"] .v4-settings-subtab-icon {
+            background: rgba(16,185,129,0.22);
+            color: var(--status-success);
+        }
+        .v4-settings-subtab.is-active[data-tab="live"] .v4-settings-subtab-state {
+            color: var(--status-success);
+            background: rgba(16,185,129,0.14);
+            border-color: rgba(16,185,129,0.35);
+        }
+        .v4-settings-subtab.is-active[data-tab="live"] .v4-settings-subtab-state .v4-subtab-dot {
+            background: var(--status-success);
+            box-shadow: 0 0 8px rgba(16,185,129,0.7);
+            animation: v4-subtab-pulse 1.8s ease-in-out infinite;
+        }
+        .v4-settings-subtab.is-active[data-tab="setup"] {
+            border-color: rgba(59,130,246,0.6);
+            background: linear-gradient(135deg, rgba(59,130,246,0.12), rgba(59,130,246,0.02));
+            box-shadow: 0 0 0 1px rgba(59,130,246,0.25) inset, 0 4px 10px rgba(59,130,246,0.12);
+        }
+        .v4-settings-subtab.is-active[data-tab="setup"] .v4-settings-subtab-icon {
+            background: rgba(59,130,246,0.22);
+            color: var(--accent-primary);
+        }
+        .v4-settings-subtab.is-active[data-tab="setup"] .v4-settings-subtab-state {
+            color: var(--accent-primary);
+            background: rgba(59,130,246,0.14);
+            border-color: rgba(59,130,246,0.35);
+        }
+        .v4-settings-subtab.is-active[data-tab="setup"] .v4-settings-subtab-state .v4-subtab-dot {
+            background: var(--accent-primary);
+        }
+        @keyframes v4-subtab-pulse {
+            0%, 100% { opacity: 1; }
+            50%      { opacity: 0.45; }
+        }
         .v4-settings-subtab:disabled { opacity: 0.4; cursor: not-allowed; }
+        @media (max-width: 720px) {
+            .v4-settings-header--row { align-items: stretch; }
+            .v4-settings-subtabs { margin-left: 0; width: 100%; }
+            .v4-settings-subtab { flex: 1; justify-content: center; }
+            .v4-settings-subtab-state { display: none; }
+        }
         .v4-settings-subview { display: none; }
         .v4-settings-subview.is-active { display: block; }
         /* Setup-while-running banner — amber, informational, NOT a hard lock */
@@ -9605,27 +9711,38 @@
             <div class="v4-view" id="v4View-settings">
                 <div class="container" style="max-width: 820px;">
 
-                    <!-- Settings Header -->
-                    <div class="v4-settings-header">
-                        <div class="v4-view-header-copy">
+                    <!-- Settings Header — title + token pill + sub-tab switcher all on one row
+                         so the Live / Setup controls and (on running) the restart banner fit
+                         above the fold without scrolling. -->
+                    <div class="v4-settings-header v4-settings-header--row">
+                        <div class="v4-settings-header-titles">
                             <div class="v4-view-kicker">Configuration</div>
-                            <h1 class="v4-view-title" style="font-size: var(--text-xl);">Settings</h1>
-                            <p class="v4-view-subtitle" style="margin-top: 2px;">Configure your bot, review the setup for this run, and save when you are done.</p>
-                            <div class="v4-tab-token-pill"><img class="cc-token-icon cc-token-icon-sm" src="" alt="" onerror="if(this.dataset.fallbackSrc&&this.src!==this.dataset.fallbackSrc){this.src=this.dataset.fallbackSrc;}else{this.style.display='none';}" style="display:none;"><span class="v4-tab-token-name"></span><span class="v4-tab-token-xch">&nbsp;/ XCH</span></div>
+                            <h1 class="v4-view-title v4-settings-header-heading">Settings</h1>
+                            <div class="v4-tab-token-pill v4-settings-header-pill"><img class="cc-token-icon cc-token-icon-sm" src="" alt="" onerror="if(this.dataset.fallbackSrc&&this.src!==this.dataset.fallbackSrc){this.src=this.dataset.fallbackSrc;}else{this.style.display='none';}" style="display:none;"><span class="v4-tab-token-name"></span><span class="v4-tab-token-xch">&nbsp;/ XCH</span></div>
                         </div>
-                    </div>
-
-                    <!-- Sub-tab switcher: Live (hot-reloadable) vs Setup (persisted, restart to apply while running) -->
-                    <div class="v4-settings-subtabs" role="tablist" aria-label="Settings view">
-                        <button type="button" class="v4-settings-subtab" id="settingsSubtabLive" data-tab="live" role="tab" aria-selected="false" onclick="settingsSwitchSubview('live')">
-                            <span class="v4-subtab-dot"></span>
-                            Live
-                            <span id="settingsSubtabLiveHint" style="font-size:10px; font-weight:500; color:var(--text-tertiary); margin-left:4px;"></span>
-                        </button>
-                        <button type="button" class="v4-settings-subtab is-active" id="settingsSubtabSetup" data-tab="setup" role="tab" aria-selected="true" onclick="settingsSwitchSubview('setup')">
-                            <span class="v4-subtab-dot"></span>
-                            Setup
-                        </button>
+                        <!-- Sub-tab switcher: Live (hot-reloadable) vs Setup (persisted, restart to apply while running) -->
+                        <div class="v4-settings-subtabs" role="tablist" aria-label="Settings view">
+                            <button type="button" class="v4-settings-subtab" id="settingsSubtabLive" data-tab="live" role="tab" aria-selected="false" onclick="settingsSwitchSubview('live')">
+                                <span class="v4-settings-subtab-icon" aria-hidden="true">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg>
+                                </span>
+                                <span class="v4-settings-subtab-title">Live</span>
+                                <span class="v4-settings-subtab-state" id="settingsSubtabLiveHint">
+                                    <span class="v4-subtab-dot"></span>
+                                    <span id="settingsSubtabLiveHintText">Idle</span>
+                                </span>
+                            </button>
+                            <button type="button" class="v4-settings-subtab is-active" id="settingsSubtabSetup" data-tab="setup" role="tab" aria-selected="true" onclick="settingsSwitchSubview('setup')">
+                                <span class="v4-settings-subtab-icon" aria-hidden="true">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                                </span>
+                                <span class="v4-settings-subtab-title">Setup</span>
+                                <span class="v4-settings-subtab-state">
+                                    <span class="v4-subtab-dot"></span>
+                                    <span>Configure</span>
+                                </span>
+                            </button>
+                        </div>
                     </div>
 
                     <!-- Restart-warning banner (replaces the old hard-lock banner) -->
@@ -14468,10 +14585,10 @@
         function updateSettingsLock() {
             const isRunning = bot_state?.running || false;
             const banner = document.getElementById('settingsRestartBanner');
-            const liveHint = document.getElementById('settingsSubtabLiveHint');
+            const liveHintText = document.getElementById('settingsSubtabLiveHintText');
 
             if (banner) banner.classList.toggle('is-visible', isRunning);
-            if (liveHint) liveHint.textContent = isRunning ? '• running' : '';
+            if (liveHintText) liveHintText.textContent = isRunning ? 'Running' : 'Idle';
 
             // Auto-select a sensible sub-tab if the user hasn't already
             // manually picked one: Live when running, Setup when stopped.
