@@ -11359,11 +11359,23 @@
                         </div>
                     </div>
                     <div class="v4-modal-panel">
-                        <div class="v4-modal-panel-title">What's new in v0.4 beta</div>
+                        <div class="v4-modal-panel-title">What's new — April 2026 refresh</div>
+                        <div class="v4-modal-panel-copy">
+                            <strong>Dashboard layout overhaul</strong> — Running bar sits directly under the token pill, with clearly labelled <em>TibetSwap Live AMM</em> and <em>Volume &amp; Token Info</em> strips (each shows its data source), plus a symmetrical 5×2 grid of info cards.<br>
+                            <strong>Guidance panel</strong> — Recommendations + Advisor merged into a single card so you see actions and context in one place; paired with a 5-line rolling Activity feed (timestamps restored, no scrollbar).<br>
+                            <strong>Settings sub-tabs</strong> — Settings now splits into <em>Live</em> (hot-reload tweaks safe while running) and <em>Setup</em> (full config). Live Controls moved here from the dashboard. Saving Setup edits while running shows an amber "applies on next restart" banner instead of hard-locking fields.<br>
+                            <strong>Data Reset tab</strong> — Reset P&amp;L, Clear Offer History, and Full Reset split out of Settings into their own left-nav tab.<br>
+                            <strong>Sharper recommendations</strong> — Panel dedup so circuit-breaker, reserve-floor, and capacity alerts no longer render twice. Spacescan-fed tips flag themselves when the 24h cache is stale. The "long uptime zero fills" nudge now also fires for sparse-fill runs, not just zero-fill ones.<br>
+                            <strong>Deposit advisor hardening</strong> — Coin-prep consolidation outputs no longer trigger false "New XCH/CAT deposit — allocate?" prompts. One-shot startup migration clears any alerts left over from earlier runs.<br>
+                            <strong>Smart Defaults v2 additions</strong> — Proactive coin-topup drip, topup-budget autoscale, F87 MAX_POSITION guard consistency, misfit-orphan reclaim, external-deposit allocation modal.<br>
+                            <strong>Website link fix</strong> — Dexie token website URLs without a protocol (e.g. <code>www.example.com</code>) are now opened correctly in the default browser instead of being silently blocked as same-origin.
+                        </div>
+                    </div>
+                    <div class="v4-modal-panel">
+                        <div class="v4-modal-panel-title">Earlier milestones</div>
                         <div class="v4-modal-panel-copy">
                             <strong>Desktop shell</strong> — native window, system tray, and OS notifications.<br>
                             <strong>Mempool watcher</strong> — fill detection in 5–18 seconds via Coinset mempool scanning.<br>
-                            <strong>Recommendations panel</strong> — every actionable suggestion (backend alerts + market tighten/widen prompts) now lives in one place with a one-click button.<br>
                             <strong>Hardened safeguards</strong> — silent-loss rate alerts, position sanity checks, cancel-storm protection, daily DB↔wallet reconciliation, background-thread liveness watchdog, WAL monitoring, and per-cycle SLA timing.<br>
                             <strong>Startup self-test</strong> — pings every external service (Sage, Coinset, Tibet, Dexie, Spacescan) at startup and tells you what will be missing if anything is down.<br>
                             <strong>Settings audit log</strong> — every config change is recorded with who/when/what so you can investigate after the fact.<br>
@@ -11479,36 +11491,41 @@
                     <h3 style="color: var(--accent-primary-hover);">Tips for beginners</h3>
                     <p><strong>Start small</strong> — Use small trade sizes while you're learning. You can always increase them later in Settings.</p>
                     <p><strong>Everything is in Settings</strong> — All normal app configuration is done through the Settings screen. No manual file editing should be needed for day-to-day use.</p>
-                    <p><strong>Command Centre</strong> — Once the pair is chosen, the three-panel summary below the Quick Start guide shows your settings, market health, and wallet performance at a glance. Hover over any <strong>?</strong> icon for an explanation.</p>
+                    <p><strong>Live vs Setup</strong> — Settings has two sub-tabs. <em>Live</em> holds the hot-reloadable tweaks (spread slider, skew, feature toggles) and is safe to touch while the bot is running. <em>Setup</em> holds the full configuration; saved changes apply on next restart when the bot is live.</p>
+                    <p><strong>Guidance + Activity</strong> — Once running, the two panels below the info cards show what to act on (Guidance) and what the bot is doing right now (Activity). Anything with a button goes to Guidance; informational notes sit below the same card.</p>
+                    <p><strong>Command Centre</strong> — The three-panel summary further down shows your settings, market health, and wallet performance at a glance. Hover over any <strong>?</strong> icon for an explanation.</p>
                 </div>
 
                 <!-- DASHBOARD -->
                 <div id="help_dashboard" class="help-panel" style="display: none;">
-                    <h3 style="color: var(--accent-primary-hover); margin-top: 0;">Dashboard layout</h3>
-                    <p><strong>Header bar</strong> (top):</p>
+                    <h3 style="color: var(--accent-primary-hover); margin-top: 0;">Dashboard layout (April 2026 refresh)</h3>
+                    <p>Top-to-bottom order is tuned so bot state and market context are visible without scrolling:</p>
+                    <ol style="padding-left: 20px;">
+                        <li><strong>Token pill</strong> — the active CAT / XCH pair.</li>
+                        <li><strong>Running bar</strong> — Start / Stop / Cancel All on the left, status badge in the middle, Sync indicator + wallet badge + fingerprint on the right.</li>
+                        <li><strong>TibetSwap Live AMM</strong> — labelled strip showing live pool price, drift from your mid, reserves, and freshness. Source chip reads <em>Source · TibetSwap</em>.</li>
+                        <li><strong>Volume &amp; Token Info</strong> — 7d / 30d volume, 7d range, description, and website link. Source chip reads <em>Source · Dexie</em>. While data is loading, a "Gathering…" placeholder shows instead of an empty row.</li>
+                        <li><strong>10 info cards</strong> (5×2 symmetric grid) — Mid Price, Active Offers, Session PnL, Position, Uptime / Best Bid, Best Ask, 24h Volume, Liquidity, Arb Gap.</li>
+                        <li><strong>Guidance + Activity row</strong> — two equal-width panels side by side (see below).</li>
+                        <li><strong>Market Health / Command Centre</strong> — the three-column summary of your settings, market health metrics, and wallet performance. Sits just below the fold on 1080p windows so you see the top of it without scrolling.</li>
+                    </ol>
+                    <h3 style="color: var(--accent-primary-hover);">Guidance panel (left of Activity)</h3>
+                    <p>One merged card replaces the old separate Recommendations and Advisor panels. It has two sections, divided by a subtle dashed line:</p>
                     <ul style="padding-left: 20px;">
-                        <li><strong>Fingerprint</strong> — Your wallet's unique ID (auto-detected)</li>
-                        <li><strong>Sync indicator</strong> — Green = connected, amber = syncing, red = problem</li>
-                        <li><strong>Wallet badge</strong> — Shows the live Sage wallet status for this app</li>
-                        <li><strong>Help button</strong> — You're reading it now!</li>
-                        <li><strong>Logs view</strong> — Sidebar → Logs. Shows the live operator log; replaces the old external console window which was removed for safety.</li>
-                        <li><strong>Status badge</strong> — "Running" (green) or "Stopped" (grey)</li>
+                        <li><strong>Actions</strong> (top) — everything you can act on with one click: circuit-breaker tripped, wallet sync stale, Restart Sage, <em>Tighten to X%</em>, <em>Widen to X%</em>, <em>Enable Inventory Mgmt</em>, <em>Allocate deposit</em>, etc.</li>
+                        <li><strong>Advisor notes</strong> (bottom) — context that explains what the current state means: quiet token, wide arb gap, price-gap sanity warnings. Tips that depend on the Spacescan 24h cache automatically hide themselves when the cache is stale.</li>
                     </ul>
-                    <h3 style="color: var(--accent-primary-hover);">Quick Start + Command Centre</h3>
+                    <p>Dedup logic ensures each concern surfaces once: if a backend alert has raised <em>circuit_breaker</em>, the advisor won't push a duplicate tip about the same breaker.</p>
+                    <h3 style="color: var(--accent-primary-hover);">Activity feed (right of Guidance)</h3>
+                    <p>Rolling 5-line feed of recent bot work — postings, cancels, fills, probes, requotes, coin work, recoveries. New events flow in at the top with a timestamp; older events drop off the bottom. No scrollbar; the full history lives in the <strong>Logs</strong> tab.</p>
+                    <h3 style="color: var(--accent-primary-hover);">Command Centre metrics</h3>
                     <ul style="padding-left: 20px;">
-                        <li><strong>Quick Start panel</strong> (top) — Pair selector plus a checklist for wallet connection, settings review, coin prep, and start readiness.</li>
-                        <li><strong>Command Centre</strong> (below) — The single main summary layer shown before the bot starts.</li>
+                        <li><strong>Active Settings</strong> (left) — Read-only view of your current trading, spread, inventory, tier, and safety settings.</li>
+                        <li><strong>Market Health</strong> (centre) — Traffic light + five metrics: your spread, market spread, competitors, arb gap, pool depth.</li>
+                        <li><strong>Wallet &amp; Performance</strong> (right) — Sage balances, coin breakdown, reserves, and session uptime / fills / PnL / errors.</li>
                     </ul>
-                    <h3 style="color: var(--accent-primary-hover);">Command Centre (3-column panel)</h3>
-                    <ul style="padding-left: 20px;">
-                        <li><strong>Active Settings</strong> (left) — Read-only view of your current trading, spread, inventory, tier, and safety settings. Updates every loop cycle.</li>
-                        <li><strong>Market Health</strong> (centre) — Traffic light indicator (green/amber/red) showing overall bot health, plus five key metrics: your spread, market spread, competitors, arb gap, and pool depth.</li>
-                        <li><strong>Wallet &amp; Performance</strong> (right) — Sage wallet balances, coin breakdown (free/locked/total), reserves status, and session performance (uptime, fills, PnL, errors).</li>
-                    </ul>
-                    <p><strong>When the bot is stopped</strong> — The dashboard keeps the focus on setup. Market strip, advisor, activity, features, and live controls stay hidden until the bot is running.</p>
-                    <p><strong>When the bot is running</strong> — The hero strip, live market strip, Recommendations panel, Activity feed, Advisor, active features, and Live Controls all appear above the detailed offer, PnL, and market-intel views.</p>
-                    <h3 style="color: var(--accent-primary-hover);">Recommendations panel</h3>
-                    <p><strong>Recommendations</strong> is the panel on the left of the Activity row. It collects <strong>everything you can act on with one click</strong>: backend alerts (e.g. circuit breaker tripped, wallet sync stale, restart Sage) AND market suggestions that have action buttons (e.g. <em>Tighten to X%</em>, <em>Widen to X%</em>, <em>Enable Inventory Mgmt</em>, <em>Open Live Controls</em>). If a suggestion has a button, it lives in Recommendations. If it's purely informational ("token is still maturing", "spread already at market"), it lives in the <strong>Advisor</strong> panel below.</p>
+                    <h3 style="color: var(--accent-primary-hover);">Where did Live Controls go?</h3>
+                    <p>Live Controls (Dynamic Spreads, Inventory Mgmt, Sniper, Competitor Aware toggles + Base Spread / Skew sliders + Close the Gap) moved to <strong>Settings → Live</strong> tab. Click Settings in the left sidebar while the bot is running and the Live sub-tab auto-opens.</p>
                 </div>
 
                 <!-- OFFERS & FILLS -->
@@ -11729,7 +11746,13 @@
                             <td style="padding: 8px 4px;">Minimum XCH and CAT held back from trading. Protects against going to zero.</td>
                         </tr>
                     </table>
-                    <p style="margin-top: 12px; opacity: 0.7; font-size: 0.85em;">Click ⚙️ Settings on the dashboard to change these. Changes take effect on the next bot cycle.</p>
+                    <h3 style="color: var(--accent-primary-hover); margin-top: 16px;">Live vs Setup sub-tabs</h3>
+                    <p>The Settings view has two sub-tabs. Pick the one that matches what you need to change:</p>
+                    <ul style="padding-left: 20px;">
+                        <li><strong>Live</strong> — safe while the bot is running. Hot-reloads on the next loop cycle. Contains: Dynamic Spreads toggle, Inventory Mgmt toggle, Sniper toggle, Competitor Aware toggle, Base Spread slider, Skew Sensitivity slider, Close the Gap button. Auto-selected when the bot is running.</li>
+                        <li><strong>Setup</strong> — full configuration (trading pair, reserves, tier sizes, safety limits, ladder shape, coin-prep, etc). Saves persist across runs. If you save Setup changes while the bot is running, they <em>apply on next restart</em> — an amber banner at the top of the tab reminds you, and the Save button relabels to "Save (applies on restart)".</li>
+                    </ul>
+                    <p style="margin-top: 12px; opacity: 0.7; font-size: 0.85em;">Click Settings in the left sidebar to open this view. Dashboard no longer hosts Live Controls — they live in Settings → Live.</p>
                 </div>
 
                 <!-- TROUBLESHOOTING -->
