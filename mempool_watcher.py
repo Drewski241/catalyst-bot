@@ -72,7 +72,7 @@ class MempoolWatcher:
     each bot cycle via get_pending_signals().
     """
 
-    TIBET_POLL_INTERVAL = 5      # seconds between Tibet reserve checks
+    TIBET_POLL_INTERVAL = 3      # seconds between Tibet reserve checks (tightened 2026-04-22 — confirmed-move defensive cancel is now our primary defense since imminent_swap no longer mass-cancels, so we want direction info fast)
     MEMPOOL_POLL_INTERVAL = 2    # seconds between Coinset mempool checks (tightened 2026-04-22 after a fill slipped between 5s polls)
     SIGNAL_MAX_AGE = 120         # drop stale signals older than 2 minutes
     MIN_SIGNAL_MAGNITUDE = 0.05  # ignore moves < 0.05% to suppress noise
@@ -102,6 +102,10 @@ class MempoolWatcher:
         # API call counters (session-scoped)
         self._coinset_api_calls: int = 0
         self._tibet_api_calls: int = 0
+        # Fill-miss counters: how often a confirmed fill was pre-warned in
+        # mempool vs slipped through between polls. Updated by was_fill_warned().
+        self._fill_warn_hits: int = 0
+        self._fill_warn_misses: int = 0
 
         # Known state of the Tibet pool
         self._pool_coin_id: Optional[str] = None   # last_coin_id_on_chain
@@ -192,6 +196,26 @@ class MempoolWatcher:
             if self._xch_reserve is None or self._tok_reserve is None:
                 return None
             return self._xch_reserve, self._tok_reserve
+
+    def was_fill_warned(self, coin_id: str) -> bool:
+        """Return True if we fired a fill_imminent signal for this coin id
+        before it was reported as confirmed. Also updates the hit/miss
+        counters so effectiveness is visible via diagnostics.
+
+        Called by the fill-detection path right before logging ``offer_filled``.
+        The counters only reflect fills that passed through this method —
+        Sage/cleanup-path recoveries skip it and are not counted either way.
+        """
+        if not coin_id:
+            return False
+        norm = coin_id.removeprefix("0x").lower()
+        with self._lock:
+            hit = norm in self._fill_warned_coin_ids
+            if hit:
+                self._fill_warn_hits += 1
+            else:
+                self._fill_warn_misses += 1
+            return hit
 
     def set_watched_offer_coins(self, coin_ids: set) -> None:
         """Register the set of coin IDs locked by currently open offers.

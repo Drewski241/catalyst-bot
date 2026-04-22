@@ -3180,11 +3180,19 @@ def api_diagnostics_api_stats():
         if _watcher:
             _mw_coinset = getattr(_watcher, "_coinset_api_calls", 0)
             _mw_tibet = getattr(_watcher, "_tibet_api_calls", 0)
+            _mw_hits = int(getattr(_watcher, "_fill_warn_hits", 0) or 0)
+            _mw_misses = int(getattr(_watcher, "_fill_warn_misses", 0) or 0)
+            _mw_total = _mw_hits + _mw_misses
             # Add to coinset total
             if payload["coinset"].get("available"):
                 payload["coinset"]["mempool_watcher_calls"] = _mw_coinset
                 payload["coinset"]["api_calls_total"] = (
                     payload["coinset"].get("api_calls_total", 0) + _mw_coinset
+                )
+                payload["coinset"]["fill_warn_hits"] = _mw_hits
+                payload["coinset"]["fill_warn_misses"] = _mw_misses
+                payload["coinset"]["fill_warn_hit_rate_pct"] = (
+                    round(100.0 * _mw_hits / _mw_total, 2) if _mw_total else None
                 )
             # Add to tibetswap later (after tibetswap section is built)
     except Exception:

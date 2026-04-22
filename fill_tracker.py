@@ -1142,17 +1142,32 @@ class FillTracker:
         if len(self._fill_history) > self._max_history:
             self._fill_history = self._fill_history[:self._max_history]
 
+        # Check whether the mempool watcher caught this fill before the
+        # block confirmed — useful as a running measure of watcher latency
+        # vs. mempool-window length. Failures are non-fatal (the fill has
+        # already been verified by this point).
+        mempool_warned = False
+        try:
+            import mempool_watcher as _mw
+            _w = getattr(_mw, "_watcher_instance", None)
+            if _w is not None and coin_id and coin_id != "unknown":
+                mempool_warned = _w.was_fill_warned(coin_id)
+        except Exception:
+            pass
+
         coin_str = f" coin={coin_id[:16]}..." if coin_id != "unknown" else ""
+        warned_tag = "" if mempool_warned else " (mempool-miss)"
         log_event("info", "offer_filled",
                   f"🎉 {side.upper()} offer filled!{coin_str} "
                   f"Price: {price:.8f} XCH, Size: {size_xch} XCH / {size_cat:.2f} CAT "
-                  f"[tier={tier}]",
+                  f"[tier={tier}]{warned_tag}",
                   data={"fill_id": fill_id, "trade_id": trade_id,
                         "coin_id": coin_id, "side": side,
                         "price": float(price) if price else None,
                         "size_xch": float(size_xch) if size_xch else None,
                         "size_cat": float(size_cat) if size_cat else None,
-                        "tier": tier})
+                        "tier": tier,
+                        "mempool_warned": mempool_warned})
 
         # ---- Fill classification (additive, fail-open) -------------------
         # Classify the fill and persist to DB.  Then register with the
