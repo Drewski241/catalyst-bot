@@ -1379,12 +1379,18 @@
            ================================================================ */
         .v4-hero-strip {
             display: grid;
-            /* Auto-fit cards so narrow windows wrap to 3 / 2 / 1 columns
-               instead of squishing and ellipsizing financial values. */
-            grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+            /* 5 equal columns match the market strip below — all 10 info
+               cards share the same tile width for a symmetric dashboard.
+               Falls back to auto-fit for narrow widths below 900px. */
+            grid-template-columns: repeat(5, minmax(0, 1fr));
             gap: var(--space-3);
-            margin-bottom: var(--space-5);
-            padding: var(--space-4) 0;
+            margin-bottom: var(--space-3);
+            padding: var(--space-2) 0 0;
+        }
+        @media (max-width: 900px) {
+            .v4-hero-strip {
+                grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            }
         }
         .v4-hero-card {
             background: var(--bg-surface);
@@ -1432,9 +1438,23 @@
         }
         .v4-market-strip {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
+            /* Matches .v4-hero-strip so the two rows stack as a 5×2 grid
+               of equal-sized tiles. Bigger bottom margin than inter-card
+               gap — this is the boundary between header numbers and the
+               panel-row (guidance/activity) below. */
+            grid-template-columns: repeat(5, minmax(0, 1fr));
             gap: var(--space-3);
-            margin-bottom: var(--space-4);
+            margin-bottom: var(--space-5);
+        }
+        @media (max-width: 900px) {
+            .v4-market-strip {
+                grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            }
+        }
+        /* Ensure market cards match hero card internal rhythm so the
+           two rows visually read as one unit. */
+        .v4-market-card {
+            padding: var(--space-4) var(--space-3);
         }
         .v4-market-card {
             background: var(--bg-surface);
@@ -1467,6 +1487,167 @@
         }
         .v4-market-value.bid { color: var(--status-success); }
         .v4-market-value.ask { color: var(--text-primary); }
+
+        /* ================================================================
+           V4 DATA STRIP — reusable labeled horizontal info bar
+           Used by TibetSwap Live AMM and Dexie Volume strips so they
+           share visual rhythm and both clearly show their data source.
+           ================================================================ */
+        .v4-data-strip {
+            background: var(--bg-surface);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-md);
+            padding: 10px 14px;
+            margin-bottom: var(--space-3);
+            font-size: var(--text-xs);
+        }
+        .v4-data-strip-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 6px;
+            padding-bottom: 6px;
+            border-bottom: 1px dashed var(--border-subtle);
+        }
+        .v4-data-strip-title {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            color: var(--text-primary);
+        }
+        .v4-data-strip-source {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            color: var(--text-tertiary);
+            padding: 2px 8px;
+            border-radius: 10px;
+            background: rgba(148,163,184,0.08);
+            border: 1px solid rgba(148,163,184,0.18);
+            cursor: help;
+        }
+        .v4-data-strip--amm .v4-data-strip-source {
+            color: var(--accent-secondary);
+            background: rgba(168,85,247,0.08);
+            border-color: rgba(168,85,247,0.25);
+        }
+        .v4-data-strip--volume .v4-data-strip-source {
+            color: var(--accent-primary);
+            background: rgba(59,130,246,0.08);
+            border-color: rgba(59,130,246,0.25);
+        }
+        .v4-data-strip-body {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        .v4-data-strip-field {
+            display: inline-flex;
+            align-items: baseline;
+            gap: 6px;
+            min-width: 0;
+        }
+        .v4-data-strip-field--about {
+            flex: 1;
+            min-width: 160px;
+            max-width: 380px;
+        }
+        .v4-data-strip-key {
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--text-tertiary);
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }
+        .v4-data-strip-val {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+        .v4-data-strip-val--muted { color: var(--text-secondary); font-weight: 500; }
+        .v4-data-strip-val--truncate {
+            display: inline-block;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 320px;
+            vertical-align: bottom;
+        }
+        .v4-data-strip-badge {
+            padding: 1px 6px;
+            border-radius: 10px;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.3px;
+        }
+        .v4-data-strip-badge--danger { background: rgba(239,68,68,0.15); color: var(--status-danger); }
+        .v4-data-strip-badge--warn   { background: rgba(251,191,36,0.15); color: var(--status-warning); }
+        .v4-data-strip-badge--violet { background: rgba(139,92,246,0.15); color: var(--violet-300); }
+        .v4-data-strip-last {
+            color: var(--text-tertiary);
+            font-size: 10px;
+            margin-left: auto;
+        }
+        .v4-data-strip-link {
+            font-size: 12px;
+            color: var(--accent-primary);
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .v4-data-strip-link:hover { text-decoration: underline; }
+
+        /* Primary toolbar variant — sits directly under the token pill so
+           the user sees bot state / wallet / sync immediately on load. */
+        .v4-toolbar--primary {
+            margin-top: var(--space-2);
+            margin-bottom: var(--space-4);
+        }
+
+        /* Dashboard panels row (Guidance + Activity) — equal columns with
+           a slightly larger bottom gap so the Market Health card below
+           reads as a separate section. */
+        .v4-dashboard-panels-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: var(--space-4);
+            margin-bottom: var(--space-5);
+        }
+        @media (max-width: 900px) {
+            .v4-dashboard-panels-row {
+                grid-template-columns: 1fr;
+            }
+        }
+        /* Sub-header inside the Guidance panel separating the actions
+           (Recommendations) from the advisor notes. */
+        .la-subheader {
+            padding: 10px 14px 4px;
+            border-top: 1px dashed var(--border-subtle);
+            margin-top: 4px;
+        }
+        .la-subheader-label {
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.9px;
+            text-transform: uppercase;
+            color: var(--text-tertiary);
+        }
+        .la-body--actions {
+            max-height: 180px;
+            overflow-y: auto;
+        }
+        .la-body--notes {
+            max-height: 220px;
+            overflow-y: auto;
+            padding-top: 4px;
+        }
+        .la-body--notes .sa-suggestions { font-size: 13px; line-height: 1.55; }
+        .la-body--notes .sa-empty { padding: 4px 0; }
 
         .dashboard-startup-guide {
             position: relative;
@@ -8088,6 +8269,91 @@
                         </div>
                     </div>
 
+                    <!-- ===== TOOLBAR: Controls row (moved to top so bot state
+                         is visible directly under the token pill) ===== -->
+                    <div class="v4-toolbar v4-toolbar--primary">
+                        <div class="v4-toolbar-left">
+                        <button class="btn btn-start btn-primary" id="startBtn" onclick="startBot()" disabled>▶ Start</button>
+                        <button class="btn btn-stop btn-danger" id="stopBtn" onclick="stopBot()" disabled>⏹ Stop</button>
+                        <div class="v4-toolbar-sep"></div>
+                        <button class="btn btn-cancel btn-danger" id="cancelAllBtn" onclick="cancelAllOffers()">Cancel All (<span id="cancelAllCount">0</span>) <span class="cc-help">?<span class="cc-tooltip">Cancels every active buy and sell offer — use for a clean restart or wallet switch. Stop the bot first.</span></span></button>
+                        </div>
+                        <div class="v4-toolbar-center">
+                            <div class="status-badge" id="statusBadge">● Stopped</div>
+                        </div>
+                        <div class="v4-toolbar-right">
+                            <div id="syncIndicator" class="sync-indicator sync-unknown" title="Wallet connection status">
+                                <span class="sync-dot"></span>
+                                <span id="syncLabel">Checking...</span>
+                            </div>
+                            <div id="walletTypeBadge" style="display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 6px; font-size: var(--text-xs); font-weight: 600; background: rgba(148,163,184,0.1); color: var(--text-tertiary); border: 1px solid rgba(148,163,184,0.2);" title="Connected wallet">
+                                <span id="walletTypeIcon">⚡</span>
+                                <span id="walletTypeLabel">Sage</span>
+                            </div>
+                            <div id="fingerprintDisplay" onclick="showWalletPickerModal()" style="display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 6px; font-family: var(--font-mono); font-size: var(--text-xs); font-weight: 600; background: rgba(148,163,184,0.1); color: var(--text-tertiary); border: 1px solid rgba(148,163,184,0.2); cursor: pointer; transition: all 0.2s;" onmouseover="this.style.borderColor='rgba(245,158,11,0.5)'; this.style.background='rgba(245,158,11,0.08)'" onmouseout="this.style.borderColor='rgba(148,163,184,0.2)'; this.style.background='rgba(148,163,184,0.1)'">🔑 <span id="fingerprintValue">—</span> <span class="cc-help">?<span class="cc-tooltip">Click to change your active wallet or fingerprint</span></span></div>
+                        </div>
+                    </div>
+
+                    <!-- ===== TIBETSWAP LIVE AMM: live pool state ===== -->
+                    <div id="ammStatusBar" class="v4-data-strip v4-data-strip--amm" style="display: none;">
+                        <div class="v4-data-strip-header">
+                            <span class="v4-data-strip-title">TibetSwap Live AMM</span>
+                            <span class="v4-data-strip-source" title="Prices and reserves pulled from the TibetSwap AMM pool for the selected pair">Source · TibetSwap</span>
+                        </div>
+                        <div class="v4-data-strip-body">
+                            <span class="v4-data-strip-field">
+                                <span class="v4-data-strip-key">Price</span>
+                                <span id="ammLivePrice" class="v4-data-strip-val">—</span>
+                            </span>
+                            <span class="v4-data-strip-field">
+                                <span class="v4-data-strip-key">Drift</span>
+                                <span id="ammDriftBps" class="v4-data-strip-val">—</span>
+                                <span id="ammDriftBadge" class="v4-data-strip-badge v4-data-strip-badge--danger" style="display: none;">REQUOTE</span>
+                            </span>
+                            <span class="v4-data-strip-field">
+                                <span class="v4-data-strip-key">Reserves</span>
+                                <span class="v4-data-strip-val"><span id="ammXchReserve">—</span> XCH / <span id="ammTokenReserve">—</span> token</span>
+                            </span>
+                            <span id="ammBufferBadge" class="v4-data-strip-badge v4-data-strip-badge--warn" style="display: none;">BUFFER ON</span>
+                            <span id="ammArbPressure" class="v4-data-strip-badge" style="display: none;">ARB LOW</span>
+                            <span id="ammSweepProtection" class="v4-data-strip-badge v4-data-strip-badge--violet" style="display: none;">SWEEP GUARD</span>
+                            <span id="ammStaleWarning" class="v4-data-strip-badge v4-data-strip-badge--danger" style="display: none;">STALE</span>
+                            <span id="ammLastUpdate" class="v4-data-strip-last">—</span>
+                        </div>
+                    </div>
+
+                    <!-- ===== DEXIE VOLUME & TOKEN INFO: static pair metadata ===== -->
+                    <div id="tokenSnapshotBar" class="v4-data-strip v4-data-strip--volume" style="display: none;">
+                        <div class="v4-data-strip-header">
+                            <span class="v4-data-strip-title">Volume &amp; Token Info</span>
+                            <span class="v4-data-strip-source" title="Volume, range, and description sourced from the Dexie v3 trading API for this pair">Source · Dexie</span>
+                        </div>
+                        <div class="v4-data-strip-body">
+                            <span class="v4-data-strip-field">
+                                <span class="v4-data-strip-key">7d Volume</span>
+                                <span id="snapshotVol7d" class="v4-data-strip-val">—</span>
+                            </span>
+                            <span class="v4-data-strip-field">
+                                <span class="v4-data-strip-key">30d Volume</span>
+                                <span id="snapshotVol30d" class="v4-data-strip-val">—</span>
+                            </span>
+                            <span class="v4-data-strip-field">
+                                <span class="v4-data-strip-key">7d Range</span>
+                                <span id="snapshotRange7d" class="v4-data-strip-val v4-data-strip-val--muted">—</span>
+                            </span>
+                            <span id="snapshotDescWrap" class="v4-data-strip-field v4-data-strip-field--about" style="display:none;">
+                                <span class="v4-data-strip-key">About</span>
+                                <span id="snapshotDesc" class="v4-data-strip-val v4-data-strip-val--muted v4-data-strip-val--truncate">—</span>
+                            </span>
+                            <span id="snapshotWebsiteWrap" class="v4-data-strip-field" style="display:none; margin-left:auto;">
+                                <a id="snapshotWebsite" href="#" target="_blank" rel="noopener" class="v4-data-strip-link" onclick="return handleDashboardExternalLink(event, this)">
+                                    <svg width="11" height="11" viewBox="0 0 16 16" fill="none" style="flex-shrink:0"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><ellipse cx="8" cy="8" rx="3" ry="7" stroke="currentColor" stroke-width="1.5"/><line x1="1" y1="8" x2="15" y2="8" stroke="currentColor" stroke-width="1.5"/></svg>
+                                    <span id="snapshotWebsiteLabel">Website</span>
+                                </a>
+                            </span>
+                        </div>
+                    </div>
+
                     <!-- ===== HERO STRIP: Key numbers at a glance ===== -->
                     <div class="v4-hero-strip" id="heroStrip">
                         <div class="v4-hero-card">
@@ -8149,85 +8415,8 @@
                         </div>
                     </div>
 
-                    <!-- ===== TOKEN SNAPSHOT: Static stats shown on pair select, before bot starts ===== -->
-                    <div id="tokenSnapshotBar" style="display:none; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 10px 14px; margin-bottom: var(--space-3);">
-                        <div style="display: flex; align-items: flex-start; gap: 20px; flex-wrap: wrap;">
-                            <div style="display: flex; gap: 16px; flex-wrap: wrap; flex: 1; min-width: 0;">
-                                <div style="min-width: 80px;">
-                                    <div style="font-size: 10px; font-weight: 600; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px;">7d Volume</div>
-                                    <div id="snapshotVol7d" style="font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--text-primary);">—</div>
-                                </div>
-                                <div style="min-width: 80px;">
-                                    <div style="font-size: 10px; font-weight: 600; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px;">30d Volume</div>
-                                    <div id="snapshotVol30d" style="font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--text-primary);">—</div>
-                                </div>
-                                <div style="min-width: 130px;">
-                                    <div style="font-size: 10px; font-weight: 600; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px;">7d Range</div>
-                                    <div id="snapshotRange7d" style="font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary);">—</div>
-                                </div>
-                                <div id="snapshotDescWrap" style="display:none; flex: 1; min-width: 160px; max-width: 380px;">
-                                    <div style="font-size: 10px; font-weight: 600; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px;">About</div>
-                                    <div id="snapshotDesc" style="font-size: 12px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">—</div>
-                                </div>
-                            </div>
-                            <div id="snapshotWebsiteWrap" style="display:none; align-items: center;">
-                                <a id="snapshotWebsite" href="#" target="_blank" rel="noopener" style="font-size: 12px; color: var(--accent-primary); text-decoration: none; display: flex; align-items: center; gap: 4px;" onclick="return handleDashboardExternalLink(event, this)">
-                                    <svg width="11" height="11" viewBox="0 0 16 16" fill="none" style="flex-shrink:0"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><ellipse cx="8" cy="8" rx="3" ry="7" stroke="currentColor" stroke-width="1.5"/><line x1="1" y1="8" x2="15" y2="8" stroke="currentColor" stroke-width="1.5"/></svg>
-                                    <span id="snapshotWebsiteLabel">Website</span>
-                                </a>
-                            </div>
-                        </div>
-                    </div>
+                    <!-- Token snapshot + AMM strips moved to top of dashboard under toolbar -->
 
-                    <!-- ===== AMM STATUS BAR: Live TibetSwap reserve data ===== -->
-                    <div id="ammStatusBar" style="display: none; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); padding: 8px 14px; margin-bottom: var(--space-3); font-size: var(--text-xs);">
-                        <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
-                            <span style="color: var(--text-tertiary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.6px;">Live AMM</span>
-                            <span style="color: var(--text-secondary);">
-                                Price: <span id="ammLivePrice" style="font-family: var(--font-mono); color: var(--text-primary); font-weight: 600;">—</span>
-                            </span>
-                            <span style="color: var(--text-secondary);">
-                                Drift: <span id="ammDriftBps" style="font-family: var(--font-mono); font-weight: 600; color: var(--text-primary);">—</span>
-                                <span id="ammDriftBadge" style="display: none; margin-left: 4px; padding: 1px 6px; border-radius: 10px; font-size: 10px; font-weight: 700; background: rgba(239,68,68,0.15); color: var(--status-danger);">REQUOTE</span>
-                            </span>
-                            <span style="color: var(--text-secondary);">
-                                Reserves: <span id="ammXchReserve" style="font-family: var(--font-mono); color: var(--text-primary);">—</span> XCH / <span id="ammTokenReserve" style="font-family: var(--font-mono); color: var(--text-primary);">—</span> token
-                            </span>
-                            <span id="ammBufferBadge" style="display: none; padding: 1px 6px; border-radius: 10px; font-size: 10px; font-weight: 700; background: rgba(251,191,36,0.15); color: var(--status-warning);">BUFFER ON</span>
-                            <!-- Arb pressure indicator (Tier 3) -->
-                            <span id="ammArbPressure" style="display: none; padding: 1px 6px; border-radius: 10px; font-size: 10px; font-weight: 700;">ARB LOW</span>
-                            <!-- Sweep protection countdown -->
-                            <span id="ammSweepProtection" style="display: none; padding: 1px 6px; border-radius: 10px; font-size: 10px; font-weight: 700; background: rgba(139,92,246,0.15); color: var(--violet-300);">SWEEP GUARD</span>
-                            <span id="ammStaleWarning" style="display: none; padding: 1px 6px; border-radius: 10px; font-size: 10px; font-weight: 700; background: rgba(239,68,68,0.1); color: var(--status-danger);">STALE</span>
-                            <span style="color: var(--text-tertiary); margin-left: auto;" id="ammLastUpdate">—</span>
-                        </div>
-                    </div>
-
-                    <!-- ===== TOOLBAR: Controls row ===== -->
-                    <div class="v4-toolbar">
-                        <div class="v4-toolbar-left">
-                        <button class="btn btn-start btn-primary" id="startBtn" onclick="startBot()" disabled>▶ Start</button>
-                        <button class="btn btn-stop btn-danger" id="stopBtn" onclick="stopBot()" disabled>⏹ Stop</button>
-                        <div class="v4-toolbar-sep"></div>
-                        <button class="btn btn-cancel btn-danger" id="cancelAllBtn" onclick="cancelAllOffers()">Cancel All (<span id="cancelAllCount">0</span>) <span class="cc-help">?<span class="cc-tooltip">Cancels every active buy and sell offer — use for a clean restart or wallet switch. Stop the bot first.</span></span></button>
-                        <!-- Centre: bot status badge -->
-                        </div>
-                        <div class="v4-toolbar-center">
-                            <div class="status-badge" id="statusBadge">● Stopped</div>
-                        </div>
-                        <!-- Right: connection info -->
-                        <div class="v4-toolbar-right">
-                            <div id="syncIndicator" class="sync-indicator sync-unknown" title="Wallet connection status">
-                                <span class="sync-dot"></span>
-                                <span id="syncLabel">Checking...</span>
-                            </div>
-                            <div id="walletTypeBadge" style="display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 6px; font-size: var(--text-xs); font-weight: 600; background: rgba(148,163,184,0.1); color: var(--text-tertiary); border: 1px solid rgba(148,163,184,0.2);" title="Connected wallet">
-                                <span id="walletTypeIcon">⚡</span>
-                                <span id="walletTypeLabel">Sage</span>
-                            </div>
-                            <div id="fingerprintDisplay" onclick="showWalletPickerModal()" style="display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 6px; font-family: var(--font-mono); font-size: var(--text-xs); font-weight: 600; background: rgba(148,163,184,0.1); color: var(--text-tertiary); border: 1px solid rgba(148,163,184,0.2); cursor: pointer; transition: all 0.2s;" onmouseover="this.style.borderColor='rgba(245,158,11,0.5)'; this.style.background='rgba(245,158,11,0.08)'" onmouseout="this.style.borderColor='rgba(148,163,184,0.2)'; this.style.background='rgba(148,163,184,0.1)'">🔑 <span id="fingerprintValue">—</span> <span class="cc-help">?<span class="cc-tooltip">Click to change your active wallet or fingerprint</span></span></div>
-                        </div>
-                    </div>
 
                     <!-- consoleWarningBanner removed 2026-04-06: the
                          external console popup has been eliminated. Live
@@ -8236,23 +8425,30 @@
                          closing the console window killed the bot. -->
                     <div id="consoleWarningBanner" style="display:none;" aria-hidden="true"></div>
 
-                    <!-- ===== SPLIT PANEL: RECOMMENDATIONS + ACTIVITY ===== -->
-                    <div id="dashboardActivityRow" style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px;">
-                        <!-- LEFT: Recommendations (everything with a button to press) -->
+                    <!-- ===== SPLIT PANEL: merged Guidance (Recommendations+Advisor) on the left, Activity on the right ===== -->
+                    <div id="dashboardActivityRow" class="v4-dashboard-panels-row">
+                        <!-- LEFT: Guidance — actionable alerts first, then advisor notes -->
                         <div class="live-activity-panel" id="alertsPanel">
                             <div class="la-header">
                                 <div class="la-header-left">
                                     <div class="la-pulse" id="alertPulse"></div>
-                                    <span class="la-title">Recommendations</span>
+                                    <span class="la-title">Guidance</span>
                                     <span id="alertBadge" style="display:none; background:var(--status-danger); color:white; font-size:10px; padding:1px 6px; border-radius:10px; font-weight:700;"></span>
                                 </div>
                             </div>
-                            <div class="panel-context-note">Everything with a button to press: bot/wallet alerts and market suggestions with one-click fixes.</div>
-                            <div class="la-body" id="alertsBody" style="max-height: 140px; overflow-y: auto;">
+                            <div class="panel-context-note">Things to act on, plus advisor notes about what the current market state means.</div>
+                            <div class="la-body la-body--actions" id="alertsBody">
                                 <div class="la-empty" id="alertsEmpty">Nothing you need to act on right now</div>
                             </div>
+                            <div class="la-subheader"><span class="la-subheader-label">Advisor notes</span></div>
+                            <div class="la-body la-body--notes">
+                                <div class="sa-suggestions" id="saList">
+                                    <div class="sa-empty" style="color: var(--text-tertiary);">Monitoring market...</div>
+                                </div>
+                                <div class="sa-diagnostics" id="saDiagnostics" style="display: none;"></div>
+                            </div>
                         </div>
-                        <!-- RIGHT: Rolling Activity Feed (existing) -->
+                        <!-- RIGHT: Rolling Activity Feed -->
                         <div class="live-activity-panel" id="liveActivityPanel">
                             <div class="la-header">
                                 <div class="la-header-left">
@@ -8268,18 +8464,9 @@
                         </div>
                     </div>
 
-                    <div id="dashboardAdvisorRow" style="margin-bottom: 16px;">
-                        <div class="smart-advisor" id="smartAdvisor" style="background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: var(--space-4); margin: 0; display: flex; flex-direction: column;">
-                            <div style="font-size: var(--text-sm); text-transform: uppercase; letter-spacing: 1.2px; color: var(--text-primary); font-weight: 600; margin-bottom: 8px; flex-shrink: 0;">
-                                ADVISOR
-                            </div>
-                            <div class="panel-context-note" style="margin-bottom: 10px;">Overview and context: what the current state means and what to watch, not a to-do list.</div>
-                            <div class="sa-suggestions" id="saList" style="font-size: 14px; line-height: 1.6; flex: 1; overflow-y: auto;">
-                                <div class="sa-empty" style="color: var(--text-tertiary);">Monitoring market...</div>
-                            </div>
-                            <div class="sa-diagnostics" id="saDiagnostics" style="display: none;"></div>
-                        </div>
-                    </div>
+                    <!-- Legacy dashboardAdvisorRow removed — advisor notes are
+                         now stacked inside the Guidance panel above. -->
+                    <div id="dashboardAdvisorRow" style="display:none;"></div>
 
         <!-- ========== COMMAND CENTRE ========== -->
         <div class="command-centre" id="commandCentre">
