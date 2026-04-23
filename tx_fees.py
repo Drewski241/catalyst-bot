@@ -192,7 +192,7 @@ def _coinset_fee_estimate(target_seconds: int, cost: int) -> Optional[Dict]:
             r = _requests.post(
                 f"{api_url}/get_fee_estimate",
                 json={"cost": cost, "target_times": [target_seconds]},
-                headers={"content-type": "application/json", "User-Agent": "ChiaMarketMaker/2.0"},
+                headers={"content-type": "application/json", "User-Agent": "CATalyst/2.0"},
                 timeout=(3, timeout),
             )
             if r.status_code == 200:

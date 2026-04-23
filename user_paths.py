@@ -22,6 +22,10 @@ import sys
 import shutil
 
 
+# DO NOT RENAME: this is the on-disk data directory name on every OS.
+# Existing users have their DB, config, and keys under %APPDATA%\ChiaMarketMaker\
+# (or the macOS/Linux equivalents). Renaming strands their data on upgrade.
+# User-facing branding is "CATalyst"; this constant is an internal identifier.
 APP_NAME = "ChiaMarketMaker"
 
 

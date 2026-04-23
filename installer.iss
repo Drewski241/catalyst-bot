@@ -1,5 +1,5 @@
 ; ============================================================
-; Chia Market Maker — Inno Setup installer script
+; CATalyst — Inno Setup installer script
 ; ============================================================
 ; Build the PyInstaller bundle first (python build.py), then open
 ; this file in Inno Setup Compiler (ISCC.exe) to produce the

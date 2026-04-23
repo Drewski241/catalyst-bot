@@ -8,7 +8,7 @@ README + INDEX + any handoff file itself and picks up work.
 
 ```
 You are continuing a distributed comprehensive audit of the CATalyst
-Chia Market Maker bot. Work is split into ~106 self-contained slices
+CATalyst bot. Work is split into ~106 self-contained slices
 across 5 layers (static analysis, unit tests, integration, API
 contracts, UI smoke). You own exactly ONE slice this session.
 

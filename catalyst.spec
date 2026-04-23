@@ -1,6 +1,6 @@
 # build_windows.spec
 #
-# PyInstaller spec file for Chia Market Maker — Windows (onedir bundle)
+# PyInstaller spec file for CATalyst — Windows (onedir bundle)
 #
 # Usage:
 #   pyinstaller build_windows.spec

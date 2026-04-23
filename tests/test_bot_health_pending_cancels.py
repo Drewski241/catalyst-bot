@@ -293,6 +293,9 @@ class RunRuntimeChecksTests(_ModuleStubMixin, unittest.TestCase):
         fake_db.transition_offer = MagicMock()
         fake_db.mark_cancel_attempted = MagicMock()
         fake_db.free_coin = MagicMock(return_value=True)
+        # check_topup_budget_drift + check_funds_advisory read/write settings.
+        fake_db.get_setting = MagicMock(return_value=None)
+        fake_db.set_setting = MagicMock(return_value=True)
         sys.modules["database"] = fake_db
         return fake_db
 

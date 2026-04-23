@@ -90,7 +90,6 @@ from tx_fees import get_fee_settings_snapshot
 # bundle root, so we use it when available.
 # ---------------------------------------------------------------------------
 _APP_ROOT = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
-_APP_VERSION_CACHE = None
 _SPACESCAN_PUBLIC_PLANS = {
     "free": {
         "label": "Free",
@@ -330,28 +329,12 @@ _LIVE_REQUOTE_ONLY_KEYS = {
 
 
 def get_app_version() -> str:
-    """Return the packaged app version from the local project metadata."""
-    global _APP_VERSION_CACHE
-    if _APP_VERSION_CACHE:
-        return _APP_VERSION_CACHE
-
-    version_files = (
-        os.path.join(_APP_ROOT, "src-tauri", "tauri.conf.json"),
-        os.path.join(_APP_ROOT, "package.json"),
-    )
-    for path in version_files:
-        try:
-            with open(path, "r", encoding="utf-8") as fh:
-                data = json.load(fh)
-            version = str(data.get("version", "")).strip()
-            if version:
-                _APP_VERSION_CACHE = version
-                return _APP_VERSION_CACHE
-        except Exception:
-            continue
-
-    _APP_VERSION_CACHE = "unknown"
-    return _APP_VERSION_CACHE
+    """Return the packaged app version from _version.py (single source of truth)."""
+    try:
+        from _version import __version__
+        return __version__
+    except Exception:
+        return "unknown"
 
 
 def _get_spacescan_plan_advice() -> Dict[str, object]:
@@ -1691,7 +1674,7 @@ def api_check_update():
             releases_url,
             headers={
                 "Accept": "application/vnd.github+json",
-                "User-Agent": f"ChiaMarketMaker/{current}",
+                "User-Agent": f"CATalyst/{current}",
             },
             timeout=6,
         )
@@ -1761,7 +1744,7 @@ def api_sage_latest_release():
             "https://api.github.com/repos/xch-dev/sage/releases/latest",
             headers={
                 "Accept": "application/vnd.github+json",
-                "User-Agent": "ChiaMarketMaker/sage-version-check",
+                "User-Agent": "CATalyst/sage-version-check",
             },
             timeout=6,
         )

@@ -48,7 +48,7 @@ class AMMMonitor:
         # HTTP session (reused across polls)
         self._session = requests.Session()
         self._session.headers.update({
-            "User-Agent": "ChiaMarketMaker/4.0",
+            "User-Agent": "CATalyst/4.0",
             "Accept": "application/json",
         })
 

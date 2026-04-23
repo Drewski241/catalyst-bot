@@ -12236,7 +12236,8 @@
                 confirmText: 'Start Fresh',
                 cancelText: 'Back',
                 extraText: 'View Settings',
-                style: 'warning'
+                style: 'warning',
+                allowHtml: true
             });
 
             if (result === 'extra') {
@@ -14285,7 +14286,8 @@
                                      `<br><br>Continue?`,
                             confirmText: 'Yes, turn OFF',
                             cancelText: 'Keep ON',
-                            style: 'warning'
+                            style: 'warning',
+                            allowHtml: true
                         });
                     }
                 }
@@ -14307,7 +14309,8 @@
                                      `<br><br>Continue?`,
                             confirmText: 'Yes, turn OFF',
                             cancelText: 'Keep ON',
-                            style: 'warning'
+                            style: 'warning',
+                            allowHtml: true
                         });
                     }
                 }
@@ -14325,7 +14328,8 @@
                                  `<br><br>Continue?`,
                         confirmText: 'Yes, turn OFF',
                         cancelText: 'Keep ON',
-                        style: 'warning'
+                        style: 'warning',
+                        allowHtml: true
                     });
                 }
             } catch (e) {
@@ -14756,19 +14760,31 @@
                     ? new Date(entry.savedAt).toLocaleString()
                     : 'unknown date';
                 const fieldCount = entry.settings ? Object.keys(entry.settings).length : 0;
-                const nameAttr = encodeURIComponent(name);
+                const nameEsc = escapeHtml(name);
                 return ''
                     + '<div class="v4-preset-row">'
                     +   '<div class="v4-preset-info">'
-                    +     '<div class="v4-preset-name" title="' + escapeHtml(name) + '">' + escapeHtml(name) + '</div>'
+                    +     '<div class="v4-preset-name" title="' + nameEsc + '">' + nameEsc + '</div>'
                     +     '<div class="v4-preset-meta">saved ' + escapeHtml(when) + ' · ' + fieldCount + ' fields</div>'
                     +   '</div>'
-                    +   '<button class="v4-preset-action v4-preset-action--primary" onclick="presetsLoadByName(\'' + nameAttr + '\')">Load</button>'
-                    +   '<button class="v4-preset-action" onclick="presetsRenameByName(\'' + nameAttr + '\')">Rename</button>'
-                    +   '<button class="v4-preset-action v4-preset-action--danger" onclick="presetsDeleteByName(\'' + nameAttr + '\')">Delete</button>'
+                    +   '<button class="v4-preset-action v4-preset-action--primary" data-preset-action="load" data-preset-name="' + nameEsc + '">Load</button>'
+                    +   '<button class="v4-preset-action" data-preset-action="rename" data-preset-name="' + nameEsc + '">Rename</button>'
+                    +   '<button class="v4-preset-action v4-preset-action--danger" data-preset-action="delete" data-preset-name="' + nameEsc + '">Delete</button>'
                     + '</div>';
             }).join('');
             list.innerHTML = rows;
+            if (!list._presetsDelegated) {
+                list.addEventListener('click', (e) => {
+                    const btn = e.target.closest('[data-preset-action]');
+                    if (!btn) return;
+                    const name = btn.getAttribute('data-preset-name') || '';
+                    const action = btn.getAttribute('data-preset-action');
+                    if (action === 'load') presetsLoadByName(name);
+                    else if (action === 'rename') presetsRenameByName(name);
+                    else if (action === 'delete') presetsDeleteByName(name);
+                });
+                list._presetsDelegated = true;
+            }
         }
 
         function presetsSaveFromButton() {
@@ -14791,8 +14807,8 @@
             }
         }
 
-        function presetsLoadByName(encoded) {
-            const name = decodeURIComponent(String(encoded || ''));
+        function presetsLoadByName(name) {
+            name = String(name || '');
             const all = _presetsReadAll();
             const entry = all[name];
             if (!entry) { showToast('Preset not found.', 'warning'); return; }
@@ -14807,8 +14823,8 @@
             try { if (typeof markSettingsDirty === 'function') markSettingsDirty(); } catch (_) {}
         }
 
-        function presetsRenameByName(encoded) {
-            const name = decodeURIComponent(String(encoded || ''));
+        function presetsRenameByName(name) {
+            name = String(name || '');
             const all = _presetsReadAll();
             if (!(name in all)) return;
             const nameRaw = prompt('New name for "' + name + '":', name);
@@ -14824,8 +14840,8 @@
             }
         }
 
-        function presetsDeleteByName(encoded) {
-            const name = decodeURIComponent(String(encoded || ''));
+        function presetsDeleteByName(name) {
+            name = String(name || '');
             if (!confirm('Delete preset "' + name + '"? This cannot be undone.')) return;
             const all = _presetsReadAll();
             if (!(name in all)) return;
@@ -15582,13 +15598,13 @@
             _saLastSuggestions = visibleSuggestions.map((item) => ({ ...item }));
             let html = '';
             for (const s of visibleSuggestions) {
-                const dismissKey = encodeURIComponent((s.type || '') + ':' + (s.msg || ''));
+                const dismissKey = escapeHtml((s.type || '') + ':' + (s.msg || ''));
                 html += '<div class="sa-item ' + escapeHtml(s.type) + '" style="position: relative;">';
                 html += '<span class="sa-icon">' + escapeHtml(s.icon) + '</span>';
                 html += '<div class="sa-content" style="flex: 1;">';
                 html += '<div class="sa-msg">' + escapeHtml(s.msg) + '</div>';
                 html += '</div>';
-                html += '<button class="alert-dismiss" onclick="dismissAdvisorMsg(decodeURIComponent(\'' + dismissKey + '\'))" '
+                html += '<button class="alert-dismiss" data-dismiss-key="' + dismissKey + '" '
                     + 'title="Dismiss until conditions change" '
                     + 'style="flex-shrink: 0; align-self: center;"'
                     + '>Dismiss</button>';
@@ -15597,6 +15613,15 @@
             container.innerHTML = html;
             container.scrollTop = 0;
             container.scrollLeft = 0;
+            if (!container._advisorDismissDelegated) {
+                container.addEventListener('click', (e) => {
+                    const btn = e.target.closest('[data-dismiss-key]');
+                    if (!btn) return;
+                    const key = btn.getAttribute('data-dismiss-key') || '';
+                    dismissAdvisorMsg(key);
+                });
+                container._advisorDismissDelegated = true;
+            }
         }
 
         // Advisor-dismissal persistence. We keep the dismissal keys in
@@ -16147,7 +16172,8 @@
                     message: 'This changes the trading pair for the whole app, not just Settings.<br><br>Balances, pricing, warnings, and coin prep will reload for the new token. Continue to the dashboard to choose the replacement pair?',
                     confirmText: 'Change Pair',
                     cancelText: 'Keep Current Pair',
-                    style: 'warning'
+                    style: 'warning',
+                    allowHtml: true
                 });
                 if (!proceed) return;
             }
@@ -17220,13 +17246,19 @@
         // =================================================================
         let _confirmResolve = null;
         
-        function showStyledConfirm({ icon = '⚠️', title = 'Confirm', message = 'Are you sure?', confirmText = 'Confirm', cancelText = 'Cancel', extraText = '', style = 'danger' } = {}) {
+        function showStyledConfirm({ icon = '⚠️', title = 'Confirm', message = 'Are you sure?', confirmText = 'Confirm', cancelText = 'Cancel', extraText = '', style = 'danger', allowHtml = false } = {}) {
             return new Promise((resolve) => {
                 _confirmResolve = resolve;
                 document.getElementById('confirmIcon').innerHTML = icon;
                 document.getElementById('confirmTitle').textContent = title;
-                // Use innerHTML so callers can pass <strong>, <br> etc.
-                document.getElementById('confirmMessage').innerHTML = message;
+                // Default: textContent (XSS-safe). Callers passing trusted static
+                // HTML (no server data) may opt in with allowHtml: true.
+                const msgEl = document.getElementById('confirmMessage');
+                if (allowHtml) {
+                    msgEl.innerHTML = message;
+                } else {
+                    msgEl.textContent = String(message);
+                }
                 document.getElementById('confirmCancelBtn').textContent = cancelText;
                 const okBtn = document.getElementById('confirmOkBtn');
                 okBtn.textContent = confirmText;
@@ -26124,7 +26156,8 @@
                     '<b>3.</b> The bot will reconnect automatically',
                 confirmText: 'Got it',
                 cancelText: '',
-                style: 'info'
+                style: 'info',
+                allowHtml: true
             });
         }
         const restartChia = restartSage;
@@ -29080,7 +29113,8 @@
                     message: 'A spread below 2% is risky. You may <strong>lose money</strong> on trades due to fees and slippage.',
                     confirmText: 'Save Anyway',
                     cancelText: 'Go Back',
-                    style: 'warning'
+                    style: 'warning',
+                    allowHtml: true
                 });
                 if (!proceed) {
                     setSaveConfigButtonState(false);
@@ -29204,7 +29238,8 @@
                              '<br><br>Fix them and try again.',
                     confirmText: 'OK',
                     cancelText: 'OK',
-                    style: 'danger'
+                    style: 'danger',
+                    allowHtml: true
                 });
                 setSaveConfigButtonState(false);
                 return;
@@ -29221,7 +29256,8 @@
                              '<br><br>Save anyway?',
                     confirmText: 'Save Anyway',
                     cancelText: 'Go Back',
-                    style: 'warning'
+                    style: 'warning',
+                    allowHtml: true
                 });
                 if (!_proceed) {
                     setSaveConfigButtonState(false);
@@ -29457,7 +29493,8 @@
                         message: `${warnItems}<br><br>Save these settings anyway and continue to the next step?`,
                         confirmText: 'Continue',
                         cancelText: 'Back to Settings',
-                        style: 'warning'
+                        style: 'warning',
+                        allowHtml: true
                     });
                     if (!proceed) {
                         if (preopenedCoinPrepLoading) dismissCoinPrepConfirmLoading();

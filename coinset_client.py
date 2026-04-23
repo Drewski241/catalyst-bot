@@ -28,7 +28,7 @@ from database import log_event
 # Coinset.org uses Cloudflare protection — requests without User-Agent get 403/1010
 COINSET_HEADERS = {
     "content-type": "application/json",
-    "User-Agent": "ChiaMarketMaker/2.0",
+    "User-Agent": "CATalyst/2.0",
 }
 
 

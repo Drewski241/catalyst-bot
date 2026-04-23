@@ -56,7 +56,7 @@ CATalyst handles all of that. You tell it the CAT you want to trade and your cap
 
 ## Requirements
 
-- Windows 10 or 11 (64-bit). Native macOS and Linux builds are published on each release.
+- Cross-platform: Windows 10/11 (64-bit), macOS, and Linux. Prebuilt binaries for all three ship with every release; see the [Releases page](https://github.com/Lowestofttim/catalyst-bot/releases).
 - [Sage wallet](https://sage.rigidnetwork.io) installed with RPC enabled (Settings → Advanced → Enable RPC).
 - XCH for fees and inventory, plus the CAT token you want to trade.
 - Python 3.10+ only if running from source. The packaged release has no external runtime requirements.
@@ -76,7 +76,7 @@ CATalyst handles all of that. You tell it the CAT you want to trade and your cap
 ```bash
 git clone https://github.com/Lowestofttim/catalyst-bot.git
 cd catalyst-bot
-pip install flask requests python-dotenv pywebview pystray plyer Pillow
+pip install -r requirements.txt
 cp .env.example .env
 # Edit .env to fill in SAGE_CERT_PATH and SAGE_KEY_PATH
 python desktop_app.py

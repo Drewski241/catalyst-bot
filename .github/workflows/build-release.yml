@@ -48,7 +48,14 @@ jobs:
       - name: Install dependencies
         run: |
           pip install pyinstaller
-          pip install flask requests python-dotenv pywebview pystray plyer Pillow cryptography
+          pip install -r requirements.txt
+
+      - name: Sync _version.py to tag
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "__version__ = \"${version}\"" > _version.py
+          echo "Synced _version.py to ${version}"
 
       - name: Build with PyInstaller
         run: python build.py

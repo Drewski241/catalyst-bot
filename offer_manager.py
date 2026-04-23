@@ -96,8 +96,8 @@ class OfferManager:
     """
 
     def __init__(self):
-        # Track which offers the bot cancelled (vs externally filled)
-        # This is critical for fill detection — see CHIA_DEV_GUIDE.md Section 5
+        # Track which offers the bot cancelled (vs externally filled).
+        # Used by fill_tracker to distinguish own-cancel from counterparty fill.
         self._bot_cancelled_ids: set = set()
 
         # Cache of offer details for fill recording
@@ -936,7 +936,8 @@ class OfferManager:
         from different threads (main loop, sniper, boost) choosing the same coin.
 
         Handles the "Wallet needs to be fully synced" error that occurs
-        briefly during heavy operations. See CHIA_DEV_GUIDE.md Section 10.
+        briefly during heavy operations: retry with backoff until the wallet
+        reports fully synced or the retry budget is exhausted.
 
         Two coin detection modes:
         1. coin_ids mode (V3): Pre-select a coin and pass it to make_offer.
@@ -3214,8 +3215,7 @@ class OfferManager:
         """Find and cancel expired offers.
 
         The Chia wallet doesn't auto-expire offers — they stay "open" forever.
-        We must check valid_times.max_time manually.
-        See CHIA_DEV_GUIDE.md Section 4.
+        We must check valid_times.max_time manually and cancel stale ones.
         """
         count = cleanup_expired_offers()
 

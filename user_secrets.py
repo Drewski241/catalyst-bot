@@ -26,6 +26,8 @@ import threading
 from pathlib import Path
 
 _LOCK = threading.Lock()
+# DO NOT RENAME: must match user_paths.APP_NAME. Changing it would orphan
+# every existing user's stored secrets. User-facing branding is "CATalyst".
 _APP_NAME = "ChiaMarketMaker"
 
 

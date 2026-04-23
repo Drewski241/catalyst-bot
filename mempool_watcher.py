@@ -442,7 +442,7 @@ class MempoolWatcher:
                     json={},
                     headers={
                         "content-type": "application/json",
-                        "User-Agent": "ChiaMarketMaker/2.0",
+                        "User-Agent": "CATalyst/2.0",
                     },
                     cert=cert,
                     verify=False,  # Chia uses self-signed certs for local RPC
@@ -455,7 +455,7 @@ class MempoolWatcher:
                     json={},
                     headers={
                         "content-type": "application/json",
-                        "User-Agent": "ChiaMarketMaker/2.0",
+                        "User-Agent": "CATalyst/2.0",
                     },
                     timeout=timeout,
                 )
