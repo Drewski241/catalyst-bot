@@ -10818,6 +10818,40 @@ def api_cat_select():
                 "error": "CAT asset_id must be exactly 64 hex characters",
             }), 400
         asset_id = asset_id.lower()
+
+        # Defensive guard: reject asset_id that isn't actually in the
+        # Sage wallet (NEXT_SESSION.md §5.1). Prevents silent .env
+        # corruption from a hex-format-valid but non-existent CAT id
+        # — on next restart the bot would fail to find the CAT and
+        # trade-cycle RPC calls would silently return zero balances.
+        # Wallet failures are tolerated (offline-configure is allowed)
+        # but a hit on a mismatch blocks the save with a clear error.
+        try:
+            from wallet import get_wallets as _get_wallets
+            _wallets_resp = _get_wallets()
+            if isinstance(_wallets_resp, dict) and _wallets_resp.get("success") is not False:
+                _wallets = _wallets_resp.get("wallets") or []
+                _known_asset_ids = set()
+                for _w in _wallets:
+                    _aid = str(_w.get("asset_id") or "").lower().replace("0x", "")
+                    if len(_aid) == 64:
+                        _known_asset_ids.add(_aid)
+                if _known_asset_ids and asset_id not in _known_asset_ids:
+                    return jsonify({
+                        "success": False,
+                        "error": (f"CAT asset_id not found in Sage wallet "
+                                  f"(wallet has {len(_known_asset_ids)} known CAT"
+                                  f"{'s' if len(_known_asset_ids) != 1 else ''}). "
+                                  f"Receive the CAT first, or double-check the ID."),
+                    }), 400
+        except Exception as _wallet_check_err:
+            # Wallet lookup failed (RPC down, etc.) — don't block the
+            # save since offline configuration is a legitimate flow.
+            # Log for operator visibility.
+            log_event("warning", "cat_select_wallet_check_failed",
+                      f"Could not verify asset_id against wallet "
+                      f"({_wallet_check_err}) — proceeding without "
+                      f"existence check")
     # Defensive caps on other user-controlled strings
     if name and len(str(name)) > 128:
         return jsonify({"success": False, "error": "CAT name too long"}), 400
