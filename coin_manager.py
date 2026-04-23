@@ -3171,6 +3171,16 @@ class CoinManager:
                 # braces with .value keeps this working regardless.
                 _des_val = getattr(cls.designation, "value", str(cls.designation))
 
+                # One-off debug: log the exact types/values at the
+                # branch decision so we can see why it doesn't match.
+                if best != current and summary["relabeled"] + summary["demoted_reserve"] + summary["demoted_unknown"] < 1:
+                    log_event("info", "tier_normalize_branch_debug",
+                              f"_des_val type={type(_des_val).__name__} "
+                              f"value={_des_val!r} "
+                              f"eq_check={_des_val == 'tier_spare'} "
+                              f"best={best!r} current={current!r} "
+                              f"best_ne_current={best != current}")
+
                 if _des_val == "tier_spare" and best and best != current:
                     conn.execute(
                         "UPDATE coins SET assigned_tier=?, last_seen=? "
