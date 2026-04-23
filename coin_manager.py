@@ -3163,14 +3163,22 @@ class CoinManager:
                               f"label={current} classifier_best={best} "
                               f"designation={getattr(cls.designation, 'value', cls.designation)}")
 
-                if cls.designation == _CD.TIER_SPARE and best and best != current:
+                # Compare by VALUE (strings) not identity — enum
+                # identity comparison can fail if coin_classifier gets
+                # imported twice via different paths (e.g. once at cold
+                # start via super_log hooks, once lazily in this method),
+                # even though sys.modules normally dedupes. Belt-and-
+                # braces with .value keeps this working regardless.
+                _des_val = getattr(cls.designation, "value", str(cls.designation))
+
+                if _des_val == "tier_spare" and best and best != current:
                     conn.execute(
                         "UPDATE coins SET assigned_tier=?, last_seen=? "
                         "WHERE coin_id=?",
                         (best, _now(), r["coin_id"]),
                     )
                     summary["relabeled"] += 1
-                elif cls.designation == _CD.RESERVE:
+                elif _des_val == "reserve":
                     conn.execute(
                         "UPDATE coins SET designation='reserve', "
                         "assigned_tier='none', last_seen=? "
@@ -3178,7 +3186,7 @@ class CoinManager:
                         (_now(), r["coin_id"]),
                     )
                     summary["demoted_reserve"] += 1
-                elif cls.designation in (_CD.DUST, _CD.UNKNOWN):
+                elif _des_val in ("dust", "unknown"):
                     conn.execute(
                         "UPDATE coins SET designation='unknown', "
                         "assigned_tier='none', last_seen=? "
