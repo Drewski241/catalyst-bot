@@ -3113,6 +3113,9 @@ class CoinManager:
 
         summary = {"relabeled": 0, "demoted_reserve": 0,
                    "demoted_unknown": 0}
+        # Diagnostic counters so we can see why nothing fires even
+        # when drift is present.
+        scanned = {"xch": 0, "cat": 0}
         conn = get_connection()
 
         for wt in ("xch", "cat"):
@@ -3135,6 +3138,10 @@ class CoinManager:
                 "  AND assigned_tier IN ('inner','mid','outer','extreme')",
                 (wt,),
             ).fetchall()
+            scanned[wt] = len(rows)
+            log_event("info", "tier_normalize_scan",
+                      f"{wt} free tier_spare coins in scan: {len(rows)}, "
+                      f"tier_sizes_mojos keys: {list(tier_sizes.keys())}")
 
             for r in rows:
                 amt = int(r["amount_mojos"] or 0)
@@ -3147,6 +3154,14 @@ class CoinManager:
 
                 current = (r["assigned_tier"] or "").lower()
                 best = (cls.best_tier or "").lower() if cls.best_tier else ""
+
+                # Diagnostic log: shows first mismatch per wallet so we
+                # can confirm the comparison logic is working.
+                if best != current and scanned[wt] > 0 and summary["relabeled"] + summary["demoted_reserve"] + summary["demoted_unknown"] < 2:
+                    log_event("info", "tier_normalize_mismatch_sample",
+                              f"{wt} coin amt={amt/1e12 if wt=='xch' else amt} "
+                              f"label={current} classifier_best={best} "
+                              f"designation={getattr(cls.designation, 'value', cls.designation)}")
 
                 if cls.designation == _CD.TIER_SPARE and best and best != current:
                     conn.execute(
