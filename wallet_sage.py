@@ -2763,6 +2763,30 @@ def get_offer_bech32(trade_id: str) -> str:
     return None
 
 
+def _is_still_fillable(status_val, offer_record=None) -> bool:
+    """Return True if the offer can still be taken by a counterparty.
+
+    Narrower than _is_open_status: a PENDING_CANCEL offer has its cancel
+    TX in the mempool but the chain hasn't confirmed yet, so it IS still
+    fillable until the cancel lands. Use this variant when deciding
+    whether a cancel batch has actually removed the offer from the
+    take-able book (cancel_offers_batch success detection).
+    """
+    if offer_record and is_offer_time_expired(offer_record):
+        return False
+    if status_val is None:
+        return False
+    if isinstance(status_val, int):
+        # 0=PENDING_ACCEPT, 1=PENDING_CONFIRM, 2=PENDING_CANCEL all
+        # remain fillable — the offer is still on chain/mempool until
+        # the cancel TX confirms.
+        return status_val <= 2
+    status = str(status_val).upper()
+    FILLABLE = {"PENDING_ACCEPT", "PENDING_CONFIRM", "PENDING",
+                "PENDING_CANCEL", "IN_PROGRESS", "OPEN", "ACTIVE"}
+    return status in FILLABLE
+
+
 def _is_open_status(status_val, offer_record=None) -> bool:
     """Determine if an offer status represents an open/active offer.
 
@@ -2971,7 +2995,27 @@ def _cancel_offers_bulk_proper(offer_ids: list, fee_mojos: int = 0) -> bool:
         return False
 
     print(f"   [Bulk] submit_transaction returned: {str(submit_resp)[:200]}")
-    return True   # HTTP 200 = accepted by mempool
+    # HTTP 200 alone is not enough — Sage sometimes returns a 200 with
+    # success:false / a populated error field when the signed bundle is
+    # rejected (bad aggregate signature, already-spent inputs, etc.).
+    # Previously we trusted the 200 status and every caller thought the
+    # bulk cancel was in the mempool even though it was rejected, so the
+    # sequential fallback never ran and the book stayed live under fake
+    # "pending cancel" rows. Validate the JSON body before claiming
+    # success.
+    if not isinstance(submit_resp, dict):
+        print(f"   [Bulk] submit_transaction response not a dict — falling back")
+        return False
+    _sub_err = submit_resp.get("error") or submit_resp.get("reason")
+    _sub_status = str(submit_resp.get("status", "") or "").lower()
+    if _sub_err or _sub_status in ("failed", "error", "rejected"):
+        print(f"   [Bulk] submit_transaction rejected payload "
+              f"(error={_sub_err!r}, status={_sub_status!r}) — falling back")
+        return False
+    if "success" in submit_resp and submit_resp.get("success") is False:
+        print(f"   [Bulk] submit_transaction success=false — falling back")
+        return False
+    return True
 
 
 def cancel_offers_batch(trade_ids: list, secure: bool = True, max_workers: int = 3,
@@ -3150,7 +3194,17 @@ def cancel_offers_batch(trade_ids: list, secure: bool = True, max_workers: int =
                         tid = o.get("trade_id", "") or o.get("offer_id", "")
                         if tid in target_set:
                             raw_status = o.get("status")
-                            if _is_open_status(raw_status, o):
+                            # Count fillable offers (includes PENDING_CANCEL
+                            # — the cancel TX is in the mempool but the
+                            # counterparty can still take the offer until
+                            # it confirms). Previously we used
+                            # _is_open_status which counted PENDING_CANCEL
+                            # as closed, so the batch could declare
+                            # success while offers were still accepting
+                            # fills in a flash-move window. Under
+                            # congestion that let adverse fills stack
+                            # into the move.
+                            if _is_still_fillable(raw_status, o):
                                 open_remaining += 1
             except Exception:
                 open_remaining = -1  # unknown
@@ -3158,7 +3212,10 @@ def cancel_offers_batch(trade_ids: list, secure: bool = True, max_workers: int =
             print(f"   🔄 [{elapsed}s] spendable={current_coins} "
                   f"(delta=+{delta}), open_remaining={open_remaining}")
 
-            # Success: no more open offers from our batch (offers unlocked/cancelled)
+            # Success: no more fillable offers from our batch (offers
+            # off-book and cancels confirmed on-chain — PENDING_CANCEL
+            # rows are NOT counted as success because a fill can still
+            # beat an in-mempool cancel).
             if open_remaining == 0:
                 print(f"   ✅ [Sage] All offers cancelled — coins returned "
                       f"(spendable={current_coins}, delta=+{delta})")
@@ -3509,36 +3566,50 @@ def get_owned_coins_detailed(wallet_id: int) -> Optional[Dict]:
     else:
         asset_id = None
 
-    result = rpc("get_coins", {
-        "asset_id": asset_id,
-        "offset": 0, "limit": 500,
-        "filter_mode": "owned",
-    }, timeout=15)
-
-    if not result:
-        return None
-
-    coins = result.get("coins") or result.get("records") or result.get("data") or []
-    coin_map = {}
-    for c in coins:
-        cid = c.get("coin_id", "")
-        if cid:
-            if not cid.startswith("0x"):
-                cid = "0x" + cid.lower()
-            else:
-                cid = cid.lower()
-            # Extract offer_id — this is the offer_hash from Sage's DB
-            # If set, this coin is locked by an offer
-            offer_id = c.get("offer_id") or c.get("offer_hash") or None
-            if offer_id and isinstance(offer_id, str):
-                offer_id = offer_id.lower()
-            coin_map[cid] = {
-                "amount": int(c.get("amount", "0")),
-                "offer_id": offer_id,
-                "created_height": c.get("created_height"),
-                "spent_height": c.get("spent_height"),
-                "transaction_id": c.get("transaction_id"),
-            }
+    # Paginate through ALL owned coins. Previously we hard-capped at
+    # 500, which silently truncated after a long downtime or heavy coin
+    # fragmentation — the reconcile path then treated the snapshot as
+    # authoritative and rebuilt ladder depth/tiers from a partial view
+    # of the wallet. Page through until Sage returns fewer than the page
+    # size (natural end) or a safety cap is hit.
+    page_size = 500
+    max_pages = 40                # 20k coins ceiling
+    coin_map: Dict[str, Dict] = {}
+    for page in range(max_pages):
+        offset = page * page_size
+        result = rpc("get_coins", {
+            "asset_id": asset_id,
+            "offset": offset, "limit": page_size,
+            "filter_mode": "owned",
+        }, timeout=15)
+        if not result:
+            if page == 0:
+                return None
+            break
+        coins = result.get("coins") or result.get("records") or result.get("data") or []
+        if not coins:
+            break
+        for c in coins:
+            cid = c.get("coin_id", "")
+            if cid:
+                if not cid.startswith("0x"):
+                    cid = "0x" + cid.lower()
+                else:
+                    cid = cid.lower()
+                # Extract offer_id — this is the offer_hash from Sage's DB
+                # If set, this coin is locked by an offer
+                offer_id = c.get("offer_id") or c.get("offer_hash") or None
+                if offer_id and isinstance(offer_id, str):
+                    offer_id = offer_id.lower()
+                coin_map[cid] = {
+                    "amount": int(c.get("amount", "0")),
+                    "offer_id": offer_id,
+                    "created_height": c.get("created_height"),
+                    "spent_height": c.get("spent_height"),
+                    "transaction_id": c.get("transaction_id"),
+                }
+        if len(coins) < page_size:
+            break
     return coin_map
 
 

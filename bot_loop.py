@@ -3094,7 +3094,12 @@ class BotLoop:
                         # cap at 40 pages / 20k offers so a pathological
                         # Sage response can't stall startup forever.
                         page_size = 500
-                        max_pages = 40
+                        # Hard cap at 100 pages (50k completed offers).
+                        # Very busy wallets plus a long outage can in
+                        # theory exceed this; when we hit it we log
+                        # CRITICAL (persists to DB) so the operator sees
+                        # the mismatch and can reconcile P&L manually.
+                        max_pages = 100
                         page = 0
                         while page < max_pages:
                             start_idx = page * page_size
@@ -3123,14 +3128,24 @@ class BotLoop:
                             if not remaining_stale:
                                 break  # all stale_ids resolved, done paginating
                         if page >= max_pages and remaining_stale:
-                            log_event("warning", "db_cleanup_page_cap_hit",
+                            # Escalate to CRITICAL so the event persists
+                            # via the storage-layer remap (post-Cat6 fix)
+                            # and the operator sees it in post-startup
+                            # review — misclassifying offline fills as
+                            # cancelled understates P&L and can rebuild
+                            # inventory against the wrong baseline.
+                            log_event("critical", "db_cleanup_page_cap_hit",
                                       f"Stale-offer pagination hit the "
                                       f"{max_pages * page_size}-offer safety cap "
                                       f"with {len(remaining_stale)} ids still "
-                                      f"unchecked; treating as cancelled "
-                                      f"(could be incorrect — manual review if "
-                                      f"P&L looks off).",
-                                      data={"unresolved_count": len(remaining_stale)})
+                                      f"unchecked after startup. The remainder "
+                                      f"will be treated as cancelled. MANUAL "
+                                      f"P&L RECONCILIATION RECOMMENDED — some "
+                                      f"of these may actually have filled while "
+                                      f"the bot was offline.",
+                                      data={"unresolved_count": len(remaining_stale),
+                                            "scanned_offers": max_pages * page_size,
+                                            "action": "manual_reconcile_pnl"})
                         for tid in stale_ids:
                             sage_offer = completed_map.get(tid)
                             if sage_offer:
@@ -5180,29 +5195,65 @@ class BotLoop:
                         live_offer_ids=_live_ids,
                     )
                     self._requoted_this_cycle.add(eq_side)
+                    # During an emergency requote we ONLY advance the
+                    # baseline when we actually made progress. Previously
+                    # the else-branch always stamped `requote_mid` "on
+                    # attempt," which hid stale quotes at the old mid from
+                    # the next cycle's drift detection — the bot could
+                    # appear to have re-anchored at the new price while
+                    # old wrong-side offers were still live (exactly the
+                    # scenario Codex's Cat7 audit flagged). Keeping the
+                    # old baseline on a no-progress/partial outcome means
+                    # the next cycle re-fires the emergency path, which
+                    # chips away at the residual stale offers on each
+                    # subsequent pass.
                     if isinstance(requote_result, dict):
                         new_offers = requote_result.get("offers", [])
-                        if requote_result.get("fully_replaced"):
+                        replaced = int(requote_result.get("replaced_count", 0) or 0)
+                        original_target = int(
+                            requote_result.get(
+                                "original_target_count",
+                                requote_result.get("target_count", 0) or 0,
+                            ) or 0
+                        )
+                        fully_replaced = bool(requote_result.get("fully_replaced"))
+                        any_progress = (replaced > 0 or len(new_offers) > 0)
+                        if fully_replaced:
+                            # Clean full replace — advance baseline and
+                            # refresh ladder anchor so Step 10 does not
+                            # force another emergency next cycle.
                             self._last_quoted_price[eq_side] = requote_mid
                             self._last_quoted_plain_mid[eq_side] = mid_price  # F67
+                            self._ladder_grid_mid[eq_side] = requote_mid
+                            self._ladder_anchor_plain_mid[eq_side] = mid_price
+                        elif any_progress:
+                            log_event("warning", "emergency_requote_partial",
+                                      f"Emergency {eq_side} requote replaced "
+                                      f"{replaced}/{original_target} offers — "
+                                      f"holding baseline so the next cycle "
+                                      f"re-detects the remaining stale quotes",
+                                      data={"side": eq_side,
+                                            "replaced": replaced,
+                                            "original_target": original_target})
+                            # Don't advance _last_quoted_price; drift will
+                            # re-fire next cycle to finish the job.
                         else:
-                            log_event("info", "requote_incomplete",
-                                      f"Did not advance {eq_side} quote baseline: replaced "
-                                      f"{requote_result.get('replaced_count', 0)}/"
-                                      f"{requote_result.get('target_count', 0)} offers")
-                            # Fix 4: advance baseline on attempt — see _do_requote_side
-                            self._last_quoted_price[eq_side] = requote_mid
-                            self._last_quoted_plain_mid[eq_side] = mid_price  # F67
+                            log_event("error", "emergency_requote_no_progress",
+                                      f"Emergency {eq_side} requote replaced "
+                                      f"0/{original_target} offers despite "
+                                      f"severe price shock — leaving stale "
+                                      f"offers exposed until next cycle retry",
+                                      data={"side": eq_side,
+                                            "original_target": original_target})
                     else:
                         # Legacy return format (list)
                         new_offers = requote_result if isinstance(requote_result, list) else []
                         if new_offers:
                             self._last_quoted_price[eq_side] = requote_mid
                             self._last_quoted_plain_mid[eq_side] = mid_price  # F67
-                        else:
-                            # Fix 4: advance baseline on attempt
-                            self._last_quoted_price[eq_side] = requote_mid
-                            self._last_quoted_plain_mid[eq_side] = mid_price  # F67
+                            self._ladder_grid_mid[eq_side] = requote_mid
+                            self._ladder_anchor_plain_mid[eq_side] = mid_price
+                        # No-offers legacy path — hold baseline for retry.
                     buy_q = self._last_quoted_price.get("buy")
                     sell_q = self._last_quoted_price.get("sell")
                     self.amm_monitor.notify_quoted_price(buy_q, sell_q)

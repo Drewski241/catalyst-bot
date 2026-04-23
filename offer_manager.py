@@ -3015,8 +3015,23 @@ class OfferManager:
             return {}
 
         # Mark all as bot-cancelled BEFORE starting (for fill detection)
+        # and stamp cancel_sent / cancel_last_attempt_at via the lifecycle
+        # helpers so the bot_health pending-cancel verifier can re-drive
+        # zombie recoveries if Sage doesn't confirm. Without these stamps
+        # a fee-starved bulk cancel (stop, CB, or >20-offer cancel storm)
+        # leaves stale offers live with no automatic retry/escalation
+        # because the verifier only acts on rows whose cancel-attempt
+        # timestamp is set.
         for tid in trade_ids:
             self._bot_cancelled_ids.add(tid)
+            try:
+                transition_offer(tid, "cancel_sent")
+            except Exception:
+                pass  # lifecycle update is additive — never block cancel
+            try:
+                mark_cancel_attempted(tid)
+            except Exception:
+                pass
 
         # Send ALL offers in a single bulk cancel RPC to Sage, then
         # wait for on-chain confirmation. Sage handles bulk cancels natively
