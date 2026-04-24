@@ -10,7 +10,7 @@ correctly.
 Key responsibilities:
     - Parse CLI flags and drive the clean / build / verify phases
     - Invoke PyInstaller via catalyst.spec and surface non-zero exits
-    - Place .env.example alongside dist/ChiaMarketMaker/ChiaMarketMaker.exe
+    - Place .env.example alongside dist/Catalyst/Catalyst.exe
     - Sanity-check that expected output files exist after build
 
 Usage:
@@ -32,7 +32,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SPEC_FILE = os.path.join(HERE, 'catalyst.spec')
 DIST_DIR = os.path.join(HERE, 'dist')
 BUILD_DIR = os.path.join(HERE, 'build')
-OUTPUT_DIR = os.path.join(DIST_DIR, 'ChiaMarketMaker')
+OUTPUT_DIR = os.path.join(DIST_DIR, 'Catalyst')
 ENV_EXAMPLE = os.path.join(HERE, '.env.example')
 
 
@@ -100,7 +100,7 @@ def _post_build():
         print("  Warning: .env.example not found — users will need to create .env manually.")
 
     # Sanity: confirm the executable exists (platform-specific name)
-    exe_name = 'ChiaMarketMaker.exe' if sys.platform == 'win32' else 'ChiaMarketMaker'
+    exe_name = 'Catalyst.exe' if sys.platform == 'win32' else 'Catalyst'
     exe_path = os.path.join(OUTPUT_DIR, exe_name)
     if not os.path.isfile(exe_path):
         print(f"\n  ERROR: Executable not found at expected path: {exe_path}")
@@ -115,7 +115,7 @@ def _post_build():
 
 
 def _print_success():
-    exe_name = 'ChiaMarketMaker.exe' if sys.platform == 'win32' else 'ChiaMarketMaker'
+    exe_name = 'Catalyst.exe' if sys.platform == 'win32' else 'Catalyst'
     exe_path = os.path.join(OUTPUT_DIR, exe_name)
     size_mb = os.path.getsize(exe_path) / (1024 * 1024)
     print(f"""

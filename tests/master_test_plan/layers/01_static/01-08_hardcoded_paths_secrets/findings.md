@@ -28,7 +28,7 @@ minimal even if it were committed.
 
 ## Spacescan API key (clean)
 
-`user_secrets.py` stores keys in the OS user directory (`%APPDATA%\ChiaMarketMaker\` on
+`user_secrets.py` stores keys in the OS user directory (`%APPDATA%\Catalyst\` on
 Windows), never in the repo or `.env`. `apply_to_config(cfg)` injects them at runtime.
 `set_secret("SPACESCAN_API_KEY", key)` is the write path. Well-designed.
 

@@ -1,6 +1,6 @@
 # Master Test Plan — Workflow
 
-A distributed comprehensive audit of the CATalyst Chia Market Maker bot,
+A distributed comprehensive audit of the CATalyst bot,
 built to be worked through across many short sessions with full context
 fidelity.
 

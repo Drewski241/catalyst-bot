@@ -7,9 +7,9 @@
 ;
 ; Inno Setup download: https://jrsoftware.org/isinfo.php
 ;
-; After Inno produces Output\ChiaMarketMaker-Setup-X.Y.Z.exe,
+; After Inno produces Output\Catalyst-Setup-X.Y.Z.exe,
 ; SIGN that installer with the same code-signing cert used for
-; ChiaMarketMaker.exe and splash.exe (see BUILD.md). Users run
+; Catalyst.exe and splash.exe (see BUILD.md). Users run
 ; the installer first, so SmartScreen checks its signature.
 ; ============================================================
 
@@ -17,8 +17,8 @@
 #define MyAppVersion     "1.0.0"
 #define MyAppPublisher   "MonkeyZoo"
 #define MyAppURL         "https://github.com/Lowestofttim/catalyst-bot"
-#define MyAppExeName     "ChiaMarketMaker.exe"
-#define MySourceDir      "dist\ChiaMarketMaker"
+#define MyAppExeName     "Catalyst.exe"
+#define MySourceDir      "dist\Catalyst"
 
 [Setup]
 ; A fresh GUID per product. DO NOT re-use across unrelated products.
@@ -35,7 +35,7 @@ VersionInfoVersion={#MyAppVersion}
 
 ; Install to Program Files by default.  All per-user data
 ; (bot.db, .env, logs, crash.log, backups) is written to
-; %APPDATA%\ChiaMarketMaker\ by user_paths.py, so Program Files
+; %APPDATA%\Catalyst\ by user_paths.py, so Program Files
 ; can stay read-only as Microsoft intends.
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
@@ -46,7 +46,7 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 
-OutputBaseFilename=ChiaMarketMaker-Setup-{#MyAppVersion}
+OutputBaseFilename=Catalyst-Setup-{#MyAppVersion}
 OutputDir=Output
 Compression=lzma2/ultra
 SolidCompression=yes
@@ -105,10 +105,10 @@ Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: no
 
 [UninstallDelete]
 ; The uninstaller removes the install dir, but per-user data in
-; %APPDATA%\ChiaMarketMaker\ is deliberately left behind so a
+; %APPDATA%\Catalyst\ is deliberately left behind so a
 ; reinstall picks up the user's existing wallet settings and
 ; trade history. Users who want a clean wipe can delete
-; %APPDATA%\ChiaMarketMaker\ manually.
+; %APPDATA%\Catalyst\ manually.
 
 [Code]
 // Friendly message on the install-complete page reminding users

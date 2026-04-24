@@ -2724,7 +2724,7 @@ if __name__ == "__main__":
     create_bot()
 
     # Load user-local secrets (e.g. Spacescan API key) into cfg in-memory.
-    # These are stored in %APPDATA%\ChiaMarketMaker\ and are never written to .env.
+    # These are stored in %APPDATA%\Catalyst\ and are never written to .env.
     try:
         import user_secrets as _user_secrets
         _user_secrets.apply_to_config(cfg)

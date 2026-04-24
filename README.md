@@ -178,9 +178,9 @@ Between cycles, the coin prep subprocess runs asynchronously and the mempool wat
 
 CATalyst stores its SQLite database, logs, and runtime state in the OS standard app-data directory:
 
-- **Windows:** `%APPDATA%\ChiaMarketMaker\`
-- **macOS:** `~/Library/Application Support/ChiaMarketMaker/`
-- **Linux:** `~/.local/share/ChiaMarketMaker/`
+- **Windows:** `%APPDATA%\Catalyst\`
+- **macOS:** `~/Library/Application Support/Catalyst/`
+- **Linux:** `~/.local/share/Catalyst/`
 
 Override with the `CMM_DATA_DIR` environment variable.
 
@@ -189,7 +189,7 @@ Override with the `CMM_DATA_DIR` environment variable.
 ## Building from source
 
 ```bash
-python build.py              # full clean build, produces dist/ChiaMarketMaker/
+python build.py              # full clean build, produces dist/Catalyst/
 python build.py --no-clean   # skip cleaning for faster iteration
 ```
 

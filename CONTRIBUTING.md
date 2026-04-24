@@ -23,7 +23,7 @@ Include:
 - **Wallet.** Sage version.
 - **CAT pair.** Asset ID or ticker.
 - **What you expected vs. what happened.**
-- **Logs.** Tail of `%APPDATA%\ChiaMarketMaker\bot_superlog_*.log` (redact asset IDs if you prefer).
+- **Logs.** Tail of `%APPDATA%\Catalyst\bot_superlog_*.log` (redact asset IDs if you prefer).
 
 Never paste wallet certs, private keys, or the contents of `.env` or `user_secrets.json`.
 

@@ -63,15 +63,15 @@ jobs:
       - name: Smoke test (verify binary starts)
         shell: bash
         run: |
-          cd dist/ChiaMarketMaker
+          cd dist/Catalyst
           # Run in --flask mode so the smoke test doesn't require a display
           # on headless Linux/macOS CI runners. We're testing /api/health, not
           # the native window.
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            ./ChiaMarketMaker.exe --flask &
+            ./Catalyst.exe --flask &
           else
-            chmod +x ./ChiaMarketMaker
-            ./ChiaMarketMaker --flask &
+            chmod +x ./Catalyst
+            ./Catalyst --flask &
           fi
           APP_PID=$!
           # Wait up to 30 seconds for Flask to respond
@@ -91,7 +91,7 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          Compress-Archive -Path dist/ChiaMarketMaker/* -DestinationPath "${{ matrix.artifact }}-${{ github.ref_name }}${{ matrix.ext }}"
+          Compress-Archive -Path dist/Catalyst/* -DestinationPath "${{ matrix.artifact }}-${{ github.ref_name }}${{ matrix.ext }}"
 
       - name: Build Windows Installer
         if: matrix.os == 'windows-latest'
@@ -104,7 +104,7 @@ jobs:
           # Build installer
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
           # Rename output to match release naming
-          Move-Item "Output\ChiaMarketMaker-Setup-$version.exe" "Catalyst-Setup-${{ github.ref_name }}.exe"
+          Move-Item "Output\Catalyst-Setup-$version.exe" "Catalyst-Setup-${{ github.ref_name }}.exe"
         shell: pwsh
 
       - name: Package (macOS)
@@ -114,24 +114,24 @@ jobs:
           if [ -d "dist/CATalyst.app" ]; then
             cd dist && zip -r "../${{ matrix.artifact }}-${{ github.ref_name }}${{ matrix.ext }}" CATalyst.app/
           else
-            cd dist && zip -r "../${{ matrix.artifact }}-${{ github.ref_name }}${{ matrix.ext }}" ChiaMarketMaker/
+            cd dist && zip -r "../${{ matrix.artifact }}-${{ github.ref_name }}${{ matrix.ext }}" Catalyst/
           fi
 
       - name: Package (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: |
           # Add .desktop file for Linux desktop integration
-          cat > dist/ChiaMarketMaker/catalyst.desktop << 'DESKTOP'
+          cat > dist/Catalyst/catalyst.desktop << 'DESKTOP'
           [Desktop Entry]
           Type=Application
           Name=CATalyst
           Comment=Chia liquidity market maker
-          Exec=ChiaMarketMaker
+          Exec=Catalyst
           Icon=assets/bot_icon_new.png
           Terminal=false
           Categories=Finance;Network;
           DESKTOP
-          cd dist && tar -czf "../${{ matrix.artifact }}-${{ github.ref_name }}${{ matrix.ext }}" ChiaMarketMaker/
+          cd dist && tar -czf "../${{ matrix.artifact }}-${{ github.ref_name }}${{ matrix.ext }}" Catalyst/
 
       - name: Upload zip/tar to Release
         uses: softprops/action-gh-release@v2

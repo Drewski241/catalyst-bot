@@ -20349,34 +20349,28 @@
             if (tierEnabled) {
                 const _f = (id) => parseFloat(document.getElementById(id)?.value) || 0;
                 const _i = (id) => parseInt(document.getElementById(id)?.value) || 0;
-                const innerSize = _f('configInnerSizeXch') || tradeSize * 1.5;
-                const midSize   = _f('configMidSizeXch')   || tradeSize;
-                const outerSize = _f('configOuterSizeXch') || tradeSize * 0.5;
-                const extremeSize = _f('configExtremeSizeXch') || tradeSize * 0.2;
-                // Size-indexed counts (sell row — these are the raw market-
-                // driven distribution counts, size-indexed by construction).
-                const cInner = _i('configInnerTierCount');
-                const cMid   = _i('configMidTierCount');
-                const cOuter = _i('configOuterTierCount');
-                const cExt   = _i('configExtremeTierCount');
-                // Swap design: field values are already correct for current orientation.
-                // Always use the direct (non-reversed) formula.
-                const _buyReversed = false;
-                if (_buyReversed) {
-                    // Position × flipped size (what the bot actually deploys
-                    // on the buy side under reverse-buy)
-                    xchNeededForOffers =
-                        cInner * extremeSize +  // pos inner × size extreme
-                        cMid   * outerSize   +  // pos mid   × size outer
-                        cOuter * midSize     +  // pos outer × size mid
-                        cExt   * innerSize;     // pos extreme × size inner
-                } else {
-                    xchNeededForOffers =
-                        cInner * innerSize +
-                        cMid   * midSize   +
-                        cOuter * outerSize +
-                        cExt   * extremeSize;
-                }
+                // Buy-side tier sizes live in the per-side fields. Under
+                // reverse-buy these differ from the generic (sell-side) sizes
+                // — e.g. position inner on the buy ladder uses a much smaller
+                // coin. Fall back to the generic fields when the per-side
+                // values aren't set (legacy configs that share one ladder).
+                const innerSize = _f('configBuyInnerSizeXch')   || _f('configInnerSizeXch')   || tradeSize * 1.5;
+                const midSize   = _f('configBuyMidSizeXch')     || _f('configMidSizeXch')     || tradeSize;
+                const outerSize = _f('configBuyOuterSizeXch')   || _f('configOuterSizeXch')   || tradeSize * 0.5;
+                const extremeSize = _f('configBuyExtremeSizeXch') || _f('configExtremeSizeXch') || tradeSize * 0.2;
+                // Position counts for the buy ladder (per-side when set).
+                const cInner = _i('configBuyInnerTierCount')   || _i('configInnerTierCount');
+                const cMid   = _i('configBuyMidTierCount')     || _i('configMidTierCount');
+                const cOuter = _i('configBuyOuterTierCount')   || _i('configOuterTierCount');
+                const cExt   = _i('configBuyExtremeTierCount') || _i('configExtremeTierCount');
+                // The per-side fields are already position-indexed in the
+                // orientation the bot will actually deploy, so a direct
+                // count × size product is the buy ladder's true XCH draw.
+                xchNeededForOffers =
+                    cInner * innerSize +
+                    cMid   * midSize   +
+                    cOuter * outerSize +
+                    cExt   * extremeSize;
                 // Safety net: if all tier counts are zero (Smart Settings
                 // hasn't run yet), fall back to the flat estimate so the
                 // warning still functions during initial form entry.

@@ -52,7 +52,7 @@ body:
     id: logs
     attributes:
       label: Relevant log lines
-      description: Tail of bot_superlog_*.log from %APPDATA%\ChiaMarketMaker\. Redact asset IDs if you prefer.
+      description: Tail of bot_superlog_*.log from %APPDATA%\Catalyst\. Redact asset IDs if you prefer.
       render: text
   - type: textarea
     id: notes

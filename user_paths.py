@@ -22,11 +22,10 @@ import sys
 import shutil
 
 
-# DO NOT RENAME: this is the on-disk data directory name on every OS.
-# Existing users have their DB, config, and keys under %APPDATA%\ChiaMarketMaker\
-# (or the macOS/Linux equivalents). Renaming strands their data on upgrade.
-# User-facing branding is "CATalyst"; this constant is an internal identifier.
-APP_NAME = "ChiaMarketMaker"
+# On-disk data directory name on every OS. This is the folder under
+# %APPDATA% (Windows), ~/Library/Application Support (macOS), or
+# ~/.local/share (Linux) that holds bot.db, .env, logs, and secrets.
+APP_NAME = "Catalyst"
 
 
 def _install_dir() -> str:
@@ -38,28 +37,22 @@ def _install_dir() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def _appdata_base() -> str:
+    """Return the platform's user-data base dir (no app folder appended)."""
+    if sys.platform == "win32":
+        return os.environ.get("APPDATA") or os.path.expanduser("~")
+    if sys.platform == "darwin":
+        return os.path.expanduser("~/Library/Application Support")
+    base = os.environ.get("XDG_DATA_HOME", "").strip()
+    return base or os.path.expanduser("~/.local/share")
+
+
 def _default_data_dir() -> str:
     """Platform-appropriate per-user data directory for this app."""
     override = os.environ.get("CMM_DATA_DIR", "").strip()
     if override:
         return os.path.abspath(os.path.expanduser(override))
-
-    if sys.platform == "win32":
-        # %APPDATA% is defined on all modern Windows installs
-        base = os.environ.get("APPDATA") or os.path.expanduser("~")
-        return os.path.join(base, APP_NAME)
-
-    if sys.platform == "darwin":
-        return os.path.join(
-            os.path.expanduser("~/Library/Application Support"),
-            APP_NAME,
-        )
-
-    # Linux / *BSD / other
-    base = os.environ.get("XDG_DATA_HOME", "").strip()
-    if not base:
-        base = os.path.expanduser("~/.local/share")
-    return os.path.join(base, APP_NAME)
+    return os.path.join(_appdata_base(), APP_NAME)
 
 
 # Resolve once at import time.

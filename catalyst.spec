@@ -8,10 +8,10 @@
 # Or via the helper script:
 #   python build.py
 #
-# Output: dist/ChiaMarketMaker/ChiaMarketMaker.exe  (plus all supporting files)
+# Output: dist/Catalyst/Catalyst.exe  (plus all supporting files)
 #
 # Design notes:
-#   - onedir mode: all files sit in dist/ChiaMarketMaker/.  Simpler to debug
+#   - onedir mode: all files sit in dist/Catalyst/.  Simpler to debug
 #     than onefile, no extraction delay on launch, and easier for users to
 #     place their .env file alongside the exe.
 #   - splash.exe is bundled as a data file so the Splash P2P node works
@@ -238,7 +238,7 @@ exe = EXE(  # noqa: F821
     a.scripts,
     [],
     exclude_binaries=True,   # onedir: binaries go into COLLECT, not the exe
-    name='ChiaMarketMaker',
+    name='Catalyst',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -265,7 +265,7 @@ coll = COLLECT(  # noqa: F821
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='ChiaMarketMaker',
+    name='Catalyst',
 )
 
 # ---------------------------------------------------------------------------

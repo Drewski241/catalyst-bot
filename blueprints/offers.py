@@ -1281,7 +1281,7 @@ def api_reset_full():
                 _sn = getattr(bot, "sniper", None)
                 if _sn is not None:
                     try:
-                        with getattr(_sn, "_snipe_lock", _SNIPE_LOCK_NOOP):
+                        with getattr(_sn, "_snipe_lock", api_server._SNIPE_LOCK_NOOP):
                             _sn._total_snipes = 0
                             _sn._total_skipped = 0
                             if hasattr(_sn, "_snipe_history"):

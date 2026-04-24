@@ -14,8 +14,8 @@ before doing anything else:
   - NEXT_SESSION.md (this file — workflow + testing protocol)
 
 Current live state to verify FIRST:
-  - Live .env:   %APPDATA%\ChiaMarketMaker\.env  (NOT repo .env)
-  - Live DB:     %APPDATA%\ChiaMarketMaker\bot.db
+  - Live .env:   %APPDATA%\Catalyst\.env  (NOT repo .env)
+  - Live DB:     %APPDATA%\Catalyst\bot.db
   - CAT pair:    MZ (asset b8edcc6a7cf3738a3806fdbadb1bbcfc2540ec37f6732ab3a6a4bbcd2dbec105, wallet 1002)
   - Bot token:   scrape from GET http://127.0.0.1:5000/  →  __BOT_LOCAL_TOKEN
   - Sage wallet is running; I can send SEP-wallet test fills on request.
@@ -42,7 +42,7 @@ live state. Use Codex for counterfactuals and narrow patches. Do not refactor.
 
 | Gotcha | What to do |
 |---|---|
-| `%APPDATA%\ChiaMarketMaker\.env` overrides repo `.env` via `config.py:54 load_dotenv(override=True)` | ALWAYS check live .env first. Repo .env is decoration. |
+| `%APPDATA%\Catalyst\.env` overrides repo `.env` via `config.py:54 load_dotenv(override=True)` | ALWAYS check live .env first. Repo .env is decoration. |
 | `textinputhost.exe` (Windows IME) blocks automation input | `tasklist | grep -i textinput` → `taskkill //PID <pid> //F`. Windows respawns clean. |
 | `/api/*` writes need `__BOT_LOCAL_TOKEN` | GET `/`, regex the HTML for the token, use in `X-Bot-Local-Token` header. |
 | DB `trade_id` is bare hex, no `0x` prefix | Query both forms when joining against Dexie/Sage. |

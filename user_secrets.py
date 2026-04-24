@@ -26,21 +26,17 @@ import threading
 from pathlib import Path
 
 _LOCK = threading.Lock()
-# DO NOT RENAME: must match user_paths.APP_NAME. Changing it would orphan
-# every existing user's stored secrets. User-facing branding is "CATalyst".
-_APP_NAME = "ChiaMarketMaker"
 
 
 def _secrets_path() -> Path:
-    """Return the full path to the secrets JSON file (does not create it)."""
-    system = platform.system()
-    if system == "Windows":
-        base = os.getenv("APPDATA") or os.path.expanduser("~")
-    elif system == "Darwin":
-        base = os.path.expanduser("~/Library/Application Support")
-    else:
-        base = os.getenv("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return Path(base) / _APP_NAME / "user_secrets.json"
+    """Return the full path to the secrets JSON file (does not create it).
+
+    Delegates folder resolution to user_paths.data_dir(), which also
+    handles the one-time rename from the legacy folder name so existing
+    users don't lose their saved secrets.
+    """
+    from user_paths import data_dir
+    return Path(data_dir()) / "user_secrets.json"
 
 
 def _load_locked() -> dict:

@@ -57,7 +57,7 @@ if sys.platform == "win32":
                 try:
                     _log_dir = os.path.join(
                         os.environ.get("APPDATA", os.path.expanduser("~")),
-                        "ChiaMarketMaker",
+                        "Catalyst",
                     )
                     os.makedirs(_log_dir, exist_ok=True)
                     _pythonw_log = open(
@@ -260,7 +260,7 @@ def _set_windows_app_user_model_id() -> None:
     app is launched from the built .exe, pythonw, or python.
 
     Without an explicit AUMID, Windows falls back to the executable path, which
-    means python.exe / pythonw.exe / ChiaMarketMaker.exe each get their own
+    means python.exe / pythonw.exe / Catalyst.exe each get their own
     taskbar bucket.  Setting a stable AUMID unifies them and also makes
     jump-lists and Start-Menu pinning work correctly.
     """

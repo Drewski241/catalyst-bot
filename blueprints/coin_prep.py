@@ -33,6 +33,15 @@ from config import cfg
 from database import log_event, get_stats, backup_database
 
 
+# Project root — the parent of the blueprints/ directory. Coin-prep paths
+# (worker script, subprocess cwd, status/output files) all live at the
+# project root. Before the blueprints split, these resolved via
+# `dirname(__file__)` on api_server.py, which sat at project root too.
+# After the split that expression points at blueprints/, so we compute
+# the root explicitly here.
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
 bp = Blueprint("coin_prep", __name__)
 
 
@@ -255,8 +264,7 @@ def api_coin_prep_status():
                 pass
 
         # Read live progress from the worker's status file (V1 parity)
-        status_file = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                   "coin_prep_status.json")
+        status_file = os.path.join(_PROJECT_ROOT, "coin_prep_status.json")
         if os.path.exists(status_file):
             try:
                 with open(status_file, "r") as f:
@@ -323,8 +331,7 @@ def api_coin_prep_status():
                         _target_cat = 0
                         try:
                             _prep_path = os.path.join(
-                                os.path.dirname(os.path.abspath(__file__)),
-                                "coin_prep_last.json",
+                                _PROJECT_ROOT, "coin_prep_last.json",
                             )
                             if os.path.exists(_prep_path):
                                 with open(_prep_path, "r") as _pf:
@@ -474,8 +481,7 @@ def api_coin_prep_status():
                 pass
 
         # Include last successful prep settings (for smart skip detection)
-        prep_json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                      "coin_prep_last.json")
+        prep_json_path = os.path.join(_PROJECT_ROOT, "coin_prep_last.json")
         if os.path.exists(prep_json_path):
             try:
                 with open(prep_json_path, "r") as f:
@@ -922,7 +928,7 @@ def api_coin_prep_trigger():
                     _sn = getattr(bot, "sniper", None)
                     if _sn is not None:
                         try:
-                            with getattr(_sn, "_snipe_lock", _SNIPE_LOCK_NOOP):
+                            with getattr(_sn, "_snipe_lock", api_server._SNIPE_LOCK_NOOP):
                                 _sn._total_snipes = 0
                                 _sn._total_skipped = 0
                                 if hasattr(_sn, "_snipe_history"):
@@ -994,8 +1000,7 @@ def api_coin_prep_trigger():
         # Write a fresh "starting" status file immediately.
         # This prevents the GUI from reading stale COMPLETE status
         # from a previous run during the gap before the subprocess starts.
-        status_file = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                   "coin_prep_status.json")
+        status_file = os.path.join(_PROJECT_ROOT, "coin_prep_status.json")
         try:
             fresh_status = {
                 "phase": "idle",
@@ -1026,7 +1031,7 @@ def api_coin_prep_trigger():
                 # We rely on the DB/superlog/log file for debugging instead of
                 # popping a Windows terminal in front of the GUI.
                 import subprocess as _sp
-                worker_dir = os.path.dirname(os.path.abspath(__file__))
+                worker_dir = _PROJECT_ROOT
                 worker_path = os.path.join(worker_dir, "coin_prep_worker.py")
 
                 if not os.path.exists(worker_path):
@@ -1250,7 +1255,6 @@ def api_coin_prep_trigger():
                 # and PID for lifecycle management
                 api_server._coin_prep_proc = proc
                 api_server._coin_prep_state["pid"] = proc.pid
-                _console_state["coin_prep_visible"] = False
 
                 log_event("info", "coin_prep_started",
                           f"Coin prep worker started (PID: {proc.pid})")
