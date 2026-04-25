@@ -9538,18 +9538,51 @@
                     <!-- Sniper Stats -->
                     <div style="background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: var(--space-4);">
                         <div style="font-size: var(--text-sm); font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: var(--space-3);">Sniper Stats <span class="cc-help">?<span class="cc-tooltip">All sniper probe activity — automatic arb snipes plus manual Close the Gap probes. Both use the sniper pool to probe price levels.</span></span></div>
-                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--space-2);">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--space-2); margin-bottom: var(--space-3);">
                             <div>
                                 <div style="color: var(--text-tertiary); font-size: var(--text-xs); margin-bottom: 2px;">Arb Snipes <span class="cc-help">?<span class="cc-tooltip">Automatic arb snipes executed this session. Triggered when gap between Dexie and TibetSwap exceeds threshold.</span></span></div>
                                 <div id="sniperTotal" style="font-size: var(--text-lg); font-weight: 700; font-family: var(--font-mono); color: var(--status-warning);">0</div>
                             </div>
                             <div>
-                                <div style="color: var(--text-tertiary); font-size: var(--text-xs); margin-bottom: 2px;">Gap Probes <span class="cc-help">?<span class="cc-tooltip">Manual sniper probes fired by Close the Gap this session. Each probe steps tighter to find the arb floor.</span></span></div>
+                                <div style="color: var(--text-tertiary); font-size: var(--text-xs); margin-bottom: 2px;">Gap Probes <span class="cc-help">?<span class="cc-tooltip">Total Close the Gap probes created this session (each push-deeper rotation creates a new probe).</span></span></div>
                                 <div id="sniperGapProbes" style="font-size: var(--text-lg); font-weight: 700; font-family: var(--font-mono); color: var(--accent-primary);">0</div>
                             </div>
                             <div>
                                 <div style="color: var(--text-tertiary); font-size: var(--text-xs); margin-bottom: 2px;">Skipped <span class="cc-help">?<span class="cc-tooltip">Arb snipes triggered but skipped (cooldown still active).</span></span></div>
                                 <div id="sniperSkipped" style="font-size: var(--text-lg); font-weight: 700; font-family: var(--font-mono); color: var(--text-secondary);">0</div>
+                            </div>
+                        </div>
+
+                        <!-- Close the Gap floor discovery summary -->
+                        <div style="border-top: 1px solid var(--border-subtle); padding-top: var(--space-3);">
+                            <div style="color: var(--text-tertiary); font-size: var(--text-xs); margin-bottom: var(--space-2); text-transform: uppercase; letter-spacing: 0.5px;">Close the Gap — last completed run <span class="cc-help">?<span class="cc-tooltip">Most recent inverted-probe floor discovery results. Shows the depth at which arbers fired on each side. The cascade plants tight inner ladder offers (immune to TibetSwap arb) after the floors are proven.</span></span></div>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: var(--space-2);">
+                                <div>
+                                    <div style="color: var(--text-tertiary); font-size: var(--text-xs); margin-bottom: 2px;">BUY Floor</div>
+                                    <div id="boostLastBuyFloor" style="font-size: var(--text-base); font-weight: 700; font-family: var(--font-mono); color: var(--status-success);">—</div>
+                                </div>
+                                <div>
+                                    <div style="color: var(--text-tertiary); font-size: var(--text-xs); margin-bottom: 2px;">SELL Floor</div>
+                                    <div id="boostLastSellFloor" style="font-size: var(--text-base); font-weight: 700; font-family: var(--font-mono); color: var(--status-warning);">—</div>
+                                </div>
+                                <div>
+                                    <div style="color: var(--text-tertiary); font-size: var(--text-xs); margin-bottom: 2px;">Arbs <span class="cc-help">?<span class="cc-tooltip">Total probes that got arbed this session (each = 1 floor proven).</span></span></div>
+                                    <div id="boostTotalArbs" style="font-size: var(--text-base); font-weight: 700; font-family: var(--font-mono); color: var(--text-primary);">0</div>
+                                </div>
+                                <div>
+                                    <div style="color: var(--text-tertiary); font-size: var(--text-xs); margin-bottom: 2px;">Cost <span class="cc-help">?<span class="cc-tooltip">Total estimated cost of probes this session (each arbed probe loses approximately offset_bps × probe_size).</span></span></div>
+                                    <div id="boostTotalCost" style="font-size: var(--text-base); font-weight: 700; font-family: var(--font-mono); color: var(--text-secondary);">0 XCH</div>
+                                </div>
+                            </div>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); margin-top: var(--space-2);">
+                                <div>
+                                    <div style="color: var(--text-tertiary); font-size: var(--text-xs); margin-bottom: 2px;">Floor Discoveries <span class="cc-help">?<span class="cc-tooltip">Number of times Close the Gap completed (both sides settled) this session.</span></span></div>
+                                    <div id="boostFloorDiscoveries" style="font-size: var(--text-base); font-weight: 700; font-family: var(--font-mono); color: var(--text-primary);">0</div>
+                                </div>
+                                <div>
+                                    <div style="color: var(--text-tertiary); font-size: var(--text-xs); margin-bottom: 2px;">Cascade Swaps <span class="cc-help">?<span class="cc-tooltip">After each floor discovery, the bot plants a few tight inner-tier offers and cancels the same number of furthest-from-mid offers — bringing the inside of the book inward.</span></span></div>
+                                    <div id="boostCascadeSwaps" style="font-size: var(--text-base); font-weight: 700; font-family: var(--font-mono); color: var(--text-primary);">0</div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -22705,9 +22738,43 @@
                 if (el('sniperTotal')) el('sniperTotal').textContent = sniperStats.total_snipes || 0;
                 if (el('sniperSkipped')) el('sniperSkipped').textContent = sniperStats.total_skipped || 0;
                 if (el('sniperCooldown')) el('sniperCooldown').textContent = (sniperStats.cooldown_secs || 0) + 's';
+
+            // Boost (Close the Gap) session stats — surfaced alongside sniper
+            // since both share the sniper coin pool.
+            const boostStats = data.boost || ((_dashboardData && _dashboardData.boost) ? _dashboardData.boost : null);
+            if (boostStats) {
+                const fmtPct = bps => {
+                    if (!bps || bps === 0) return '—';
+                    const pct = bps / 100;
+                    return (pct < 1 ? pct.toFixed(2) : pct.toFixed(1)) + '%';
+                };
+                if (el('sniperGapProbes')) {
+                    el('sniperGapProbes').textContent = boostStats.total_probes_created || 0;
+                }
+                const buyFloor = boostStats.last_completed_buy_floor_bps || 0;
+                const sellFloor = boostStats.last_completed_sell_floor_bps || 0;
+                if (el('boostLastBuyFloor')) {
+                    el('boostLastBuyFloor').textContent = buyFloor > 0 ? '+' + fmtPct(buyFloor) : '—';
+                    el('boostLastBuyFloor').title = buyFloor > 0
+                        ? 'Last completed run: BUY probes got arbed at +' + fmtPct(buyFloor) + ' past mid'
+                        : 'No completed Close the Gap run yet this session';
+                }
+                if (el('boostLastSellFloor')) {
+                    el('boostLastSellFloor').textContent = sellFloor > 0 ? '−' + fmtPct(sellFloor) : '—';
+                    el('boostLastSellFloor').title = sellFloor > 0
+                        ? 'Last completed run: SELL probes got arbed at −' + fmtPct(sellFloor) + ' past mid'
+                        : 'No completed Close the Gap run yet this session';
+                }
+                if (el('boostTotalArbs')) el('boostTotalArbs').textContent = boostStats.total_arbs || 0;
+                if (el('boostTotalCost')) {
+                    const cost = parseFloat(boostStats.total_arb_cost_xch || 0);
+                    el('boostTotalCost').textContent = cost === 0 ? '0 XCH' : formatXchAmount(cost) + ' XCH';
+                }
+                if (el('boostFloorDiscoveries')) el('boostFloorDiscoveries').textContent = boostStats.total_floor_discoveries || 0;
+                if (el('boostCascadeSwaps')) el('boostCascadeSwaps').textContent = boostStats.total_cascade_swaps || 0;
             }
-            // Gap probe count from Close the Gap — tracked via the boost state poll
-            if (el('sniperGapProbes')) el('sniperGapProbes').textContent = _gapCloserSteps || 0;
+            }
+            // (sniperGapProbes is now driven by boostStats.total_probes_created above)
             if (el('circuitBreakerPanel')) {
                 el('circuitBreakerPanel').style.display = data.circuit_breaker_active ? 'block' : 'none';
             }

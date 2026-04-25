@@ -142,6 +142,20 @@ class BoostManager:
         # Toggles each step: True = next push is BUY, False = next is SELL.
         self._next_step_is_buy: bool = True
 
+        # ---- Session-level counters surfaced to the GUI Sniper Stats panel ----
+        # Persist across activations within one session. Reset only on bot
+        # process restart.
+        self._session_total_probes_created: int = 0
+        self._session_total_arbs: int = 0
+        self._session_total_cascade_swaps: int = 0
+        self._session_total_floor_discoveries: int = 0
+        self._session_total_arb_cost_xch: Decimal = Decimal("0")
+        # Most-recent COMPLETED floors (preserved after deactivate so the GUI
+        # can show "BUY floor: +1.1%, SELL floor: -1.4%" at a glance).
+        self._last_completed_buy_floor_bps: int = 0
+        self._last_completed_sell_floor_bps: int = 0
+        self._last_completed_at: float = 0  # unix ts of last inverted_complete
+
     # -------------------------------------------------------------------
     # Activate / Deactivate
     # -------------------------------------------------------------------
@@ -276,6 +290,7 @@ class BoostManager:
                     self._buy_probe_tid = tid
                     self._buy_probe_tid_history.add(tid)
                     self._active_boost_ids.append(tid)
+                    self._session_total_probes_created += 1
 
         if cfg.ENABLE_SELL and not self._sell_settled:
             sell_result = self._create_single_offer("sell", sell_price, size_xch)
@@ -286,6 +301,7 @@ class BoostManager:
                     self._sell_probe_tid = tid
                     self._sell_probe_tid_history.add(tid)
                     self._active_boost_ids.append(tid)
+                    self._session_total_probes_created += 1
 
         # Post to Dexie immediately
         if created and self._dexie_manager and cfg.DEXIE_AUTO_POST:
@@ -624,6 +640,7 @@ class BoostManager:
                     self._buy_probe_tid = new_tid
                     self._buy_probe_tid_history.add(new_tid)
                     self._active_boost_ids.append(new_tid)
+                    self._session_total_probes_created += 1
                     if self._dexie_manager and cfg.DEXIE_AUTO_POST:
                         bech32 = buy_result.get("offer_bech32", "")
                         if bech32:
@@ -667,6 +684,7 @@ class BoostManager:
                     self._sell_probe_tid = new_tid
                     self._sell_probe_tid_history.add(new_tid)
                     self._active_boost_ids.append(new_tid)
+                    self._session_total_probes_created += 1
                     if self._dexie_manager and cfg.DEXIE_AUTO_POST:
                         bech32 = sell_result.get("offer_bech32", "")
                         if bech32:
@@ -722,6 +740,15 @@ class BoostManager:
             side: "buy" or "sell"
         """
         with self._lock:
+            # Estimated arb cost = offset_bps × probe_size_xch.
+            # Each arb costs us approximately the inversion depth (we paid
+            # offset_bps premium / received offset_bps discount per CAT, on
+            # size_xch worth of trade).
+            try:
+                est_cost_xch = self._effective_size_xch() * Decimal(self._buy_offset_bps if side == "buy" else self._sell_offset_bps) / Decimal("10000")
+            except Exception:
+                est_cost_xch = Decimal("0")
+
             if side == "buy":
                 if not self._buy_settled:
                     # The depth that just got arbed IS the proven boundary
@@ -732,11 +759,14 @@ class BoostManager:
                     self._buy_settled = True
                     self._buy_probe_tid = ""
                     self._arb_count += 1
+                    self._session_total_arbs += 1
+                    self._session_total_arb_cost_xch += est_cost_xch
                     log_event("info", "gap_closer_buy_arbed",
                               f"📈 BUY side arbed at +{_bps_to_pct(self._buy_offset_bps)} past mid — "
                               f"floor proven. Last safe depth was +{_bps_to_pct(self._buy_last_safe_offset_bps)}.",
                               data={"buy_floor_bps": self._buy_floor_bps,
-                                    "buy_last_safe_offset_bps": self._buy_last_safe_offset_bps})
+                                    "buy_last_safe_offset_bps": self._buy_last_safe_offset_bps,
+                                    "est_cost_xch": str(est_cost_xch)})
                     print(f"📈 BUY arbed at +{_bps_to_pct(self._buy_offset_bps)} → floor settled", flush=True)
             elif side == "sell":
                 if not self._sell_settled:
@@ -744,11 +774,14 @@ class BoostManager:
                     self._sell_settled = True
                     self._sell_probe_tid = ""
                     self._arb_count += 1
+                    self._session_total_arbs += 1
+                    self._session_total_arb_cost_xch += est_cost_xch
                     log_event("info", "gap_closer_sell_arbed",
                               f"📈 SELL side arbed at -{_bps_to_pct(self._sell_offset_bps)} past mid — "
                               f"floor proven. Last safe depth was -{_bps_to_pct(self._sell_last_safe_offset_bps)}.",
                               data={"sell_floor_bps": self._sell_floor_bps,
-                                    "sell_last_safe_offset_bps": self._sell_last_safe_offset_bps})
+                                    "sell_last_safe_offset_bps": self._sell_last_safe_offset_bps,
+                                    "est_cost_xch": str(est_cost_xch)})
                     print(f"📈 SELL arbed at -{_bps_to_pct(self._sell_offset_bps)} → floor settled", flush=True)
 
     def _inverted_complete_handoff(self) -> bool:
@@ -778,6 +811,14 @@ class BoostManager:
                         "steps_taken": self._steps_taken})
         print(f"📈 Floor discovery complete: BUY +{_bps_to_pct(self._buy_floor_bps)}, "
               f"SELL -{_bps_to_pct(self._sell_floor_bps)} (arbs: {self._arb_count})", flush=True)
+
+        # Persist this run's floors as the most-recent completed values so
+        # the GUI can show "BUY floor: +X% / SELL floor: -Y%" at a glance
+        # even after deactivate clears the working state.
+        self._last_completed_buy_floor_bps = self._buy_floor_bps
+        self._last_completed_sell_floor_bps = self._sell_floor_bps
+        self._last_completed_at = time.time()
+        self._session_total_floor_discoveries += 1
 
         # Plant the inverted-mode cascade BEFORE deactivating so the
         # boost manager state still holds the discovered floors.
@@ -890,6 +931,7 @@ class BoostManager:
                               f"📈 Cascade {side} cancel failed: {e}")
 
             cascade_total += created_n
+            self._session_total_cascade_swaps += created_n
             log_event("info", "gap_closer_cascade_swap",
                       f"📈 Cascade {side}: planted {created_n} tight inner "
                       f"offers at half-spread ±{_bps_to_pct(tight_half_spread_bps)}, "
@@ -1767,6 +1809,26 @@ class BoostManager:
     # -------------------------------------------------------------------
     # State query
     # -------------------------------------------------------------------
+
+    def get_stats_summary(self) -> Dict:
+        """Compact session-level summary for the GUI Sniper Stats panel.
+
+        Returns persistent counters that survive deactivate() — gives the
+        operator a quick view of Close the Gap activity without having
+        to grep logs.
+        """
+        with self._lock:
+            return {
+                "total_probes_created": int(self._session_total_probes_created),
+                "total_arbs": int(self._session_total_arbs),
+                "total_cascade_swaps": int(self._session_total_cascade_swaps),
+                "total_floor_discoveries": int(self._session_total_floor_discoveries),
+                "total_arb_cost_xch": str(self._session_total_arb_cost_xch),
+                "last_completed_buy_floor_bps": int(self._last_completed_buy_floor_bps),
+                "last_completed_sell_floor_bps": int(self._last_completed_sell_floor_bps),
+                "last_completed_at": float(self._last_completed_at),
+                "currently_active": bool(self._boost_active),
+            }
 
     def get_state(self) -> Dict:
         """Get gap-closer state for GUI (thread-safe snapshot)."""

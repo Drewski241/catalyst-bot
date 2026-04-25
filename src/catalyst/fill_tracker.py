@@ -1537,6 +1537,15 @@ class FillTracker:
         if not unmatched_buys or not unmatched_sells:
             return []
 
+        # Exclude boost-tier (Close the Gap probe) fills from the round-trip
+        # matching pool. They're deliberate floor-discovery losses — pairing
+        # them with normal ladder fills would conflate two unrelated things
+        # (a profitable MM trade + a deliberate giveaway) and produce
+        # misleading round-trip PnL. Boost cost is tracked separately in
+        # BoostManager.session_total_arb_cost_xch.
+        unmatched_buys  = [f for f in unmatched_buys  if (f.get("tier") or "").lower() != "boost"]
+        unmatched_sells = [f for f in unmatched_sells if (f.get("tier") or "").lower() != "boost"]
+
         # Filter out zero-value fills (no price/size data — can't calculate PnL)
         valid_buys = [f for f in unmatched_buys
                       if Decimal(str(f.get("size_xch", 0))) > 0

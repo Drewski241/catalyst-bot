@@ -329,6 +329,15 @@ def api_dashboard():
             except Exception:
                 sniper_stats = {}
 
+        # Boost stats — surfaced alongside sniper since both share the
+        # sniper coin pool and the GUI's "Sniper Stats" panel covers both.
+        boost_stats = {}
+        if bot and getattr(bot, "boost_manager", None):
+            try:
+                boost_stats = api_server._serialize_dict(bot.boost_manager.get_stats_summary())
+            except Exception:
+                boost_stats = {}
+
         # --- External Links ---
         asset_id = (api_server._active_cat.get("asset_id") or getattr(cfg, "CAT_ASSET_ID", "") or "").strip()
         ticker_id = (api_server._active_cat.get("ticker_id") or getattr(cfg, "CAT_TICKER_ID", "") or "").strip().upper()
@@ -355,6 +364,7 @@ def api_dashboard():
             "coins": coins,
             "performance": performance,
             "sniper": sniper_stats,
+            "boost": boost_stats,
             "spacescan_context": spacescan_context,
             "links": links,
             "cat_name": cfg.CAT_NAME if hasattr(cfg, 'CAT_NAME') else "CAT",
