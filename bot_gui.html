@@ -12391,6 +12391,14 @@
             if (viewName === 'intel' && typeof fetchMarketIntel === 'function') {
                 fetchMarketIntel();
             }
+            // If switching back to Dashboard, force a fetchDashboard so the
+            // Command Centre settings panel + market metrics show up-to-date
+            // values instead of stale "—" placeholders. Without this, the
+            // panel waits for the next polling tick (5-10s) which feels
+            // unresponsive on tab change.
+            if (viewName === 'dashboard' && typeof fetchDashboard === 'function') {
+                try { fetchDashboard(); } catch (_) {}
+            }
             // If switching to Logs, reset the unread-event counter badge.
             if (viewName === 'logs' && typeof _resetLogsUnread === 'function') {
                 _resetLogsUnread();
