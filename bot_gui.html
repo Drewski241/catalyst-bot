@@ -23505,67 +23505,78 @@
                 cbEl.style.opacity = '1';
             }
 
-            // Spacescan tier — when no API key is set we're on the free tier,
-            // which can't return holder/activity/risk data. Show that explicitly
-            // so operators don't read "Unknown" as "still loading".
+            // Spacescan render priority:
+            //   1. Disabled — Spacescan turned off entirely
+            //   2. Real value — backend has data (works for both free and Pro
+            //      tiers; the free /token/info endpoint returns holders +
+            //      activity for many tokens just fine)
+            //   3. Free tier label — tier=free AND no data has come back yet
+            //      (helps the operator know it might never arrive without Pro)
+            //   4. Loading… — Pro tier with no data yet (still fetching)
             const _scFreeTier = (String(m.spacescan_tier || 'free').toLowerCase() === 'free');
-            const _scNoData = !_scFreeTier && !m.spacescan_has_data;
+            const _scHasData = !!m.spacescan_has_data;
             const _setProUnavailable = (node, label) => {
                 node.textContent = label;
                 node.style.color = 'var(--slate-400)';
                 node.style.opacity = '0.55';
-                node.title = 'Spacescan free tier does not provide this data. Add a Pro API key in setup to enable.';
+                node.title = 'Spacescan free tier did not return this field for the current token. A Pro API key gives more reliable coverage.';
             };
 
             // Spacescan activity
             const actEl = el('ccSpacescanActivity');
+            const actVal = m.spacescan_activity_level !== undefined ? String(m.spacescan_activity_level) : '';
+            const actHasReal = _scHasData && actVal && actVal !== 'unknown';
             if (actEl && !m.spacescan_enabled) {
                 actEl.textContent = 'Disabled';
                 actEl.style.opacity = '0.35';
+            } else if (actEl && actHasReal) {
+                actEl.textContent = actVal.charAt(0).toUpperCase() + actVal.slice(1);
+                actEl.style.color = actVal === 'high' ? 'var(--status-warning)' : (actVal === 'very_high' ? 'var(--status-danger)' : (actVal === 'low' ? 'var(--slate-400)' : 'var(--slate-200)'));
+                actEl.style.opacity = '1';
+                actEl.title = '';
             } else if (actEl && _scFreeTier) {
                 _setProUnavailable(actEl, 'Free tier');
-            } else if (actEl && _scNoData) {
+            } else if (actEl) {
                 actEl.textContent = 'Loading…';
                 actEl.style.opacity = '0.35';
-            } else if (actEl && m.spacescan_activity_level !== undefined) {
-                const act = String(m.spacescan_activity_level);
-                actEl.textContent = act.charAt(0).toUpperCase() + act.slice(1);
-                actEl.style.color = act === 'high' ? 'var(--status-warning)' : (act === 'very_high' ? 'var(--status-danger)' : (act === 'low' ? 'var(--slate-400)' : 'var(--slate-200)'));
-                actEl.style.opacity = '1';
             }
 
             // Spacescan risk
             const riskEl = el('ccSpacescanRisk');
+            const riskVal = m.spacescan_risk_level !== undefined ? String(m.spacescan_risk_level) : '';
+            const riskHasReal = _scHasData && riskVal && riskVal !== 'unknown';
             if (riskEl && !m.spacescan_enabled) {
                 riskEl.textContent = 'Disabled';
                 riskEl.style.opacity = '0.35';
+            } else if (riskEl && riskHasReal) {
+                riskEl.textContent = riskVal.charAt(0).toUpperCase() + riskVal.slice(1);
+                riskEl.style.color = riskVal === 'high' ? 'var(--status-danger)' : (riskVal === 'medium' ? 'var(--status-warning)' : (riskVal === 'low' || riskVal === 'healthy' ? 'var(--success-400)' : 'var(--slate-400)'));
+                riskEl.style.opacity = '1';
+                riskEl.title = '';
             } else if (riskEl && _scFreeTier) {
                 _setProUnavailable(riskEl, 'Free tier');
-            } else if (riskEl && _scNoData) {
+            } else if (riskEl) {
                 riskEl.textContent = 'Loading…';
                 riskEl.style.opacity = '0.35';
-            } else if (riskEl && m.spacescan_risk_level !== undefined) {
-                const risk = String(m.spacescan_risk_level);
-                riskEl.textContent = risk.charAt(0).toUpperCase() + risk.slice(1);
-                riskEl.style.color = risk === 'high' ? 'var(--status-danger)' : (risk === 'medium' ? 'var(--status-warning)' : (risk === 'low' ? 'var(--success-400)' : 'var(--slate-400)'));
-                riskEl.style.opacity = '1';
             }
 
             // Holders
             const holdersEl = el('ccHolders');
+            const hc = parseInt(m.spacescan_holder_count, 10);
+            const holdersHasReal = _scHasData && !isNaN(hc) && hc > 0;
             if (holdersEl && !m.spacescan_enabled) {
                 holdersEl.textContent = 'Disabled';
                 holdersEl.style.opacity = '0.35';
-            } else if (holdersEl && _scFreeTier) {
-                _setProUnavailable(holdersEl, 'Free tier — add API key for holder count');
-            } else if (holdersEl && _scNoData) {
-                holdersEl.textContent = 'Loading…';
-                holdersEl.style.opacity = '0.35';
-            } else if (holdersEl && m.spacescan_holder_count !== undefined) {
-                const hc = parseInt(m.spacescan_holder_count, 10);
-                holdersEl.textContent = isNaN(hc) || hc === 0 ? '—' : hc.toLocaleString() + ' holders';
+            } else if (holdersEl && holdersHasReal) {
+                holdersEl.textContent = hc.toLocaleString() + ' holders';
                 holdersEl.style.color = 'var(--slate-200)';
                 holdersEl.style.opacity = '1';
+                holdersEl.title = '';
+            } else if (holdersEl && _scFreeTier) {
+                _setProUnavailable(holdersEl, 'Free tier — add API key for holder count');
+            } else if (holdersEl) {
+                holdersEl.textContent = 'Loading…';
+                holdersEl.style.opacity = '0.35';
             }
         }
 
