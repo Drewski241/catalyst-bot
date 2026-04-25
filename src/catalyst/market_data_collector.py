@@ -185,14 +185,14 @@ def collect_all_market_data(asset_id: str, ticker_id: str,
         else:
             spacescan = _fetch_spacescan_data(asset_id)
             if spacescan and spacescan.get("has_data"):
+                # Merge with prior cache: if the new fetch is partial
+                # (holders/activity sub-call failed), preserve the
+                # previously-good values rather than overwriting them with 0.
+                # Without this every Spacescan 429 silently bricks the
+                # holder count + activity until the next successful full
+                # fetch, which can be hours away on the free tier.
+                spacescan = _merge_partial_spacescan(spacescan, asset_id)
                 result["spacescan"] = spacescan
-                # If /token/info succeeded (has_data=True) but holders or
-                # activities silently failed (count=0 with activity_fetch_failed
-                # set, or holder_count=0 for a real token), cache with a much
-                # shorter TTL so we retry on the next Smart Defaults run rather
-                # than baking the partial failure into the 24-hour cache. The
-                # holders-zero case was bricking the dashboard's holder count
-                # for whole days after a single transient upstream hiccup.
                 _partial = (
                     int(spacescan.get("holder_count", 0) or 0) <= 0
                     or bool(spacescan.get("activity_fetch_failed"))
@@ -953,6 +953,54 @@ def _spacescan_count_from_payload(payload: Any, *,
     return best_list_len
 
 
+def _merge_partial_spacescan(new_payload: Dict, asset_id: str) -> Dict:
+    """Merge a freshly-fetched Spacescan payload with the prior cached one,
+    preserving good fields when the new fetch is partial.
+
+    The Spacescan free tier exposes holder/activity data via separate
+    endpoints (`/holders`, `/activities`). When those sub-calls hit a 429
+    or timeout, the parent fetcher returns has_data=True with
+    holder_count=0, activity_count=0, and activity_fetch_failed=True.
+    Without this merge the cache would overwrite a previously-good 3,393
+    holders with 0 every time a sub-call hiccupped — effectively bricking
+    the dashboard's holder count whenever Spacescan rate-limited us.
+
+    Strategy: if the new fetch is partial AND we have a non-zero value
+    cached, keep the cached value for that field. Other fields (price,
+    supply, name) always come from the fresh payload since they're cheap
+    to refetch and rarely change.
+    """
+    if not new_payload or not isinstance(new_payload, dict):
+        return new_payload or {}
+
+    new_holder = int(new_payload.get("holder_count", 0) or 0)
+    new_activity = int(new_payload.get("activity_count", 0) or 0)
+    activity_failed = bool(new_payload.get("activity_fetch_failed"))
+
+    holder_partial = (new_holder <= 0)
+    activity_partial = (new_activity <= 0) or activity_failed
+    if not holder_partial and not activity_partial:
+        return new_payload  # full fetch — no merge needed
+
+    try:
+        prior = get_market_analysis_cache(asset_id, "spacescan") or {}
+    except Exception:
+        return new_payload
+
+    merged = dict(new_payload)
+    if holder_partial:
+        prior_holder = int(prior.get("holder_count", 0) or 0)
+        if prior_holder > 0:
+            merged["holder_count"] = prior_holder
+            merged["holder_count_from_prior_cache"] = True
+    if activity_partial:
+        prior_activity = int(prior.get("activity_count", 0) or 0)
+        if prior_activity > 0:
+            merged["activity_count"] = prior_activity
+            merged["activity_count_from_prior_cache"] = True
+    return merged
+
+
 def refresh_spacescan_cache(asset_id: str) -> Optional[Dict]:
     """Re-fetch Spacescan token data and update the cache.
 
@@ -975,6 +1023,8 @@ def refresh_spacescan_cache(asset_id: str) -> Optional[Dict]:
     if not payload or not payload.get("has_data"):
         return None
     try:
+        # Merge with prior cache before persisting — see _merge_partial_spacescan.
+        payload = _merge_partial_spacescan(payload, asset_id)
         _partial = (
             int(payload.get("holder_count", 0) or 0) <= 0
             or bool(payload.get("activity_fetch_failed"))

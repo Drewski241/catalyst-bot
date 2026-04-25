@@ -486,6 +486,19 @@ def _get_spacescan_market_context(asset_id: str = "", ticker_id: str = "",
         context["token_preview_url"] = str(spacescan.get("token_preview_url", "") or "")
         context["holder_count"] = int(spacescan.get("holder_count", 0) or 0)
         context["activity_count"] = int(spacescan.get("activity_count", 0) or 0)
+        # Surface partial-fetch flags from the cache so the GUI can render
+        # "rate-limited / fetch failed" instead of "0 holders" when the
+        # Spacescan free-tier sub-call (holders/activities) failed but the
+        # parent /token/info succeeded. holder_count_from_prior_cache is
+        # set by _merge_partial_spacescan when a previously-good value is
+        # being preserved across a partial failure.
+        context["activity_fetch_failed"] = bool(spacescan.get("activity_fetch_failed"))
+        context["holder_count_from_prior_cache"] = bool(
+            spacescan.get("holder_count_from_prior_cache")
+        )
+        context["activity_count_from_prior_cache"] = bool(
+            spacescan.get("activity_count_from_prior_cache")
+        )
         # Derive activity_level and risk_level from raw spacescan data when
         # full_analysis has expired but spacescan cache is still valid.
         if health:

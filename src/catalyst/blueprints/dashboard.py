@@ -177,6 +177,17 @@ def api_dashboard():
             metrics["spacescan_activity_level"] = spacescan_context.get("activity_level", "unknown")
             metrics["spacescan_risk_level"] = spacescan_context.get("risk_level", "unknown")
             metrics["spacescan_price_gap_bps"] = str(spacescan_context.get("price_gap_bps", 0))
+            # Partial-fetch flags so the GUI can show "rate-limited" rather
+            # than rendering 0/unknown as if the data were genuinely absent.
+            metrics["spacescan_activity_fetch_failed"] = bool(
+                spacescan_context.get("activity_fetch_failed", False)
+            )
+            metrics["spacescan_holder_from_prior_cache"] = bool(
+                spacescan_context.get("holder_count_from_prior_cache", False)
+            )
+            metrics["spacescan_activity_from_prior_cache"] = bool(
+                spacescan_context.get("activity_count_from_prior_cache", False)
+            )
         except Exception:
             pass
 

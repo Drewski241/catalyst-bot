@@ -23513,16 +23513,28 @@
             //   2. Real value — backend has data (works for both free and Pro
             //      tiers; the free /token/info endpoint returns holders +
             //      activity for many tokens just fine)
-            //   3. Free tier label — tier=free AND no data has come back yet
-            //      (helps the operator know it might never arrive without Pro)
-            //   4. Loading… — Pro tier with no data yet (still fetching)
+            //   3. Rate-limited — sub-call (holders/activities) hit a 429
+            //      or otherwise failed (activity_fetch_failed flag from
+            //      backend). Distinguishes transient failures from
+            //      permanently-missing data.
+            //   4. Free tier label — tier=free AND no data has come back yet
+            //   5. Loading… — Pro tier with no data yet (still fetching)
             const _scFreeTier = (String(m.spacescan_tier || 'free').toLowerCase() === 'free');
             const _scHasData = !!m.spacescan_has_data;
+            const _scActivityFailed = !!m.spacescan_activity_fetch_failed;
+            const _scHolderFromPrior = !!m.spacescan_holder_from_prior_cache;
+            const _scActivityFromPrior = !!m.spacescan_activity_from_prior_cache;
             const _setProUnavailable = (node, label) => {
                 node.textContent = label;
                 node.style.color = 'var(--slate-400)';
                 node.style.opacity = '0.55';
                 node.title = 'Spacescan free tier did not return this field for the current token. A Pro API key gives more reliable coverage.';
+            };
+            const _setRateLimited = (node, label) => {
+                node.textContent = label;
+                node.style.color = 'var(--status-warning)';
+                node.style.opacity = '0.7';
+                node.title = 'Spacescan rate-limited the holder/activity sub-call. Will retry on the next refresh (typically within 30 minutes).';
             };
 
             // Spacescan activity
@@ -23536,7 +23548,9 @@
                 actEl.textContent = actVal.charAt(0).toUpperCase() + actVal.slice(1);
                 actEl.style.color = actVal === 'high' ? 'var(--status-warning)' : (actVal === 'very_high' ? 'var(--status-danger)' : (actVal === 'low' ? 'var(--slate-400)' : 'var(--slate-200)'));
                 actEl.style.opacity = '1';
-                actEl.title = '';
+                actEl.title = _scActivityFromPrior ? 'Showing cached value (latest fetch was rate-limited).' : '';
+            } else if (actEl && _scActivityFailed) {
+                _setRateLimited(actEl, 'Rate-limited');
             } else if (actEl && _scFreeTier) {
                 _setProUnavailable(actEl, 'Free tier');
             } else if (actEl) {
@@ -23572,9 +23586,14 @@
                 holdersEl.style.opacity = '0.35';
             } else if (holdersEl && holdersHasReal) {
                 holdersEl.textContent = hc.toLocaleString() + ' holders';
-                holdersEl.style.color = 'var(--slate-200)';
+                holdersEl.style.color = _scHolderFromPrior ? 'var(--slate-300)' : 'var(--slate-200)';
                 holdersEl.style.opacity = '1';
-                holdersEl.title = '';
+                holdersEl.title = _scHolderFromPrior ? 'Showing cached value (latest fetch was rate-limited).' : '';
+            } else if (holdersEl && _scActivityFailed) {
+                // Holders + activity share the same /holders sub-call on the
+                // free tier, so when activity_fetch_failed is set the
+                // holders count is also a partial-fetch artifact.
+                _setRateLimited(holdersEl, 'Rate-limited — retrying');
             } else if (holdersEl && _scFreeTier) {
                 _setProUnavailable(holdersEl, 'Free tier — add API key for holder count');
             } else if (holdersEl) {
