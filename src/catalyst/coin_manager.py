@@ -4234,14 +4234,13 @@ class CoinManager:
         """Start a live coin top-up in a background thread.
 
         ``is_drip`` lets the caller force the drip/emergency classification
-        explicitly. Callers that reached here via needs_coin_prep() or a
-        health-check retry do NOT go through needs_topup() and therefore
-        never reset the self._topup_is_drip flag — it would keep whatever
-        value the previous run left behind, so an emergency started right
-        after a drip run would wrongly skip the emergency cooldown/backoff
-        semantics. When the caller doesn't specify, we default to
-        is_drip=False (treat as emergency) which is the safer side: the
-        full cooldown is enforced and _last_topup_time is stamped.
+        explicitly. needs_topup() always writes self._topup_is_drip before
+        returning True (False at the emergency entry, True in each drip
+        branch), so when the caller doesn't pass is_drip we preserve that
+        value. Emergency call sites that DON'T flow through needs_topup
+        (needs_coin_prep, health checks) MUST pass is_drip=False explicitly
+        so a stale True from a previous drip cycle doesn't leak through and
+        bypass the emergency cooldown semantics.
         """
         with self._lock:
             if self._topup_running:
@@ -4250,13 +4249,11 @@ class CoinManager:
             self._topup_stop_requested = False
             if is_drip is not None:
                 self._topup_is_drip = bool(is_drip)
-            else:
-                # Default: treat as emergency unless the calling code path
-                # has just set _topup_is_drip via needs_topup() within the
-                # same tick. We can't detect that precisely, so we reset
-                # here to False and let needs_topup() flip it back via an
-                # explicit is_drip argument in future revisions.
-                self._topup_is_drip = False
+            # else: preserve the value set by needs_topup() (or by a prior
+            # explicit caller). Reset-to-False here would silently downgrade
+            # drip invocations to emergency-threshold behaviour, defeating
+            # the proactive buffer (drip predicate fires at 75% but the
+            # emergency action threshold is 15-40%, so the worker no-ops).
         # Emergency runs stamp _last_topup_time to enforce the full cooldown.
         # Drip runs already stamped _last_drip_time in needs_topup() — leave
         # _last_topup_time unchanged so the emergency gate is unaffected.
@@ -4531,10 +4528,22 @@ class CoinManager:
                 else:
                     _topup_pace_scale = 1.0
 
+                # Drip invocations want the worker to act at the drip predicate
+                # threshold (TIER_DRIP_PCT, default 75%) so the proactive buffer
+                # is actually maintained. Without this, the drip trigger fires
+                # every cycle but the worker no-ops because TIER_TRIGGER_PCT_*
+                # is much lower (e.g. sniper trigger=75%, worker=40% → buffer
+                # never restored until the harder reactive threshold is hit).
+                _is_drip_invocation = bool(getattr(self, "_topup_is_drip", False))
+                _drip_pct_norm = max(0.05, min(0.95, float(getattr(cfg, "TIER_DRIP_PCT", 75)) / 100.0))
+
                 def _topup_tier_pct(tier_name: str, wallet_side: str) -> float:
-                    """Return the same action-threshold pct the trigger uses for this
-                    tier/side combination, so the worker acts whenever (and only
-                    whenever) the trigger has fired."""
+                    """Return the action-threshold pct for this tier/side. For
+                    drip invocations this is TIER_DRIP_PCT so the worker mirrors
+                    the drip predicate; for reactive topups it's the per-tier
+                    TIER_TRIGGER_PCT_* value (lower, urgent-action threshold)."""
+                    if _is_drip_invocation:
+                        return _drip_pct_norm
                     _pct_map = {
                         "inner":   getattr(cfg, "TIER_TRIGGER_PCT_INNER", 50),
                         "mid":     getattr(cfg, "TIER_TRIGGER_PCT_MID", 40),

@@ -3438,9 +3438,11 @@ class BotLoop:
                     log_event(
                         "info",
                         "startup_spare_deficit",
-                        f"Startup spare deficit ({_context}) — topup will fire for: "
+                        f"Startup spare deficit ({_context}) — tiers below their "
+                        "spare target: "
                         + "; ".join(_tier_low_msgs)
-                        + ". Run coin prep to restore full allocation."
+                        + ". Proactive drip will replenish toward the buffer; "
+                        "run coin prep manually if you want full allocation now."
                     )
             except Exception as _spare_check_err:
                 log_event("debug", "startup_spare_check_failed",
@@ -6901,7 +6903,7 @@ class BotLoop:
                 log_event("info", "coin_prep_trigger_recovery",
                           "Coins critically low during recovery — forcing coin prep "
                           "to break coin-exhaustion deadlock")
-                self.coin_manager.start_topup(active_buy_count, active_sell_count)
+                self.coin_manager.start_topup(active_buy_count, active_sell_count, is_drip=False)
             elif self.coin_manager.needs_topup(active_buy_count, active_sell_count):
                 log_event("info", "topup_trigger_recovery",
                           "Tier coin shortage during recovery — running topup to "
@@ -7038,10 +7040,13 @@ class BotLoop:
         if self.coin_manager.needs_coin_prep(active_buy_count, active_sell_count):
             log_event("info", "coin_prep_trigger",
                       "TOTAL coins critically low — starting auto coin top-up")
-            self.coin_manager.start_topup(active_buy_count, active_sell_count)
+            self.coin_manager.start_topup(active_buy_count, active_sell_count, is_drip=False)
             return
 
         # Tier 2: Lightweight topup — free coins running low
+        # needs_topup() has just set self._topup_is_drip (False for emergency
+        # path, True for drip path); start_topup with no is_drip arg preserves
+        # that, so the worker uses the matching action threshold.
         if self.coin_manager.needs_topup(active_buy_count, active_sell_count):
             log_event("info", "topup_trigger",
                       "Starting coin top-up to replenish free coins (existing offers stay active)...")
@@ -7052,7 +7057,7 @@ class BotLoop:
         if self.coin_manager.check_runtime_health(active_buy_count, active_sell_count):
             log_event("info", "health_topup_trigger",
                       "Runtime health check triggered coin top-up")
-            self.coin_manager.start_topup(active_buy_count, active_sell_count)
+            self.coin_manager.start_topup(active_buy_count, active_sell_count, is_drip=False)
             return
 
         # Check coin prep worker status (may have finished in background)
