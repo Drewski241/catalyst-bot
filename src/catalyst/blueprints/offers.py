@@ -19,7 +19,7 @@ from flask import Blueprint, jsonify, request
 
 import api_server
 from config import cfg
-from database import log_event, get_stats
+from database import log_event, get_stats, get_connection
 from super_log import slog
 
 
