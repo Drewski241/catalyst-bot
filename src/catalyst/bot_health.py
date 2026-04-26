@@ -80,6 +80,21 @@ class HealthReport:
         return (f"{len(self.checks)} checks, {self.anomalies} anomalies, "
                 f"{self.repaired} repaired")
 
+    @property
+    def repaired_check_names(self) -> List[str]:
+        """Names of the checks that performed repairs this run.
+
+        Useful when the bot loop logs ``bot_health_repaired`` — without
+        this tagging, the operator just sees a count and can't tell
+        which subsystem auto-healed.
+        """
+        return [c.name for c in self.checks if c.repaired_count > 0]
+
+    @property
+    def anomaly_check_names(self) -> List[str]:
+        """Names of the checks that flagged an unrepaired anomaly."""
+        return [c.name for c in self.checks if c.anomaly_count > 0]
+
     def to_dict(self) -> dict:
         return {
             "healthy": self.healthy,

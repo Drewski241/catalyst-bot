@@ -7302,13 +7302,19 @@ class BotLoop:
             from bot_health import run_runtime_checks
             health = run_runtime_checks(auto_repair=True)
             if health.repaired:
+                _repaired_names = health.repaired_check_names
+                _names_txt = ", ".join(_repaired_names) if _repaired_names else "?"
                 log_event("info", "bot_health_repaired",
                           f"bot_health repaired {health.repaired} anomalies "
-                          f"({health.summary})")
+                          f"in {_names_txt} ({health.summary})",
+                          data={"repaired_checks": _repaired_names})
             elif health.anomalies:
+                _anom_names = health.anomaly_check_names
+                _anom_txt = ", ".join(_anom_names) if _anom_names else "?"
                 log_event("info", "bot_health_anomalies",
                           f"bot_health found {health.anomalies} anomalies "
-                          f"({health.summary})")
+                          f"in {_anom_txt} ({health.summary})",
+                          data={"anomaly_checks": _anom_names})
         except Exception as _hc_err:
             log_event("warning", "bot_health_check_failed",
                       f"Runtime health check failed: {_hc_err}")

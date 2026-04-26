@@ -237,11 +237,34 @@ class PriceEngine:
 
         Returns volatility as a fraction (e.g., 0.05 = 5% volatility).
         Used by risk_manager to adjust spreads dynamically.
+
+        Resilient to underlying SQLite errors (corruption, lock contention,
+        etc.): swallows the exception, returns Decimal("0") so the caller
+        sees the same value as a genuinely-empty price window, and rate-
+        limits the WARN log to once per minute. Without this rate-limit the
+        risk manager's per-cycle volatility query produced ~35 ERROR lines
+        per minute when the events/price_history indexes were corrupt.
         """
         asset_id = cat_asset_id or cfg.CAT_ASSET_ID
         window = hours or float(cfg.VOLATILITY_WINDOW_HOURS)
 
-        prices = get_recent_prices(asset_id, hours=window)
+        try:
+            prices = get_recent_prices(asset_id, hours=window)
+        except Exception as e:
+            now = time.time()
+            last = getattr(self, "_volatility_query_warn_at", 0.0)
+            if (now - last) >= 60.0:
+                # Snapshot the warn window so this log fires at most once
+                # per minute even if get_volatility is called every cycle.
+                self._volatility_query_warn_at = now
+                log_event(
+                    "warning", "volatility_query_failed",
+                    f"price_history query for volatility failed: {e}. "
+                    f"Returning 0 (dynamic spread will skip the volatility "
+                    f"adjustment until the DB recovers). This warning is "
+                    f"rate-limited to once per minute.",
+                )
+            return Decimal("0")
         if len(prices) < 2:
             return Decimal("0")
 
