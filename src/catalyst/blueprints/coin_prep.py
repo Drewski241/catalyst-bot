@@ -1294,6 +1294,20 @@ def api_coin_prep_trigger():
                             or getattr(cfg, "CAT_DECIMALS", 3)
                             or 3
                         )
+                        # Mirror the topup-pool amount that bot_loop's
+                        # _emit_coin_update sends — without this field the
+                        # GUI flickered the pool amount on/off whenever a
+                        # coin-prep emit arrived between regular polls.
+                        _bot = getattr(api_server, "bot", None)
+                        _xch_pool_amt = "0"
+                        _cat_pool_amt = "0"
+                        if _bot is not None and getattr(_bot, "coin_manager", None):
+                            try:
+                                _inv = _bot.coin_manager.get_inventory_summary() or {}
+                                _xch_pool_amt = str(_inv.get("xch_reserve_total", "0"))
+                                _cat_pool_amt = str(_inv.get("cat_reserve_total", "0"))
+                            except Exception:
+                                pass
                         api_server.events.emit("coin_update", {
                             "reason": "coin_prep_complete",
                             "xch_free": int(_summary.get("xch_free_count", 0) or 0),
@@ -1310,6 +1324,8 @@ def api_coin_prep_trigger():
                                 f"{_cat_locked_mojos / (10 ** _cat_dec):.{_cat_dec}f}"
                                 if _cat_locked_mojos > 0 else "0"
                             ),
+                            "xch_topup_pool_amount": _xch_pool_amt,
+                            "cat_topup_pool_amount": _cat_pool_amt,
                             "tier_counts": _tier_counts,
                         })
                     except Exception as _e:

@@ -23358,11 +23358,23 @@
                         + '</div>';
                     const xchCount = xch[name] ?? 0;
                     const catCount = cat[name] ?? 0;
-                    const xchAmtTxt = (Number.isFinite(xchPoolNum) && xchPoolAmt !== undefined && xchPoolAmt !== null && xchPoolAmt !== '')
-                        ? ' <span style="opacity: 0.65; font-size: 0.92em;">(' + xchPoolNum.toFixed(4) + ')</span>'
+                    // Treat a missing amount field (e.g. SSE events that
+                    // forgot to include topup_pool_amount) as "use the
+                    // last value we saw" rather than dropping the bracket
+                    // text. Without this fallback the panel flickered
+                    // between "1 (26.8411)" and "1" as different emit
+                    // paths arrived.
+                    const xchAmtVisible = (Number.isFinite(xchPoolNum) && xchPoolAmt !== undefined && xchPoolAmt !== null && xchPoolAmt !== '');
+                    const catAmtVisible = (Number.isFinite(catPoolNum) && catPoolAmt !== undefined && catPoolAmt !== null && catPoolAmt !== '');
+                    if (xchAmtVisible) renderCoinTierGroups._lastXchPool = xchPoolNum.toFixed(4);
+                    if (catAmtVisible) renderCoinTierGroups._lastCatPool = catPoolNum.toLocaleString(undefined, {maximumFractionDigits: 2});
+                    const xchPoolText = xchAmtVisible ? xchPoolNum.toFixed(4) : (renderCoinTierGroups._lastXchPool || '');
+                    const catPoolText = catAmtVisible ? catPoolNum.toLocaleString(undefined, {maximumFractionDigits: 2}) : (renderCoinTierGroups._lastCatPool || '');
+                    const xchAmtTxt = xchPoolText
+                        ? ' <span style="opacity: 0.65; font-size: 0.92em;">(' + xchPoolText + ')</span>'
                         : '';
-                    const catAmtTxt = (Number.isFinite(catPoolNum) && catPoolAmt !== undefined && catPoolAmt !== null && catPoolAmt !== '')
-                        ? ' <span style="opacity: 0.65; font-size: 0.92em;">(' + catPoolNum.toLocaleString(undefined, {maximumFractionDigits: 2}) + ')</span>'
+                    const catAmtTxt = catPoolText
+                        ? ' <span style="opacity: 0.65; font-size: 0.92em;">(' + catPoolText + ')</span>'
                         : '';
                     html += labelHtml;
                     html += '<div style="text-align: right; color: var(--status-success);">' + xchCount + xchAmtTxt + '</div>';
@@ -23374,6 +23386,17 @@
                 html += '<div style="text-align: right; color: #7dd3fc;">' + (cat[name] ?? 0) + '</div>';
             });
 
+            // Skip the DOM write when nothing changed. innerHTML rewrites
+            // destroy and re-create child nodes, and the browser briefly
+            // re-paints the region even when the resulting markup is byte-
+            // identical — visible to the user as a "flicker on/off" of the
+            // top-up pool amount as different emit paths arrive at the GUI
+            // (poll vs SSE coin_update vs coin-prep emit).
+            if (grid._lastTierHtml === html) {
+                section.style.display = 'block';
+                return;
+            }
+            grid._lastTierHtml = html;
             grid.innerHTML = html;
             section.style.display = 'block';
         }
