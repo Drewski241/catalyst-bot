@@ -617,6 +617,13 @@ class Config:
         self.SNIPER_MIN_GAP_BPS = _decimal("SNIPER_MIN_GAP_BPS", "400")  # Only snipe on big moves (4%+)
         self.SNIPER_REARM_PRICE_MOVE_BPS = _decimal("SNIPER_REARM_PRICE_MOVE_BPS", "100")  # Re-discover only after ~1% price move
         self.SNIPER_REARM_GAP_MOVE_BPS = _decimal("SNIPER_REARM_GAP_MOVE_BPS", "100")  # Or after ~1% arb-gap shift
+        # Iterative floor tightening: after a probe is confirmed, fire tighter
+        # probes each cycle until one gets taken. That locates the true AMM-arb
+        # floor empirically instead of stopping at the first comfortable buffer.
+        self.SNIPER_FLOOR_TIGHTEN_ENABLED = _bool("SNIPER_FLOOR_TIGHTEN_ENABLED", True)
+        self.SNIPER_FLOOR_TIGHTEN_STEP_BPS = _int("SNIPER_FLOOR_TIGHTEN_STEP_BPS", 15)  # Buffer reduction per successful round
+        self.SNIPER_FLOOR_TIGHTEN_COOLDOWN_SECS = _int("SNIPER_FLOOR_TIGHTEN_COOLDOWN_SECS", 60)  # Wait between tightening rounds
+        self.SNIPER_FLOOR_SAFETY_BPS = _int("SNIPER_FLOOR_SAFETY_BPS", 5)  # Stop tightening when within this many bps of TIBETSWAP_FEE_BPS
 
         # ----- Close the Gap (Dexie ranking improvement) -----
         # Probe size uses SNIPER_SIZE_XCH (same coin pool).
@@ -824,6 +831,8 @@ class Config:
         "SNIPER_TOP_BOOK_BPS", "SNIPER_RETRY_BACKOFF_BPS",
         "SNIPER_MAIN_BOOK_GUARD_BPS", "SNIPER_MIN_GAP_BPS",
         "SNIPER_REARM_PRICE_MOVE_BPS", "SNIPER_REARM_GAP_MOVE_BPS",
+        "SNIPER_FLOOR_TIGHTEN_ENABLED", "SNIPER_FLOOR_TIGHTEN_STEP_BPS",
+        "SNIPER_FLOOR_TIGHTEN_COOLDOWN_SECS", "SNIPER_FLOOR_SAFETY_BPS",
         # Close the Gap / Boost
         "BOOST_SIZE_XCH", "BOOST_EXPIRY_SECS", "BOOST_SPREAD_BPS",
         "GAP_CLOSE_START_PCT", "GAP_CLOSE_STEP_PCT",

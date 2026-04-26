@@ -1102,6 +1102,38 @@ class BotLoop:
                     f"{_bps_to_pct(gap_threshold)})"
                 )
 
+        # Iterative floor tightening: after a successful probe, push tighter
+        # each cycle until one side gets taken. The first probe survives at
+        # SNIPER_BUFFER_BPS (a comfortable margin); subsequent rounds shrink
+        # the buffer in SNIPER_FLOOR_TIGHTEN_STEP_BPS steps until we hit the
+        # AMM-arb fee point or get arbed — that's the empirical floor.
+        if (
+            getattr(cfg, "SNIPER_FLOOR_TIGHTEN_ENABLED", True)
+            and probe.get("confirmed_at", 0) > 0
+            and not probe.get("floor_converged", False)
+        ):
+            cooldown = float(getattr(cfg, "SNIPER_FLOOR_TIGHTEN_COOLDOWN_SECS", 60))
+            since_confirmed = time.time() - float(probe.get("confirmed_at", 0))
+            if since_confirmed >= cooldown:
+                tibet_fee = int(getattr(cfg, "TIBETSWAP_FEE_BPS", 70))
+                safety = int(getattr(cfg, "SNIPER_FLOOR_SAFETY_BPS", 5))
+                min_buffer = max(1, tibet_fee - safety)
+                step = max(1, int(getattr(cfg, "SNIPER_FLOOR_TIGHTEN_STEP_BPS", 15)))
+                current_buffer = int(
+                    probe.get("tightening_buffer_bps")
+                    or getattr(cfg, "SNIPER_BUFFER_BPS", 50)
+                )
+                next_buffer = current_buffer - step
+                if next_buffer >= min_buffer:
+                    return (
+                        f"floor_tighten ({current_buffer}bps → {next_buffer}bps; "
+                        f"target ≥ {min_buffer}bps from Tibet)"
+                    )
+                # Within safety margin of the AMM-arb floor — stop tightening
+                # so we don't keep re-evaluating every cycle.
+                with self._probe_lock:
+                    self._probe_state["floor_converged"] = True
+
         return None
 
     def _get_market_aware_probe_prices(self, tibet_price: Decimal,
@@ -2174,6 +2206,16 @@ class BotLoop:
                 "last_discovery_tibet_price": Decimal("0"),
                 "last_discovery_reason": "",
                 "last_discovery_at": 0,
+                # Iterative floor-tightening (option 2). After a probe is
+                # confirmed, we keep launching tighter probes until one gets
+                # taken — that empirically locates the true safe floor instead
+                # of stopping at the first comfortable buffer (50 bps default).
+                # tightening_buffer_bps starts at SNIPER_BUFFER_BPS and shrinks
+                # by SNIPER_FLOOR_TIGHTEN_STEP_BPS each successful round; once
+                # a probe gets taken we restore safe_buffer_bps and stop.
+                "tightening_buffer_bps": 0,
+                "safe_buffer_bps": 0,
+                "floor_converged": False,
             }
         self._last_quoted_price = {"buy": Decimal("0"), "sell": Decimal("0")}
         self._last_quoted_plain_mid = {"buy": Decimal("0"), "sell": Decimal("0")}
@@ -4959,11 +5001,18 @@ class BotLoop:
                     mid_price = probe["tibet_price"]
                     self._current_mid_price = mid_price
                     self._set_state(mid_price=str(mid_price))
+                    # Floor tightening: record this buffer as a known-safe floor.
+                    # _get_sniper_launch_reason will schedule the next tighter
+                    # round on the next cycle (after the cooldown).
+                    confirmed_buffer = int(probe.get("tightening_buffer_bps") or 0)
+                    if confirmed_buffer > 0:
+                        probe["safe_buffer_bps"] = confirmed_buffer
                     linger_secs = int(getattr(cfg, "SNIPER_LINGER_SECS", 600) or 0)
                     log_event("info", "probe_confirmed",
                               f"Both probes survived — price confirmed at Tibet "
-                              f"{probe['tibet_price']:.8f}. Keeping probes live for "
-                              f"{linger_secs}s while building main offers behind them.")
+                              f"{probe['tibet_price']:.8f} (buffer {confirmed_buffer}bps). "
+                              f"Keeping probes live for {linger_secs}s while building "
+                              f"main offers behind them.")
                     log_event("info", "probe_confirmed_status",
                               "Price confirmed — deploying main offers behind live probes")
                     self._clear_alert("probe_status")
@@ -4984,7 +5033,23 @@ class BotLoop:
                 self._clear_alert("probe_status")
 
             else:
-                # At least one probe was taken — adjust and retry
+                # At least one probe was taken — adjust and retry.
+                # If we were tightening below the safe buffer (floor-discovery
+                # mode) and got arbed, we just empirically located the floor.
+                # Mark converged so we stop tightening, and log it.
+                taken_buffer = int(probe.get("tightening_buffer_bps") or 0)
+                safe_buffer = int(probe.get("safe_buffer_bps") or 0)
+                if taken_buffer and safe_buffer and taken_buffer < safe_buffer + 1:
+                    if not probe.get("floor_converged", False):
+                        probe["floor_converged"] = True
+                        log_event(
+                            "info",
+                            "probe_floor_found",
+                            f"Empirical floor located: probe at {taken_buffer}bps "
+                            f"got taken; last safe buffer was {safe_buffer}bps. "
+                            f"Floor sits between {taken_buffer} and {safe_buffer} bps "
+                            f"from Tibet — tightening stopped.",
+                        )
                 attempt = probe["attempt"] + 1
                 base_buffer = getattr(cfg, "SNIPER_BUFFER_BPS", Decimal("50"))
                 # Widen buffer by 50 BPS per failed attempt
@@ -5064,7 +5129,17 @@ class BotLoop:
                     sniper_fired = sniper_fired or probe_result.get("sniper_fired", False)
 
         # ---- Phase 1: LAUNCH new probe (empty book or material market shift) ----
-        elif arb_gap > cfg.SNIPER_MIN_GAP_BPS and launch_reason:
+        # The arb-gap gate is intended for *rearm* triggers (price_move,
+        # arb_gap_shift) — there it stops the bot from churning probes when
+        # the market is calm and a single rearm wouldn't tell us anything.
+        # The empty-book case is fundamentally different: we have NO offers
+        # live, so there's no floor to anchor the main ladder against. We
+        # must probe regardless of arb gap, otherwise the startup ladder
+        # builds blind and you eat the discovery cost on real-size offers.
+        elif launch_reason and (
+            launch_reason.startswith("startup_empty_book")
+            or arb_gap > cfg.SNIPER_MIN_GAP_BPS
+        ):
             # --- Arb pressure gate ---
             # Suppress probe launch when arb activity is critical. A probe fired
             # into a hot arb environment will be swept instantly, wasting coins
@@ -5100,7 +5175,20 @@ class BotLoop:
                 if not launch_reason:
                     pass
                 else:
-                    sniper_buffer_bps = getattr(cfg, "SNIPER_BUFFER_BPS", Decimal("50"))
+                    # Iterative floor tightening overrides the default buffer
+                    # with progressively tighter values until a probe gets
+                    # taken. Otherwise use the comfortable default.
+                    if launch_reason.startswith("floor_tighten"):
+                        step = max(1, int(getattr(cfg, "SNIPER_FLOOR_TIGHTEN_STEP_BPS", 15)))
+                        prev_buffer = int(
+                            self._probe_state.get("tightening_buffer_bps")
+                            or getattr(cfg, "SNIPER_BUFFER_BPS", 50)
+                        )
+                        sniper_buffer_bps = Decimal(str(max(1, prev_buffer - step)))
+                    else:
+                        sniper_buffer_bps = Decimal(str(
+                            getattr(cfg, "SNIPER_BUFFER_BPS", 50)
+                        ))
                     probe_prices = self._get_market_aware_probe_prices(
                         tibet_p,
                         sniper_buffer_bps,
@@ -5195,6 +5283,18 @@ class BotLoop:
                                 "confirmed_at": 0,
                                 "launched_at": time.time(),
                                 "last_wait_log_at": 0,
+                                # Track the buffer this probe is testing so the
+                                # next floor_tighten round can shrink from it.
+                                "tightening_buffer_bps": int(sniper_buffer_bps),
+                                # Reset convergence on a fresh launch (price_move
+                                # or arb_gap_shift). Floor-tighten rounds inherit
+                                # the previous safe_buffer_bps via _get_sniper_…
+                                "safe_buffer_bps": (
+                                    self._probe_state.get("safe_buffer_bps", 0)
+                                    if launch_reason.startswith("floor_tighten")
+                                    else 0
+                                ),
+                                "floor_converged": False,
                             })
                         self._remember_probe_market_snapshot(
                             mid_price,
