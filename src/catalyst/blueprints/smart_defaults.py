@@ -985,18 +985,22 @@ def _calculate_smart_defaults(xch_reserve=0.0, cat_reserve=0.0, risk_profile="ba
         min_mid = mid_price * 0.5 if mid_price > 0 else 0
         max_mid = mid_price * 1.5 if mid_price > 0 else 0
 
-    # Safety floor: max_mid must always be at least 15% above current price.
-    # Without this, a bull run pushes the price above the 30d high and the
-    # ceiling is breached the moment Smart Settings saves — blocking every cycle.
-    if mid_price > 0:
-        min_max_mid = mid_price * 1.15
+    # Safety floor: rails must straddle the price the bot actually trades
+    # against, which is what the Save validator checks (bot_state.pricing.mid).
+    # bot.py prefers TibetSwap's pool ratio and only falls back to Dexie when
+    # Tibet is unavailable. Anchoring on the (Dexie + Tibet)/2 blend used
+    # elsewhere here breaks for illiquid CATs: a stale Dexie last_price drags
+    # the blend well below the live Tibet price, so max_mid lands beneath the
+    # current market and the GUI refuses to save the result of Smart Settings.
+    live_price = tibet_price if tibet_price > 0 else dexie_price
+    if live_price > 0:
+        min_max_mid = live_price * 1.15
         if max_mid < min_max_mid:
-            messages.append(f"Price rail ceiling raised to 15% above current price "
-                            f"({mid_price:.8f} → {min_max_mid:.8f}) — market is above 30d high")
+            messages.append(f"Price rail ceiling raised to 15% above live price "
+                            f"({live_price:.8f} → {min_max_mid:.8f}) — market is above 30d high")
             max_mid = min_max_mid
-    # Safety floor: min_mid must always be at least 15% below current price.
-    if mid_price > 0 and min_mid > mid_price * 0.85:
-        min_mid = mid_price * 0.85
+        if min_mid > live_price * 0.85:
+            min_mid = live_price * 0.85
 
     # ═══ COMPETITOR AWARENESS ═══
     competitor_enabled = True
