@@ -96,6 +96,16 @@ def get_connection() -> sqlite3.Connection:
         _local.conn.execute("PRAGMA journal_mode=WAL")  # Safe concurrent reads
         _local.conn.execute("PRAGMA foreign_keys=ON")    # Enforce relationships
         _local.conn.execute("PRAGMA busy_timeout=5000")  # Wait up to 5s if locked
+        # synchronous=NORMAL is the SQLite-recommended setting for WAL mode:
+        # crash-safe (durable on commit at the next checkpoint) but ~2x faster
+        # than FULL because it skips an fsync on every COMMIT. The default of
+        # FULL with WAL has no extra durability over NORMAL — only extra IO.
+        _local.conn.execute("PRAGMA synchronous=NORMAL")
+        # Explicit autocheckpoint matches SQLite's default but documents the
+        # threshold. The 26-04 incident showed the WAL grew unbounded past
+        # this; the periodic checkpoint_wal() call from bot_loop is the
+        # belt-and-braces backstop when readers stall the auto path.
+        _local.conn.execute("PRAGMA wal_autocheckpoint=1000")
         # Super log: trace all SQL on this connection
         try:
             from super_log import trace_connection
@@ -110,6 +120,88 @@ def close_connection():
     if hasattr(_local, "conn") and _local.conn is not None:
         _local.conn.close()
         _local.conn = None
+
+
+def checkpoint_wal(mode: str = "TRUNCATE") -> Dict[str, int]:
+    """Force a WAL checkpoint and (optionally) truncate the WAL file.
+
+    The 26-04 corruption episode showed the WAL growing unbounded to >4MB
+    while the main DB stayed at 663KB. SQLite's autocheckpoint can stall
+    when a long-lived reader connection holds an old snapshot — every
+    auto-trigger gives up because it can't reclaim WAL frames. Calling
+    this from bot_loop on a fixed cadence with a fresh connection forces
+    progress regardless of what the thread-local connections are doing.
+
+    Uses a dedicated connection (not the thread-local cache) so that any
+    open read transaction on the caller's connection doesn't block the
+    checkpoint from completing.
+
+    Mode:
+        - PASSIVE: best-effort, never blocks. Returns even if it can't
+          fully checkpoint due to active readers.
+        - FULL:   waits for all readers to finish before checkpointing.
+        - RESTART: like FULL but switches the WAL to a fresh segment.
+        - TRUNCATE (default): like RESTART, then truncates WAL to zero.
+
+    Returns ``{"busy": int, "log_pages": int, "checkpointed": int}``.
+    On error returns ``{}``; safe to ignore — caller treats as non-fatal.
+    """
+    mode_upper = (mode or "TRUNCATE").upper()
+    if mode_upper not in ("PASSIVE", "FULL", "RESTART", "TRUNCATE"):
+        mode_upper = "TRUNCATE"
+    try:
+        # Fresh connection. busy_timeout matters here — checkpoint can wait
+        # briefly for in-flight writes to commit.
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        try:
+            conn.execute("PRAGMA busy_timeout=5000")
+            row = conn.execute(
+                f"PRAGMA wal_checkpoint({mode_upper})"
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception:
+        return {}
+    if not row:
+        return {}
+    # row = (busy, log, checkpointed) per SQLite docs
+    return {
+        "busy": int(row[0]) if row[0] is not None else 0,
+        "log_pages": int(row[1]) if row[1] is not None else 0,
+        "checkpointed": int(row[2]) if row[2] is not None else 0,
+        "mode": mode_upper,
+    }
+
+
+def check_db_integrity() -> Dict[str, object]:
+    """Run ``PRAGMA integrity_check`` on the main DB.
+
+    Returns a dict with::
+
+        {"ok": bool, "result": "ok" | "<error1>;<error2>;...", "errors": [str]}
+
+    SQLite's integrity_check returns the literal string "ok" when the file
+    is healthy, or one or more textual error rows when it isn't. We run on
+    a fresh connection so we surface the on-disk state, not whatever
+    in-memory page cache the caller's thread-local connection might be
+    holding.
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        try:
+            rows = conn.execute("PRAGMA integrity_check").fetchall()
+        finally:
+            conn.close()
+    except Exception as e:
+        return {"ok": False, "result": f"check_failed: {e}", "errors": [str(e)]}
+
+    messages = [str(r[0]) for r in rows if r and r[0] is not None]
+    healthy = (len(messages) == 1 and messages[0].strip().lower() == "ok")
+    return {
+        "ok": healthy,
+        "result": "ok" if healthy else "; ".join(messages),
+        "errors": [] if healthy else messages,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -721,6 +813,51 @@ def init_database():
 
     conn.commit()
     log_event("info", "database_init", "Database initialized successfully")
+
+    # Startup integrity check — surface DB corruption immediately rather
+    # than letting it bleed through as random "database disk image is
+    # malformed" errors mid-trade like the 26-04 incident. Runs on a
+    # fresh connection so it inspects the on-disk file, not the page
+    # cache. Logged as warning + emitted to the alert pipeline; the
+    # bot doesn't refuse to start (operator may want to attempt
+    # recovery via the GUI before stopping the bot entirely).
+    try:
+        result = check_db_integrity()
+        if not result.get("ok"):
+            log_event(
+                "warning", "database_integrity_failed",
+                f"PRAGMA integrity_check failed: "
+                f"{result.get('result', 'unknown')}. Database is corrupted — "
+                f"recover with `sqlite3 bot.db .recover` or restore from "
+                f"backups/ before continuing to trade.",
+                data={"errors": result.get("errors", [])[:10]},
+            )
+        else:
+            log_event(
+                "info", "database_integrity_ok",
+                "Database integrity check passed at startup",
+            )
+    except Exception as _integrity_err:
+        log_event(
+            "warning", "database_integrity_check_failed",
+            f"Database integrity check raised (non-fatal): {_integrity_err}",
+        )
+
+    # Force a clean WAL checkpoint at startup. If the previous run left
+    # the WAL bloated (4MB+ in the 26-04 incident) this collapses it
+    # back to zero before the new run starts accumulating frames.
+    try:
+        ckpt = checkpoint_wal("TRUNCATE")
+        if ckpt:
+            log_event(
+                "info", "database_wal_startup_checkpoint",
+                f"Startup WAL checkpoint: mode={ckpt.get('mode')}, "
+                f"busy={ckpt.get('busy')}, "
+                f"log_pages={ckpt.get('log_pages')}, "
+                f"checkpointed={ckpt.get('checkpointed')}",
+            )
+    except Exception:
+        pass  # non-fatal — bot can run with a non-zero WAL
 
 
 # ---------------------------------------------------------------------------

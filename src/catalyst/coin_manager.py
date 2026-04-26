@@ -3326,6 +3326,75 @@ class CoinManager:
 
         return summary
 
+    def check_tier_size_drift(
+        self,
+        low_ratio: float = 0.95,
+        high_ratio: float = 1.20,
+        min_sample: int = 2,
+    ) -> List[Dict]:
+        """Detect when prepared tier-coin sizes have drifted from the live
+        target sizes.
+
+        Smart Settings sizes coins for the price at prep time. If the live
+        mid drifts, the same offer ladder needs differently-sized coins.
+        Once the median prepped coin sits outside ``[low_ratio, high_ratio]``
+        of the live tier size, the offer creator starts skipping slots
+        (coin under floor) or oversizing offers (coin over ceiling), and
+        a re-prep is the right answer.
+
+        Returns a list of finding dicts — one per (side, tier) that has
+        drifted — with the median amount, live target size, ratio, and
+        sample count. Empty list when everything is in range.
+        """
+        if not cfg.TIER_ENABLED:
+            return []
+        try:
+            from database import get_coins_by_designation
+        except Exception:
+            return []
+
+        findings: List[Dict] = []
+        for wallet_type, is_cat in (("xch", False), ("cat", True)):
+            try:
+                live_sizes = get_tier_sizes_mojos_from_cfg(is_cat=is_cat)
+            except Exception:
+                continue
+            if not live_sizes:
+                continue
+            for tier_name in ("inner", "mid", "outer", "extreme"):
+                live_size = int(live_sizes.get(tier_name, 0) or 0)
+                if live_size <= 0:
+                    continue
+                try:
+                    coins = get_coins_by_designation(
+                        wallet_type, "tier_spare", tier_name
+                    )
+                except Exception:
+                    continue
+                amounts = sorted(
+                    int(c.get("amount_mojos") or 0)
+                    for c in coins
+                    if int(c.get("amount_mojos") or 0) > 0
+                )
+                if len(amounts) < max(1, int(min_sample)):
+                    continue
+                n = len(amounts)
+                if n % 2 == 1:
+                    median = float(amounts[n // 2])
+                else:
+                    median = (amounts[n // 2 - 1] + amounts[n // 2]) / 2.0
+                ratio = float(median) / float(live_size)
+                if ratio < low_ratio or ratio > high_ratio:
+                    findings.append({
+                        "side": wallet_type,
+                        "tier": tier_name,
+                        "median_mojos": int(median),
+                        "live_size_mojos": live_size,
+                        "ratio": round(ratio, 3),
+                        "coin_count": n,
+                    })
+        return findings
+
     def get_free_coin_counts(self, active_buy_count: int = 0,
                               active_sell_count: int = 0) -> Dict[str, int]:
         """Get truly free coins (spendable minus active offers).

@@ -23218,7 +23218,10 @@
                     el('catCoinsFree').textContent = c.cat_free || 0;
                     el('catCoinsLocked').textContent = c.cat_locked || 0;
                     el('catCoinsTotal').textContent = c.cat_total || 0;
-                    renderCoinTierGroups(c.tier_counts || null);
+                    renderCoinTierGroups(c.tier_counts || null, {
+                        xch_topup_pool_amount: c.xch_topup_pool_amount,
+                        cat_topup_pool_amount: c.cat_topup_pool_amount,
+                    });
                 }
             }
 
@@ -23280,13 +23283,13 @@
                 extreme: 'Extreme',
                 sniper: 'Sniper',
                 fees: 'Fees',
-                reserve: 'Reserve',
+                reserve: 'Top-up pool',
                 dust: 'Dust (change)',
             };
             return labels[name] || escapeHtml(name);
         }
 
-        function renderCoinTierGroups(tierData) {
+        function renderCoinTierGroups(tierData, poolAmounts) {
             const section = document.getElementById('coinTierGroups');
             const grid = document.getElementById('coinTierGrid');
             if (!section || !grid) return;
@@ -23309,6 +23312,11 @@
                 return;
             }
 
+            const xchPoolAmt = poolAmounts && poolAmounts.xch_topup_pool_amount;
+            const catPoolAmt = poolAmounts && poolAmounts.cat_topup_pool_amount;
+            const xchPoolNum = Number(xchPoolAmt);
+            const catPoolNum = Number(catPoolAmt);
+
             let html = '';
             html += '<div style="opacity: 0.5;"></div>';
             html += '<div style="opacity: 0.5; text-align: right; font-size: 0.85em;">XCH</div>';
@@ -23324,6 +23332,29 @@
             }
 
             rows.forEach(name => {
+                if (name === 'reserve') {
+                    const labelHtml = '<div style="opacity: 0.88;">'
+                        + 'Top-up pool <span class="cc-help">?<span class="cc-tooltip">'
+                        + 'Reserve coins the bot draws from when topping up tier spares. '
+                        + 'Numbers in brackets show the spendable amount in the pool — '
+                        + 'when these get small, the bot can no longer split fresh tier '
+                        + 'coins and trading will stall until you re-run Smart Settings '
+                        + 'or top up the wallet.'
+                        + '</span></span>'
+                        + '</div>';
+                    const xchCount = xch[name] ?? 0;
+                    const catCount = cat[name] ?? 0;
+                    const xchAmtTxt = (Number.isFinite(xchPoolNum) && xchPoolAmt !== undefined && xchPoolAmt !== null && xchPoolAmt !== '')
+                        ? ' <span style="opacity: 0.65; font-size: 0.92em;">(' + xchPoolNum.toFixed(4) + ')</span>'
+                        : '';
+                    const catAmtTxt = (Number.isFinite(catPoolNum) && catPoolAmt !== undefined && catPoolAmt !== null && catPoolAmt !== '')
+                        ? ' <span style="opacity: 0.65; font-size: 0.92em;">(' + catPoolNum.toLocaleString(undefined, {maximumFractionDigits: 2}) + ')</span>'
+                        : '';
+                    html += labelHtml;
+                    html += '<div style="text-align: right; color: var(--status-success);">' + xchCount + xchAmtTxt + '</div>';
+                    html += '<div style="text-align: right; color: #7dd3fc;">' + catCount + catAmtTxt + '</div>';
+                    return;
+                }
                 html += '<div style="opacity: 0.88;">' + formatTierGroupLabel(name) + '</div>';
                 html += '<div style="text-align: right; color: var(--status-success);">' + (xch[name] ?? 0) + '</div>';
                 html += '<div style="text-align: right; color: #7dd3fc;">' + (cat[name] ?? 0) + '</div>';
@@ -24115,7 +24146,10 @@
                     if (el('catCoinsFree')) el('catCoinsFree').textContent = data.cat_free || 0;
                     if (el('catCoinsLocked')) el('catCoinsLocked').textContent = data.cat_locked || 0;
                     if (el('catCoinsTotal')) el('catCoinsTotal').textContent = data.cat_total || 0;
-                    renderCoinTierGroups(data.tier_counts || null);
+                    renderCoinTierGroups(data.tier_counts || null, {
+                        xch_topup_pool_amount: data.xch_topup_pool_amount,
+                        cat_topup_pool_amount: data.cat_topup_pool_amount,
+                    });
 
                     // Locked amounts
                     const xchLockEl = el('xchLockedAmount');

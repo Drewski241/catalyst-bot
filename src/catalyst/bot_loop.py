@@ -1656,6 +1656,8 @@ class BotLoop:
                 "cat_total": status.get("cat_total_coins", 0),
                 "xch_locked_amount": inv.get("xch_locked_amount", "0"),
                 "cat_locked_amount": inv.get("cat_locked_amount", "0"),
+                "xch_topup_pool_amount": inv.get("xch_reserve_total", "0"),
+                "cat_topup_pool_amount": inv.get("cat_reserve_total", "0"),
                 "tier_counts": tier_counts,
             })
         except Exception as e:
@@ -2089,6 +2091,60 @@ class BotLoop:
                       f"Watchdog audit clean "
                       f"(cycle={self._loop_count}, "
                       f"buys={len(offers_buy)}, sells={len(offers_sell)})")
+
+    def _check_tier_size_drift(self) -> None:
+        """Periodic check: do prepared coin sizes still match the live tier
+        targets?
+
+        Prep coins are sized for the price at prep time. After enough price
+        drift the F70 selector has nothing it can use for some tier and the
+        ladder runs short. Detection only — surfaces a persistent banner
+        and a log line. The fix is "re-run Smart Settings", which the user
+        triggers from the alert.
+        """
+        try:
+            findings = self.coin_manager.check_tier_size_drift()
+        except Exception as _err:
+            log_event("debug", "tier_size_drift_unavailable",
+                      f"Drift check raised (non-fatal): {_err}")
+            return
+
+        alert_id = "tier_size_drift"
+        if not findings:
+            # Clear any previously-raised alert so the banner disappears
+            # once the user has re-prepped (or price has come back).
+            self._clear_alert(alert_id)
+            return
+
+        # Build a compact summary for the log line and the banner.
+        # Sort worst drift first so the user sees the most affected tier.
+        findings.sort(key=lambda f: abs(f.get("ratio", 1.0) - 1.0), reverse=True)
+        parts = []
+        for f in findings:
+            side = (f.get("side") or "").upper()
+            tier = (f.get("tier") or "").lower()
+            ratio = float(f.get("ratio") or 0.0)
+            n = int(f.get("coin_count") or 0)
+            parts.append(f"{side}/{tier}={ratio:.2f}× (n={n})")
+        summary = ", ".join(parts)
+
+        log_event(
+            "warning", "tier_size_drift",
+            f"Prepared coin sizes have drifted from live tier targets: "
+            f"{summary}. Re-run Smart Settings to re-prep at the current price."
+        )
+
+        self._emit_alert(
+            alert_id,
+            "warning",
+            "Coin sizes drifting from live price",
+            f"Prepared tier coins no longer match the live ladder sizes "
+            f"({summary}). The bot can keep trading but some slots may skip "
+            f"as drift grows. Re-run Smart Settings to re-prep coins at the "
+            f"current price.",
+            action="open_settings",
+            action_label="Open Smart Settings",
+        )
 
     def _reset_runtime_state(self) -> None:
         """Reset all per-session runtime state before (re)starting.
@@ -7030,6 +7086,49 @@ class BotLoop:
             except Exception as _wd_err:
                 log_event("debug", "watchdog_failed",
                           f"Ladder watchdog raised (non-fatal): {_wd_err}")
+
+        # Tier-size drift monitor: every 10 cycles, check whether prepared
+        # coin sizes still match the live tier targets. Smart Settings sizes
+        # coins for the price at prep time; persistent price drift means a
+        # re-prep is required. Read-only — just log + alert.
+        if (self._loop_count % 10 == 0
+                and not self._recovery_is_active()
+                and not _probe_active
+                and not self.coin_manager.is_busy()):
+            try:
+                self._check_tier_size_drift()
+            except Exception as _drift_err:
+                log_event("debug", "tier_size_drift_check_failed",
+                          f"Tier size drift check raised (non-fatal): {_drift_err}")
+
+        # Periodic WAL checkpoint truncate. SQLite's autocheckpoint can
+        # stall when a long-lived reader connection holds an old snapshot,
+        # leaving the WAL to grow unbounded — that was the proximate cause
+        # of the 26-04 "database disk image is malformed" episode (4MB WAL
+        # vs 663KB main DB). Forcing a TRUNCATE checkpoint every 20 cycles
+        # from a fresh connection collapses the WAL regardless of whatever
+        # the thread-local connections are doing.
+        if self._loop_count > 0 and self._loop_count % 20 == 0:
+            try:
+                from database import checkpoint_wal
+                result = checkpoint_wal("TRUNCATE")
+                if result:
+                    busy = int(result.get("busy", 0) or 0)
+                    log_pages = int(result.get("log_pages", 0) or 0)
+                    if busy or log_pages > 0:
+                        # log_pages > 0 means the WAL still has frames after
+                        # the checkpoint attempt — usually a reader holding
+                        # a snapshot. Worth surfacing at info level so we
+                        # spot it before it compounds into corruption.
+                        log_event(
+                            "info", "database_wal_checkpoint",
+                            f"Periodic WAL checkpoint: busy={busy}, "
+                            f"log_pages={log_pages}, "
+                            f"checkpointed={result.get('checkpointed')}"
+                        )
+            except Exception as _ckpt_err:
+                log_event("debug", "database_wal_checkpoint_failed",
+                          f"Periodic WAL checkpoint raised (non-fatal): {_ckpt_err}")
 
         # Skip coin operations for first 2 loops — wallet needs time to settle
         # after startup. Sage especially returns incomplete coin data initially.

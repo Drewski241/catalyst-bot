@@ -1090,6 +1090,8 @@ def api_status():
                 "cat_total": db_coin_summary.get("cat_total", 0),
                 "xch_locked_amount": f"{db_coin_summary.get('xch_locked_mojos', 0) / 1e12:.4f}",
                 "cat_locked_amount": f"{db_coin_summary.get('cat_locked_mojos', 0) / (10 ** ((api_server._active_cat.get('decimals') or getattr(cfg, 'CAT_DECIMALS', 3)))):.2f}",
+                "xch_topup_pool_amount": inv.get("xch_reserve_total", "0"),
+                "cat_topup_pool_amount": inv.get("cat_reserve_total", "0"),
             }
         else:
             _xch_coins = coins_data.get("xch_coins", 0)
@@ -1107,6 +1109,8 @@ def api_status():
                 "cat_total": coins_data.get("cat_total_coins", 0),
                 "xch_locked_amount": inv.get("xch_locked_amount", "0"),
                 "cat_locked_amount": inv.get("cat_locked_amount", "0"),
+                "xch_topup_pool_amount": inv.get("xch_reserve_total", "0"),
+                "cat_topup_pool_amount": inv.get("cat_reserve_total", "0"),
             }
 
         # If coin tracking is all zeros (bot hasn't run), query Sage directly.

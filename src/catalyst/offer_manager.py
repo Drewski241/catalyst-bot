@@ -568,15 +568,21 @@ class OfferManager:
                         continue
                     if max_amount_mojos is not None and coin_amount > max_amount_mojos:
                         continue
-                    # F70 SSOT misfit guard — see the fallback loop above
-                    # for the full rationale. Applies here too so that a
-                    # misfit-sized coin that WAS incorrectly designated
-                    # tier_spare/<tier> (legacy reconcile before the
-                    # classify_coin() change took effect) still gets
-                    # rejected at selection time.
+                    # F70 SSOT misfit guard with DB-trust override (2026-04-26):
+                    # The live-price classifier shifts tier-size cutoffs every
+                    # cycle, so a coin prepped at price P for tier T can drop
+                    # below T's live floor after a small price move. When the
+                    # DB already has assigned_tier == preferred_tier we trust
+                    # the prep designation and only veto outright misfits
+                    # (coins that fit no tier under live sizes). Without this,
+                    # a 4% price drop drained inner-prepped coins into mid-
+                    # sell offers and tripped a needless topup on first ladder.
                     if _coin_fits_preferred_tier is not None:
-                        if not _coin_fits_preferred_tier(coin_amount):
-                            continue
+                        db_match = (designation == "tier_spare"
+                                    and assigned_tier == pref)
+                        if not db_match:
+                            if not _coin_fits_preferred_tier(coin_amount):
+                                continue
 
                     priority = self._coin_designation_priority(
                         designation, assigned_tier, preferred_tier
