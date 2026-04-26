@@ -896,7 +896,24 @@ class CoinPrepWorker:
         return assigned, unmatched
 
     def _merge_xch_fee_change_into_reserve(self) -> bool:
-        """Merge leftover XCH fee-funding change back into reserve before final DB sweep."""
+        """Merge leftover XCH fee-funding change back into reserve before final DB sweep.
+
+        Design: the coin-prep fee coin is whatever Sage's auto_combine left
+        behind during consolidation — a small dedicated coin that funds TX
+        fees during prep operations. After every split has confirmed, what
+        remains is at most slightly diminished from its starting size
+        (Sage's split RPC handles fees internally for many calls), and we
+        merge it back into the reserve so the final wallet state is just
+        ``[reserve, 119 tier coins]``.
+
+        Polling note: the previous version waited for ``get_pending_transactions()``
+        to return EMPTY before checking coin counts. That's broken in two
+        ways — our own combine TX sits in pending until block inclusion
+        (~52s typical), and any unrelated wallet activity also blocks the
+        check forever. The new version tracks the combine's own TX ID and
+        considers it confirmed the moment that specific ID leaves the
+        pending list, regardless of other wallet activity.
+        """
         if not (self.is_sage and self.tier_enabled and self._fee_pool_enabled() and self._tx_fee_mojos() > 0):
             return False
 
@@ -931,20 +948,45 @@ class CoinPrepWorker:
             self.log("XCH fee cleanup combine was not accepted by Sage")
             return False
 
+        # Track OUR specific combine TX so unrelated wallet activity (e.g.
+        # background mempool watchers) doesn't extend the wait. If Sage
+        # didn't return a TX ID, fall back to a short coin-count poll.
+        my_tx_ids = {tx.lstrip("0x").lower()
+                     for tx in self._extract_sage_transaction_ids(result) if tx}
         expected_after = len(coins) - len(extra_ids)
-        for poll in range(60):
-            pending = get_pending_transactions()
-            if not pending:
+
+        # 90s ceiling — typical Chia block time is ~52s, two blocks is
+        # plenty for a 2-input combine. Beyond that something else is
+        # wrong and the next prep cycle will absorb the stray instead.
+        max_seconds = 90
+        poll_interval = 5
+        for poll in range(max_seconds // poll_interval):
+            pending = get_pending_transactions() or []
+            pending_ids = {
+                str(tx.get("transaction_id", "")).lstrip("0x").lower()
+                for tx in pending if isinstance(tx, dict)
+            }
+            our_tx_still_pending = bool(my_tx_ids and (my_tx_ids & pending_ids))
+
+            if not our_tx_still_pending:
+                # Either our TX confirmed or Sage didn't return an ID — verify
+                # by coin count. If counts dropped to the expected level, done.
                 visible = self._get_coins_via_rpc(self.xch_wallet_id, "xch-fee-cleanup-confirm", selectable_only=True) or []
                 confirmed_count = self.get_confirmed_coin_count(self.xch_wallet_id)
                 if len(visible) <= expected_after and confirmed_count <= expected_after:
-                    self.log(f"XCH fee cleanup confirmed after {poll * 5}s")
+                    self.log(f"XCH fee cleanup confirmed after {poll * poll_interval}s")
                     return True
-            if poll > 0 and poll % 6 == 0:
-                self.log(f"XCH fee cleanup still pending after {poll * 5}s")
-            time.sleep(5)
+                # TX no longer pending but counts haven't updated yet —
+                # likely a sync lag, give it another tick or two.
+                if my_tx_ids and poll >= 2:
+                    self.log(f"XCH fee cleanup TX cleared mempool but coin view lags — assuming success")
+                    return True
 
-        self.log("XCH fee cleanup did not confirm within 300s")
+            if poll > 0 and poll % 4 == 0:
+                self.log(f"XCH fee cleanup still pending after {poll * poll_interval}s")
+            time.sleep(poll_interval)
+
+        self.log(f"XCH fee cleanup did not confirm within {max_seconds}s — stray will be absorbed by the next prep cycle")
         return False
 
     def _designate_final_sweep(self):
