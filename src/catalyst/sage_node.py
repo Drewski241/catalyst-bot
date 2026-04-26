@@ -936,30 +936,30 @@ def get_startup_status() -> Dict:
     status = cached.get("status", "unknown") if cached else "checking"
     wallet_label = "Sage wallet" if wallet_type == "sage" else "Chia wallet"
 
-    # Adoption check: if Sage already has a wallet logged in (e.g. user
-    # was logged in from a previous CATalyst run, or a page reload lost
-    # the cached _selected_fingerprint mid-session), pick that fingerprint
-    # up so the GUI doesn't strand the operator on the wallet picker
-    # while the bot loop is happily running. We deliberately scope this
-    # to "Sage already says someone is logged in" — never auto-pick from
-    # a fresh state where no wallet is selected.
+    # Adoption check (RECOVERY-ONLY): if a page reload mid-session lost the
+    # cached _selected_fingerprint while the bot was already running,
+    # re-adopt the live Sage fingerprint so the GUI doesn't strand the
+    # operator on the picker while the loop is happily running.
     #
-    # Adoption ALSO kicks off the preload thread: if the GUI is polling
-    # startup-status, the user has accepted the disclaimer (the
-    # disclaimer shim runs before any startup polling), so we have
-    # implicit consent. Without this the GUI would sit on
-    # "Connecting to Sage / Checking wallet status..." forever even
-    # though Sage is healthy.
-    if wallet_type == "sage" and not _selected_fingerprint:
+    # The right gate is `_sage_startup_phase == "ready"`:
+    #  - Fresh launch (post-disclaimer) → phase is "waiting_fingerprint"
+    #    even though _preload_running is True. We want the picker.
+    #  - Mid-session reload → phase is "ready" because trigger_start
+    #    completed login before the page reload. Cache is empty because
+    #    the Python process restarted but the live Sage state survived.
+    #    Adopt so the GUI recovers without re-prompting.
+    #
+    # _preload_running was the wrong signal: it flips True the moment
+    # the user accepts the disclaimer, BEFORE they've had a chance to
+    # pick — making cold-start always silently adopt, defeating the
+    # explicit checkpoint the user wants.
+    _is_mid_session_recovery = (_sage_startup_phase == "ready")
+    if (wallet_type == "sage" and not _selected_fingerprint
+            and _is_mid_session_recovery):
         try:
             live_fp = _get_live_sage_fingerprint()
             if live_fp:
                 _selected_fingerprint = live_fp
-                # Signal _start_triggered so the preload thread (if
-                # already waiting on user selection) wakes up and uses
-                # the adopted fingerprint instead of sitting forever in
-                # "waiting_fingerprint". Set this BEFORE start_preload
-                # below so a freshly-spawned preload thread also sees it.
                 try:
                     _start_triggered.set()
                 except Exception:
@@ -967,11 +967,6 @@ def get_startup_status() -> Dict:
                 if _sage_startup_phase == "waiting_fingerprint":
                     with _phase_lock:
                         _sage_startup_phase = "ready"
-                # Auto-authorise + spin the preload thread so the rest
-                # of the startup pipeline (CAT discovery, sync checks,
-                # etc.) runs. Without this the GUI gets a "ready" phase
-                # but preload_running stays False and the dashboard is
-                # stuck on "Startup thread not running".
                 if not _startup_authorised or not _preload_running:
                     try:
                         start_preload()
