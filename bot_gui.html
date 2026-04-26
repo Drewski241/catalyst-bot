@@ -24828,8 +24828,17 @@
             // panel never scrolls. Each .la-entry is ~3px padding + 1.5
             // line-height × 12px ≈ 24px in practice. We measure once with
             // a probe so theme-specific font/padding tweaks don't drift.
+            //
+            // body.clientHeight includes the panel's vertical padding
+            // (.la-body has 6px top + 6px bottom by default), so we
+            // subtract the live computed padding before dividing — without
+            // this we allocate one extra row that gets clipped by the
+            // overflow:hidden rule, leaving a half-row stub at the bottom.
             const entryHeight = _laMeasureRowHeight(body);
-            const available = Math.max(0, body.clientHeight);
+            const _bodyStyle = window.getComputedStyle(body);
+            const _padTop = parseFloat(_bodyStyle.paddingTop) || 0;
+            const _padBottom = parseFloat(_bodyStyle.paddingBottom) || 0;
+            const available = Math.max(0, body.clientHeight - _padTop - _padBottom);
             const maxRows = Math.max(1, Math.floor(available / entryHeight));
             const visible = _laBuffer.slice(0, Math.min(maxRows, _laBuffer.length));
 
