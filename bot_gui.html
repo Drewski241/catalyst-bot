@@ -9713,18 +9713,52 @@
 
                 <!-- DBX Rewards -->
                 <div style="background: var(--bg-surface); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 16px; margin-bottom: 16px;">
-                    <div style="font-weight: 600; margin-bottom: 12px; color: rgba(255,255,255,0.8);">🏆 DBX Rewards Status <span class="cc-help">?<span class="cc-tooltip">Dexie rewards liquidity providers with DBX tokens. You qualify when your spread is below the DBX Max Spread threshold.</span></span></div>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                    <div style="font-weight: 600; margin-bottom: 12px; color: rgba(255,255,255,0.8);">🏆 Dexie Liquidity Rewards <span class="cc-help">?<span class="cc-tooltip">Dexie pays market makers in DBX (or other tokens) for offers placed within a pair's spread limit and size range. Rewards come from Dexie's /v1/incentives feed.</span></span></div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 12px;">
                         <div>
-                            <div style="color: rgba(255,255,255,0.5); font-size: 11px;">Dexie Rewards Pair <span class="cc-help">?<span class="cc-tooltip">Whether Dexie currently marks this CAT/XCH pair as part of its DBX incentives program.</span></span></div>
+                            <div style="color: rgba(255,255,255,0.5); font-size: 11px;">Pair Status <span class="cc-help">?<span class="cc-tooltip">Whether this CAT/XCH pair is currently in Dexie's incentive program.</span></span></div>
                             <div id="intelDbxEligible" style="font-size: 16px; font-weight: 600; color: rgba(255,255,255,0.6);">—</div>
                         </div>
                         <div>
-                            <div style="color: rgba(255,255,255,0.5); font-size: 11px;">DBX Spread Limit <span class="cc-help">?<span class="cc-tooltip">Configured spread cap the bot uses when the pair is incentivized. Default 5%.</span></span></div>
+                            <div style="color: rgba(255,255,255,0.5); font-size: 11px;">Max Spread <span class="cc-help">?<span class="cc-tooltip">Maximum distance from market price for an offer to qualify, taken from Dexie's incentive config for this pair.</span></span></div>
                             <div id="intelDbxMaxSpread" style="font-size: 16px; font-weight: 600; color: rgba(255,255,255,0.6);">—</div>
+                        </div>
+                        <div>
+                            <div style="color: rgba(255,255,255,0.5); font-size: 11px;">Best Est. APR <span class="cc-help">?<span class="cc-tooltip">Dexie's own APR estimate for the more rewarding of the two sides. Real return depends on uptime, share of within-spread liquidity, and reward token price.</span></span></div>
+                            <div id="intelDbxApr" style="font-size: 16px; font-weight: 600; color: rgba(255,255,255,0.6);">—</div>
+                        </div>
+                    </div>
+                    <div id="intelDbxSides" style="display: none; grid-template-columns: 1fr 1fr; gap: 12px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.08);">
+                        <div id="intelDbxBuySide" style="background: rgba(255,255,255,0.02); border-radius: 6px; padding: 10px;">
+                            <div style="font-size: 11px; font-weight: 600; color: var(--status-success); margin-bottom: 6px;">Buy CAT (offer XCH)</div>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; font-size: 11px;">
+                                <div><span style="color: rgba(255,255,255,0.5);">Size range:</span> <span id="intelDbxBuyRange" style="color: rgba(255,255,255,0.85);">—</span></div>
+                                <div><span style="color: rgba(255,255,255,0.5);">Reward:</span> <span id="intelDbxBuyReward" style="color: rgba(255,255,255,0.85);">—</span></div>
+                                <div><span style="color: rgba(255,255,255,0.5);">APR:</span> <span id="intelDbxBuyApr" style="color: rgba(255,255,255,0.85);">—</span></div>
+                                <div><span style="color: rgba(255,255,255,0.5);">Pool depth:</span> <span id="intelDbxBuyDepth" style="color: rgba(255,255,255,0.85);">—</span></div>
+                            </div>
+                        </div>
+                        <div id="intelDbxSellSide" style="background: rgba(255,255,255,0.02); border-radius: 6px; padding: 10px;">
+                            <div style="font-size: 11px; font-weight: 600; color: var(--status-warning); margin-bottom: 6px;">Sell CAT (offer CAT)</div>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; font-size: 11px;">
+                                <div><span style="color: rgba(255,255,255,0.5);">Size range:</span> <span id="intelDbxSellRange" style="color: rgba(255,255,255,0.85);">—</span></div>
+                                <div><span style="color: rgba(255,255,255,0.5);">Reward:</span> <span id="intelDbxSellReward" style="color: rgba(255,255,255,0.85);">—</span></div>
+                                <div><span style="color: rgba(255,255,255,0.5);">APR:</span> <span id="intelDbxSellApr" style="color: rgba(255,255,255,0.85);">—</span></div>
+                                <div><span style="color: rgba(255,255,255,0.5);">Pool depth:</span> <span id="intelDbxSellDepth" style="color: rgba(255,255,255,0.85);">—</span></div>
+                            </div>
                         </div>
                     </div>
                     <div id="intelDbxContext" style="margin-top: 10px; color: rgba(255,255,255,0.58); font-size: 11px;">Waiting for Dexie rewards status...</div>
+
+                    <!-- Pending claimable rewards (populated from /api/dbx/pending) -->
+                    <div id="intelDbxPendingPanel" style="display: none; margin-top: 12px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.08);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                            <div style="font-size: 12px; font-weight: 600; color: rgba(255,255,255,0.85);">Pending Claims <span class="cc-help">?<span class="cc-tooltip">Rewards already accrued on your offers that haven't been claimed yet. Claiming signs a message with the maker address — no XCH leaves your wallet.</span></span></div>
+                            <button id="intelDbxClaimBtn" onclick="claimDbxRewards()" style="background: var(--accent-primary); color: white; border: none; border-radius: 4px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer;">Claim All</button>
+                        </div>
+                        <div id="intelDbxPendingTotal" style="font-size: 14px; color: rgba(255,255,255,0.85); margin-bottom: 4px;">—</div>
+                        <div id="intelDbxPendingDetail" style="font-size: 11px; color: rgba(255,255,255,0.55);"></div>
+                    </div>
                 </div>
 
                 <!-- V3: Splash P2P Network Stats -->
@@ -22271,6 +22305,154 @@
             return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         }
 
+        function renderDbxIntel(dbx) {
+            const el = id => document.getElementById(id);
+            if (!dbx) return;
+
+            const pairOn = dbx.pair_incentivized;
+            const buy = dbx.buy_incentive;
+            const sell = dbx.sell_incentive;
+
+            // Headline status
+            if (pairOn === true) {
+                el('intelDbxEligible').textContent = 'INCENTIVIZED';
+                el('intelDbxEligible').style.color = 'var(--status-success)';
+            } else if (pairOn === false) {
+                el('intelDbxEligible').textContent = 'Not eligible';
+                el('intelDbxEligible').style.color = 'var(--text-tertiary)';
+            } else {
+                el('intelDbxEligible').textContent = 'Unavailable';
+                el('intelDbxEligible').style.color = 'var(--text-tertiary)';
+            }
+
+            // Max spread (from API, falls back to live eligibility)
+            if (el('intelDbxMaxSpread')) {
+                const limit = parseFloat(dbx.max_spread_bps) || 0;
+                if (pairOn && limit > 0) {
+                    el('intelDbxMaxSpread').textContent = bps2pct(limit);
+                    el('intelDbxMaxSpread').style.color = 'var(--status-success)';
+                } else {
+                    el('intelDbxMaxSpread').textContent = 'N/A';
+                    el('intelDbxMaxSpread').style.color = 'var(--text-tertiary)';
+                }
+            }
+
+            // Best APR (max of buy/sell)
+            if (el('intelDbxApr')) {
+                const apr = parseFloat(dbx.estimated_apr) || 0;
+                if (pairOn && apr > 0) {
+                    el('intelDbxApr').textContent = (apr * 100).toFixed(1) + '%';
+                    el('intelDbxApr').style.color = 'var(--status-success)';
+                } else {
+                    el('intelDbxApr').textContent = 'N/A';
+                    el('intelDbxApr').style.color = 'var(--text-tertiary)';
+                }
+            }
+
+            // Per-direction sides
+            const sidesPanel = el('intelDbxSides');
+            if (sidesPanel) {
+                if (pairOn === true && (buy || sell)) {
+                    sidesPanel.style.display = 'grid';
+                    fillDbxSide('Buy', buy);
+                    fillDbxSide('Sell', sell);
+                } else {
+                    sidesPanel.style.display = 'none';
+                }
+            }
+
+            // Context line
+            if (el('intelDbxContext')) {
+                if (pairOn === true) {
+                    el('intelDbxContext').textContent =
+                        'Active in Dexie\'s incentive program. Keep offers within the size range and spread limit shown for each side to qualify.';
+                } else if (pairOn === false) {
+                    el('intelDbxContext').textContent = 'Dexie does not currently incentivize this pair.';
+                } else {
+                    el('intelDbxContext').textContent = 'Dexie incentive feed is unavailable.';
+                }
+            }
+        }
+
+        function fillDbxSide(side, info) {
+            const el = id => document.getElementById(id);
+            const prefix = 'intelDbx' + side;
+            const sideRow = el(prefix + 'Side');
+            if (!info) {
+                if (sideRow) sideRow.style.opacity = '0.4';
+                if (el(prefix + 'Range')) el(prefix + 'Range').textContent = 'Not active';
+                if (el(prefix + 'Reward')) el(prefix + 'Reward').textContent = '—';
+                if (el(prefix + 'Apr')) el(prefix + 'Apr').textContent = '—';
+                if (el(prefix + 'Depth')) el(prefix + 'Depth').textContent = '—';
+                return;
+            }
+            if (sideRow) sideRow.style.opacity = '1';
+            const fmt = n => Number(n).toLocaleString(undefined, { maximumFractionDigits: n < 1 ? 4 : 0 });
+            const min = parseFloat(info.range_min) || 0;
+            const max = parseFloat(info.range_max) || 0;
+            const unit = info.range_unit || '';
+            const reward = parseFloat(info.reward_amount_per_day) || 0;
+            const rewardCode = info.reward_token || 'DBX';
+            const apr = parseFloat(info.estimated_apr) || 0;
+            const depth = parseFloat(info.within_spread_liquidity) || 0;
+
+            if (el(prefix + 'Range')) el(prefix + 'Range').textContent = `${fmt(min)} – ${fmt(max)} ${unit}`;
+            if (el(prefix + 'Reward')) el(prefix + 'Reward').textContent = `${fmt(reward)} ${rewardCode}/day`;
+            if (el(prefix + 'Apr')) el(prefix + 'Apr').textContent = (apr * 100).toFixed(1) + '%';
+            if (el(prefix + 'Depth')) el(prefix + 'Depth').textContent = `${fmt(depth)} ${unit}`;
+        }
+
+        async function claimDbxRewards() {
+            const btn = document.getElementById('intelDbxClaimBtn');
+            if (btn) { btn.disabled = true; btn.textContent = 'Claiming...'; }
+            try {
+                const resp = await apiFetch('/api/dbx/claim', { method: 'POST', body: '{}' });
+                const data = await resp.json();
+                if (data.success) {
+                    if (typeof showToast === 'function') {
+                        showToast(`DBX claim submitted: ${data.claims_submitted} offer${data.claims_submitted === 1 ? '' : 's'}`, 'success');
+                    }
+                } else if (typeof showToast === 'function') {
+                    const msg = data.user_message || data.error || 'unknown error';
+                    showToast('Claim failed: ' + msg, 'error', 12000);
+                }
+            } catch (e) {
+                if (typeof showToast === 'function') showToast('Claim failed: ' + e.message, 'error');
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = 'Claim All'; }
+                fetchMarketIntel();
+            }
+        }
+
+        async function refreshDbxPending() {
+            try {
+                const resp = await apiFetch('/api/dbx/pending');
+                if (!resp.ok) return;
+                const data = await resp.json();
+                const panel = document.getElementById('intelDbxPendingPanel');
+                if (!panel) return;
+                const offers = data.offers || [];
+                if (!offers.length) {
+                    panel.style.display = 'none';
+                    return;
+                }
+                panel.style.display = 'block';
+                const totals = {};
+                offers.forEach(o => {
+                    (o.rewards || []).forEach(r => {
+                        const code = r.code || 'DBX';
+                        totals[code] = (totals[code] || 0) + (parseFloat(r.amount) || 0);
+                    });
+                });
+                const totalStr = Object.entries(totals)
+                    .map(([code, amt]) => `${amt.toFixed(3)} ${code}`)
+                    .join(' + ') || 'no rewards';
+                document.getElementById('intelDbxPendingTotal').textContent = totalStr;
+                document.getElementById('intelDbxPendingDetail').textContent =
+                    `${offers.length} offer${offers.length === 1 ? '' : 's'} with claimable rewards`;
+            } catch (_e) { /* non-fatal */ }
+        }
+
         function renderSplashIntel(data) {
             const el = id => document.getElementById(id);
             const splash = data && data.splash ? data.splash : null;
@@ -22533,38 +22715,7 @@
             }
 
             if (data.dbx) {
-                const pairOn = data.dbx.pair_incentivized;
-                if (pairOn === true) {
-                    el('intelDbxEligible').textContent = 'YES';
-                    el('intelDbxEligible').style.color = 'var(--status-success)';
-                    if (el('intelDbxMaxSpread')) {
-                        el('intelDbxMaxSpread').textContent = bps2pct(parseFloat(data.dbx.max_spread_bps) || 0);
-                        el('intelDbxMaxSpread').style.color = 'var(--status-success)';
-                    }
-                    if (el('intelDbxContext')) {
-                        el('intelDbxContext').textContent = 'Dexie marks this CAT/XCH pair as incentivized. Keep live spread inside the limit to stay reward-eligible.';
-                    }
-                } else if (pairOn === false) {
-                    el('intelDbxEligible').textContent = 'Not available';
-                    el('intelDbxEligible').style.color = 'var(--text-tertiary)';
-                    if (el('intelDbxMaxSpread')) {
-                        el('intelDbxMaxSpread').textContent = 'N/A';
-                        el('intelDbxMaxSpread').style.color = 'var(--text-tertiary)';
-                    }
-                    if (el('intelDbxContext')) {
-                        el('intelDbxContext').textContent = 'Dexie does not offer DBX rewards for this token.';
-                    }
-                } else {
-                    el('intelDbxEligible').textContent = 'Not available';
-                    el('intelDbxEligible').style.color = 'var(--text-tertiary)';
-                    if (el('intelDbxMaxSpread')) {
-                        el('intelDbxMaxSpread').textContent = 'N/A';
-                        el('intelDbxMaxSpread').style.color = 'var(--text-tertiary)';
-                    }
-                    if (el('intelDbxContext')) {
-                        el('intelDbxContext').textContent = 'Dexie rewards status is unavailable for this token.';
-                    }
-                }
+                renderDbxIntel(data.dbx);
             }
 
             renderSplashIntel(data);
@@ -22585,7 +22736,10 @@
                 'intelHolderCount', 'intelActivityLevel', 'intelRiskLevel',
                 'intelSpacescanGap',
                 'intelBuyDepth', 'intelSellDepth', 'intelBuyCount', 'intelSellCount',
-                'intelDbxEligible', 'intelDbxMaxSpread',
+                'intelDbxEligible', 'intelDbxMaxSpread', 'intelDbxApr',
+                'intelDbxBuyRange', 'intelDbxBuyReward', 'intelDbxBuyApr', 'intelDbxBuyDepth',
+                'intelDbxSellRange', 'intelDbxSellReward', 'intelDbxSellApr', 'intelDbxSellDepth',
+                'intelDbxPendingTotal', 'intelDbxPendingDetail',
                 'intelSlippage', 'intelPoolRatio',
             ];
             scalarIds.forEach(id => {
@@ -22595,6 +22749,10 @@
                     node.style.color = 'rgba(255,255,255,0.35)';
                 }
             });
+            const sidesPanel = el('intelDbxSides');
+            if (sidesPanel) sidesPanel.style.display = 'none';
+            const pendingPanel = el('intelDbxPendingPanel');
+            if (pendingPanel) pendingPanel.style.display = 'none';
 
             // Context strings
             const contextIds = [
@@ -22634,6 +22792,9 @@
                     renderMarketIntel(data);
                 })
                 .catch(() => {});
+
+            // Pending claimable rewards (rendered inside the DBX panel)
+            refreshDbxPending();
 
             // Also fetch slippage data
             apiFetch('/api/market/slippage?amount=0.01&side=buy')

@@ -2043,6 +2043,53 @@ def _validate_address_for_active_network(address: str, *, context: str) -> Optio
     return address
 
 
+def sign_message_by_address(address: str, message: str) -> dict:
+    """Sign a message with the key associated with ``address`` via Sage RPC.
+
+    Used by the Dexie liquidity-rewards claim flow: each claim signs the
+    message ``"Claim dexie liquidity rewards for offer <id> (<ts>)"`` with
+    the offer's maker address, proving wallet ownership without spending
+    any coins.
+
+    Returns ``{"success": True, "public_key": str, "signature": str}`` on
+    success, or ``{"success": False, "error": str}`` on failure. Signing
+    is blocked on watch-only wallets via ``_require_signing_capability``.
+    """
+    if not _require_signing_capability():
+        return {"success": False, "error": "wallet_watch_only"}
+
+    addr = _validate_address_for_active_network(address, context="sign_message_by_address")
+    if not addr:
+        return {"success": False, "error": "invalid_address"}
+    if not isinstance(message, str) or not message:
+        return {"success": False, "error": "invalid_message"}
+
+    try:
+        result = rpc("sign_message_by_address", {
+            "address": addr,
+            "message": message,
+        }, timeout=15)
+    except Exception as e:
+        return {"success": False, "error": f"rpc_exception: {e}"}
+
+    if not _rpc_succeeded(result):
+        err = (result or {}).get("error", "rpc_failed") if isinstance(result, dict) else "rpc_failed"
+        # Sage's standalone RPC server (sage-rpc) does not register
+        # sign_message_by_address — only the Tauri desktop app exposes it
+        # via WalletConnect. Surface a specific error so the GUI can show
+        # a useful message instead of a generic 404 / rpc_failed.
+        err_str = str(err).lower()
+        if "404" in err_str or "not found" in err_str or "unknown" in err_str:
+            return {"success": False, "error": "signing_not_supported_by_sage_rpc"}
+        return {"success": False, "error": str(err)}
+
+    sig = result.get("signature") or ""
+    pk = result.get("public_key") or ""
+    if not sig or not pk:
+        return {"success": False, "error": "missing_signature_or_public_key"}
+    return {"success": True, "public_key": pk, "signature": sig}
+
+
 def set_change_address(change_address: str, fingerprint: int = None) -> dict:
     """Set Sage's persistent change address for the active fingerprint."""
     address = _validate_address_for_active_network(

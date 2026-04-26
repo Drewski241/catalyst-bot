@@ -94,6 +94,9 @@ if WALLET_TYPE == "chia":
     def get_owned_coins_detailed(wallet_id: int):
         """Chia backend compatibility stub for Sage-only detailed owned coins."""
         return None
+    def sign_message_by_address(address: str, message: str) -> dict:
+        """Chia backend stub — message signing for Dexie claims is Sage-only."""
+        return {"success": False, "error": "claim_unsupported_on_chia_backend"}
     # Chia's spendable RPC is already the exact selectable view.
     get_exact_spendable_coins_rpc = get_spendable_coins_rpc
 else:
@@ -171,6 +174,8 @@ else:
         # Sage-specific: offer cleanup (delete from Sage's local DB)
         delete_offer as sage_delete_offer,
         delete_offers_batch as sage_delete_offers_batch,
+        # Sage-specific: message signing for Dexie liquidity-rewards claims
+        sign_message_by_address,
     )
 
 

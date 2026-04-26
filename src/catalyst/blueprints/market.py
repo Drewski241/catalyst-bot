@@ -34,50 +34,42 @@ except Exception:
 bp = Blueprint("market", __name__)
 
 
-# Module-level cache for /api/market/intel & /api/market/dbx
-_dbx_pair_cache: dict = {}
-
-
 def _fetch_dbx_pair_status(asset_id: str, ticker_id: str) -> dict:
-    """Fetch Dexie pair-level rewards status with a short TTL cache."""
-    cache_key = ((asset_id or "").lower(), (ticker_id or "").upper())
-    now = time.time()
-    cached = _dbx_pair_cache.get(cache_key)
-    if cached and (now - cached.get("ts", 0)) < 300:
-        return dict(cached.get("data") or {})
+    """Fetch Dexie pair-level rewards status from /v1/incentives.
 
-    result = {
+    The previous implementation looked for an ``incentives`` field on the
+    ticker response that doesn't exist there, so it always returned None.
+    The authoritative source is /v1/incentives, which dexie_incentives.py
+    wraps with a 5-minute cache.
+
+    Returns the projected per-direction shape used by the GUI Market Intel
+    panel and Smart Settings.
+    """
+    result: dict = {
         "pair_incentivized": None,
         "pair_source": "",
+        "buy": None,
+        "sell": None,
     }
-    if not asset_id and not ticker_id:
+    if not asset_id:
         return result
 
     try:
-        import requests as _req
-
-        dexie_base = getattr(cfg, "DEXIE_API_BASE", "https://api.dexie.space").rstrip("/")
-        tid = ticker_id or ""
-        if tid and "_" not in tid:
-            tid = f"{tid}_XCH"
-
-        if tid:
-            resp = _req.get(
-                f"{dexie_base}/v2/prices/tickers",
-                params={"ticker_id": tid},
-                timeout=8,
-            )
-            if resp.status_code == 200:
-                tickers = resp.json().get("tickers", [])
-                if tickers:
-                    ticker = tickers[0]
-                    if "incentives" in ticker:
-                        result["pair_incentivized"] = bool(ticker.get("incentives"))
-                        result["pair_source"] = "dexie_ticker"
+        from dexie_incentives import fetch_incentives, get_pair_incentives
+        bulk = fetch_incentives()
+        # If the upstream call genuinely failed (no incentives at all and
+        # success=False) we keep pair_incentivized as None so the GUI can
+        # render "unavailable" instead of falsely claiming "not incentivized".
+        if not bulk.get("success") and not bulk.get("incentives"):
+            result["pair_source"] = "unavailable"
+            return result
+        pair = get_pair_incentives(asset_id)
+        result["pair_incentivized"] = bool(pair.get("incentivized"))
+        result["pair_source"] = "dexie_incentives_api"
+        result["buy"] = pair.get("buy")
+        result["sell"] = pair.get("sell")
     except Exception:
-        pass
-
-    _dbx_pair_cache[cache_key] = {"ts": now, "data": dict(result)}
+        result["pair_source"] = "unavailable"
     return result
 
 
@@ -163,13 +155,22 @@ def api_market_intel():
         if live_dbx:
             dbx["eligible"] = bool(live_dbx.get("eligible_offers", 0))
             dbx["eligible_offers"] = live_dbx.get("eligible_offers", 0)
+            dbx["eligible_buy"] = bool(live_dbx.get("eligible_buy", False))
+            dbx["eligible_sell"] = bool(live_dbx.get("eligible_sell", False))
             dbx["max_spread_bps"] = str(
                 live_dbx.get("max_eligible_spread", dbx.get("max_spread_bps", "0"))
             )
-            dbx["estimated_rate"] = str(
-                live_dbx.get("estimated_dbx_rate", dbx.get("estimated_rate", "0"))
+            dbx["estimated_apr"] = str(
+                live_dbx.get("estimated_dbx_rate", dbx.get("estimated_apr", "0"))
             )
+            dbx["buy_incentive"] = live_dbx.get("buy_incentive")
+            dbx["sell_incentive"] = live_dbx.get("sell_incentive")
+            dbx["pair_incentivized"] = live_dbx.get("pair_incentivized")
         dbx["spread_eligible"] = bool(dbx.get("eligible"))
+        # Refresh pair_incentivized + per-direction details from the live
+        # /v1/incentives cache. check_dbx_eligibility is TTL-gated (5 min)
+        # so this fills in current data even when the eligibility check
+        # itself was skipped this cycle.
         dbx.update(_fetch_dbx_pair_status(asset_id, ticker_id))
         summary["dbx"] = dbx
 
@@ -201,6 +202,42 @@ def api_market_intel():
         pass
 
     return jsonify(api_server._serialize_dict(summary))
+
+
+@bp.route("/api/dbx/pending")
+def api_dbx_pending():
+    """List the user's offers that currently have claimable Dexie rewards."""
+    try:
+        from dexie_claims import list_pending_rewards
+        return jsonify(list_pending_rewards())
+    except Exception as e:
+        log_event("error", "dbx_claim", f"pending lookup failed: {e}")
+        return jsonify({"success": False, "error": str(e), "offers": [], "totals": {}})
+
+
+@bp.route("/api/dbx/claim", methods=["POST"])
+def api_dbx_claim():
+    """Sign and submit claims for all pending Dexie rewards.
+
+    Optional JSON body: ``{"target_address": "xch1..."}`` to redirect rewards
+    to a different address. No XCH leaves the wallet — only a signed
+    message is sent to Dexie.
+    """
+    payload = request.get_json(silent=True) or {}
+    target = (payload.get("target_address") or "").strip() or None
+    try:
+        from dexie_claims import claim_all
+        result = claim_all(target_address=target)
+    except Exception as e:
+        log_event("error", "dbx_claim", f"claim failed: {e}")
+        return jsonify({"success": False, "error": str(e)})
+    log_event(
+        "success" if result.get("success") else "warning",
+        "dbx_claim",
+        f"claim attempt: submitted={result.get('claims_submitted', 0)} "
+        f"success={result.get('success')}",
+    )
+    return jsonify(result)
 
 
 @bp.route("/api/market/orderbook")

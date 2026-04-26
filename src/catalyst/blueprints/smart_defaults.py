@@ -28,6 +28,43 @@ except Exception:
 bp = Blueprint("smart_defaults", __name__)
 
 
+def _smart_dbx_defaults(asset_id: str) -> dict:
+    """Pull DBX-related defaults from Dexie's live incentives feed.
+
+    Returns the keys Smart Settings emits for the Market Intelligence
+    section, populated from /v1/incentives when available, falling back
+    to safe values when the API is unreachable. The tightest applicable
+    spread cap is used so the bot stays inside both sides' qualifying
+    range when only one side is set lower.
+    """
+    out: dict = {
+        "dbx_max_spread_bps": 500,   # 5% — sane fallback if API is down
+        "pair_incentivized": None,
+        "dbx_buy_incentive": None,
+        "dbx_sell_incentive": None,
+    }
+    if not asset_id:
+        return out
+    try:
+        from dexie_incentives import fetch_incentives, get_pair_incentives
+        bulk = fetch_incentives()
+        if not bulk.get("success") and not bulk.get("incentives"):
+            return out  # API unreachable — keep pair_incentivized=None
+        pair = get_pair_incentives(asset_id)
+        out["pair_incentivized"] = bool(pair.get("incentivized"))
+        out["dbx_buy_incentive"] = pair.get("buy")
+        out["dbx_sell_incentive"] = pair.get("sell")
+        if pair.get("incentivized"):
+            caps = [int(s.get("max_spread_bps") or 0)
+                    for s in (pair.get("buy"), pair.get("sell"))
+                    if s and (s.get("max_spread_bps") or 0) > 0]
+            if caps:
+                out["dbx_max_spread_bps"] = min(caps)
+    except Exception:
+        pass
+    return out
+
+
 def _fetch_price_standalone(asset_id, decimals):
     """Lightweight price fetch when bot isn't running.
 
@@ -2868,10 +2905,12 @@ def _calculate_smart_defaults(xch_reserve=0.0, cat_reserve=0.0, risk_profile="ba
         "min_mid": min_mid,
         "max_mid": max_mid,
 
-        # Market Intelligence
+        # Market Intelligence — pulled from Dexie's live /v1/incentives feed
+        # so the spread cap and pair_incentivized flag reflect what Dexie
+        # actually publishes today, not the (broken) ticker-field check or a
+        # hard-coded 5%.
         "competitor_aware_enabled": competitor_enabled,
-        "dbx_max_spread_bps": 500,  # 5.0% in bps
-        "pair_incentivized": bool(ticker.get("incentives")) if ticker else None,
+        **_smart_dbx_defaults(asset_id),
 
         # Coin Prep (all market-derived)
         "coin_prep_multiplier": coin_prep_multiplier,

@@ -477,12 +477,17 @@ class MarketIntel:
 
     def check_dbx_eligibility(self, our_spread_bps: Decimal,
                                 mid_price: Decimal) -> Dict:
-        """Check if our offers qualify for Dexie's DBX liquidity rewards.
+        """Check whether our offers qualify for Dexie's DBX liquidity rewards.
 
-        Dexie's DBX program rewards market makers who provide liquidity
-        within a certain spread of the mid price. Tighter spreads earn more.
+        Pulls per-direction parameters from /v1/incentives (cached) so the
+        max spread, offer-size range, and APR all match what Dexie publishes
+        for this specific pair — not the global config fallback the previous
+        version used.
 
-        Returns eligibility info.
+        ``our_spread_bps`` is the average half-spread in basis points; we
+        compare it against the Dexie max for each side independently. The
+        size-range check is informational here (the GUI renders the live
+        ranges so the user can size offers accordingly).
         """
         now = time.time()
         if now - self._dbx["last_check"] < self._dbx_check_interval:
@@ -490,25 +495,50 @@ class MarketIntel:
 
         self._dbx["last_check"] = now
 
-        # DBX eligibility rules (based on Dexie documentation):
-        # - Offers must be within the eligible spread (typically 2-5% depending on pair)
-        # - Both buy and sell offers needed (two-sided market making)
-        # - Larger size = more rewards
-        # - Tighter spread = more rewards
+        asset_id = (cfg.CAT_ASSET_ID if hasattr(cfg, "CAT_ASSET_ID") else "") or ""
+        buy_inc = None
+        sell_inc = None
+        try:
+            from dexie_incentives import get_pair_incentives
+            pair = get_pair_incentives(asset_id)
+            buy_inc = pair.get("buy")
+            sell_inc = pair.get("sell")
+        except Exception:
+            pair = {"incentivized": False}
 
-        # Estimate the max eligible spread (Dexie typically uses ~500 BPS for small caps)
-        max_eligible = getattr(cfg, "DBX_MAX_SPREAD_BPS", Decimal("500"))
-        self._dbx["max_eligible_spread"] = max_eligible
+        def _eligible(side: Optional[Dict]) -> bool:
+            if not side:
+                return False
+            limit = Decimal(str(side.get("max_spread_bps") or 0))
+            return limit > 0 and our_spread_bps <= limit
 
-        if our_spread_bps <= max_eligible:
-            self._dbx["eligible_offers"] = 1  # Simplified — we're eligible
-            # Estimated reward rate scales inversely with spread
-            if max_eligible > 0:
-                efficiency = (max_eligible - our_spread_bps) / max_eligible
-                self._dbx["estimated_dbx_rate"] = max(Decimal("0"), efficiency * Decimal("10"))
+        eligible_buy = _eligible(buy_inc)
+        eligible_sell = _eligible(sell_inc)
+        eligible_count = int(eligible_buy) + int(eligible_sell)
+
+        # Tightest applicable spread cap (used by GUI fallback indicator).
+        live_caps = [Decimal(str(s.get("max_spread_bps")))
+                     for s in (buy_inc, sell_inc) if s]
+        if live_caps:
+            max_eligible = min(live_caps)
         else:
-            self._dbx["eligible_offers"] = 0
-            self._dbx["estimated_dbx_rate"] = Decimal("0")
+            max_eligible = Decimal(str(getattr(cfg, "DBX_MAX_SPREAD_BPS", 500)))
+
+        # APR is per-side — surface the higher of the two so the user sees
+        # the upside. Dexie's own API does the heavy lifting here, so we
+        # don't need a synthetic formula any more.
+        apr_candidates = [Decimal(str(s.get("estimated_apr") or 0))
+                          for s in (buy_inc, sell_inc) if s]
+        best_apr = max(apr_candidates) if apr_candidates else Decimal("0")
+
+        self._dbx["max_eligible_spread"] = max_eligible
+        self._dbx["eligible_offers"] = eligible_count
+        self._dbx["estimated_dbx_rate"] = best_apr  # now an APR fraction, not a synthetic rate
+        self._dbx["pair_incentivized"] = bool(pair.get("incentivized"))
+        self._dbx["buy_incentive"] = buy_inc
+        self._dbx["sell_incentive"] = sell_inc
+        self._dbx["eligible_buy"] = eligible_buy
+        self._dbx["eligible_sell"] = eligible_sell
 
         return dict(self._dbx)
 
@@ -540,11 +570,17 @@ class MarketIntel:
         serialized["orderbook_refreshes"] = self._orderbook.get("refresh_count", 0)
         serialized["orderbook_errors"] = self._orderbook.get("errors", 0)
 
-        # Add DBX info
+        # Add DBX info — per-direction details come from /v1/incentives
         serialized["dbx"] = {
             "eligible": self._dbx.get("eligible_offers", 0) > 0,
+            "eligible_offers": self._dbx.get("eligible_offers", 0),
+            "eligible_buy": bool(self._dbx.get("eligible_buy", False)),
+            "eligible_sell": bool(self._dbx.get("eligible_sell", False)),
             "max_spread_bps": str(self._dbx.get("max_eligible_spread", "0")),
-            "estimated_rate": str(self._dbx.get("estimated_dbx_rate", "0")),
+            "estimated_apr": str(self._dbx.get("estimated_dbx_rate", "0")),
+            "pair_incentivized": self._dbx.get("pair_incentivized"),
+            "buy_incentive": self._dbx.get("buy_incentive"),
+            "sell_incentive": self._dbx.get("sell_incentive"),
         }
 
         return serialized

@@ -353,23 +353,65 @@ class TestGetSpreadRecommendation(_MI):
 # ===========================================================================
 
 class TestCheckDbxEligibility(_MI):
+    """Eligibility now reads per-pair limits from /v1/incentives (cached).
+
+    The tests stub ``dexie_incentives.get_pair_incentives`` so they don't
+    hit the network — eligibility flips on whether the stub reports the
+    pair as incentivized AND whether the spread is within the live cap.
+    """
+
+    _FAKE_PAIR = {
+        "incentivized": True,
+        "buy": {
+            "range_min": 0.1, "range_max": 20.0, "range_unit": "XCH",
+            "max_spread_bps": 500, "max_spread_pct": 0.05,
+            "reward_token": "DBX", "reward_amount_per_day": 100.0,
+            "estimated_apr": 0.5, "within_spread_liquidity": 350.0,
+            "market_price": 0.0001,
+        },
+        "sell": {
+            "range_min": 10000.0, "range_max": 1000000.0, "range_unit": "CAT",
+            "max_spread_bps": 500, "max_spread_pct": 0.05,
+            "reward_token": "DBX", "reward_amount_per_day": 100.0,
+            "estimated_apr": 0.4, "within_spread_liquidity": 4000000.0,
+            "market_price": 0.0001,
+        },
+    }
+    _UN_PAIR = {"incentivized": False, "buy": None, "sell": None}
+
+    def _patch_pair(self, pair):
+        import dexie_incentives
+        return patch.object(dexie_incentives, "get_pair_incentives",
+                             return_value=pair)
+
     def test_spread_within_limit_is_eligible(self):
         self._mi._dbx["last_check"] = 0
-        result = self._mi.check_dbx_eligibility(Decimal("200"), Decimal("0.010"))
-        self.assertEqual(result["eligible_offers"], 1)
+        with self._patch_pair(self._FAKE_PAIR):
+            result = self._mi.check_dbx_eligibility(Decimal("200"), Decimal("0.010"))
+        # Both buy and sell sides qualify at 200 bps (cap is 500)
+        self.assertEqual(result["eligible_offers"], 2)
         self.assertGreater(result["estimated_dbx_rate"], Decimal("0"))
 
     def test_spread_exceeds_limit_is_ineligible(self):
         self._mi._dbx["last_check"] = 0
-        result = self._mi.check_dbx_eligibility(Decimal("600"), Decimal("0.010"))
+        with self._patch_pair(self._FAKE_PAIR):
+            result = self._mi.check_dbx_eligibility(Decimal("600"), Decimal("0.010"))
         self.assertEqual(result["eligible_offers"], 0)
-        self.assertEqual(result["estimated_dbx_rate"], Decimal("0"))
+
+    def test_pair_not_incentivized(self):
+        self._mi._dbx["last_check"] = 0
+        with self._patch_pair(self._UN_PAIR):
+            result = self._mi.check_dbx_eligibility(Decimal("200"), Decimal("0.010"))
+        self.assertEqual(result["eligible_offers"], 0)
+        self.assertFalse(result["pair_incentivized"])
 
     def test_second_call_within_interval_returns_cached(self):
         self._mi._dbx["last_check"] = 0
-        r1 = self._mi.check_dbx_eligibility(Decimal("200"), Decimal("0.010"))
-        # Within cooldown — wider spread should NOT change result
-        r2 = self._mi.check_dbx_eligibility(Decimal("600"), Decimal("0.010"))
+        with self._patch_pair(self._FAKE_PAIR):
+            r1 = self._mi.check_dbx_eligibility(Decimal("200"), Decimal("0.010"))
+        with self._patch_pair(self._UN_PAIR):
+            # Within cooldown — even a different pair stub should NOT flip the result
+            r2 = self._mi.check_dbx_eligibility(Decimal("600"), Decimal("0.010"))
         self.assertEqual(r2["eligible_offers"], r1["eligible_offers"])
 
 
