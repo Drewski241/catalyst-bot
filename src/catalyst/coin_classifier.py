@@ -263,6 +263,23 @@ def classify_coin(
             if best_fit is None:
                 best_tier = tier_name
                 best_fit = CoinFit.OVERSIZE_FIT
+            elif best_fit == CoinFit.OVERSIZE_FIT:
+                # Among multiple OVERSIZE_FIT candidates, prefer the
+                # LARGEST tier (closest target to the coin amount).
+                # Without this, a coin sized at the prep-time price
+                # cascades DOWN one tier on every small live-price
+                # shift: intended-mid coin overflows mid's EXACT range,
+                # outer is checked first (smallest-first walk) and wins
+                # OVERSIZE_FIT, mid is reached but ignored (best_fit
+                # already set). The drift check then compares the
+                # intended-mid coin to outer's smaller target and
+                # produces a phantom 1.37x ratio. Picking the LARGEST
+                # OVERSIZE_FIT tier keeps the coin paired with the
+                # tier whose offer size is closest to its actual
+                # amount, so the drift signal stays clean across
+                # routine price ticks. tiers_sorted is smallest-first,
+                # so a later iteration is always larger — replace.
+                best_tier = tier_name
             # Don't upgrade from EXACT to OVERSIZE_FIT; keep the EXACT match.
         else:
             candidates[tier_name] = CoinFit.OVER_CEILING

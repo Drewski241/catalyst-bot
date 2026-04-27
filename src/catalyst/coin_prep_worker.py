@@ -5703,10 +5703,41 @@ class CoinPrepWorker:
             # the post-prep pool coins as fresh external deposits and asks
             # the operator to allocate them, even though they were already
             # accounted for in the prep plan.
+            #
+            # We dedup TWO ways so suppression survives common post-prep
+            # mutations:
+            #
+            #   1. by coin_id — fast O(1) lookup for the unchanged case
+            #   2. by post-prep reserve TOTAL amount — survives coin_id
+            #      changes from later fee-change merges, topup splits,
+            #      and full DB resets (which wipe the coin_id list but
+            #      not the saved totals if the user backs them up). The
+            #      advisory uses the recorded total to lift its threshold
+            #      so the prep-leftover coin is never alerted on, even
+            #      under XCH_RESERVE=0 where the configured-reserve
+            #      threshold offers no protection.
             try:
+                from database import set_setting as _set_setting
                 for _wtype in ("xch", "cat"):
-                    for _rc in (get_reserve_coins(_wtype) or []):
+                    _coins = get_reserve_coins(_wtype) or []
+                    _total_mojos = 0
+                    for _rc in _coins:
                         _mark_coin_already_advised(_rc.get("coin_id") or "")
+                        try:
+                            _total_mojos += int(_rc.get("amount_mojos") or 0)
+                        except Exception:
+                            pass
+                    # Record the post-prep reserve total in mojos so the
+                    # advisor can recognise prep's intentional leftover
+                    # by amount even after the coin_id has changed or
+                    # the dedup list has been wiped by a DB reset.
+                    try:
+                        _set_setting(
+                            f"last_prep_reserve_total_mojos_{_wtype}",
+                            str(int(_total_mojos)),
+                        )
+                    except Exception:
+                        pass
             except Exception as _e:
                 self.log(f"   DB: deposit-advisory backfill skipped: {_e}")
 

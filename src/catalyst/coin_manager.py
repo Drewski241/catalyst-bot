@@ -641,10 +641,18 @@ def get_tier_sizes_mojos_from_cfg(is_cat: bool = False) -> Dict[str, int]:
     if is_cat:
         # Need a price to convert XCH-denominated tier sizes to CAT mojos.
         # Priority:
-        #   1. bot.price_engine cached last_price (live weighted Tibet+Dexie mid).
-        #   2. bot._bot_state["mid_price"] (last published by cycle).
-        #   3. Fresh price_engine.get_price() call (computes weighted mid).
-        #   4. 0.0001 placeholder as an absolute last resort.
+        #   1. _CLI_LIVE_PRICE env var (set by api_server when launching the
+        #      coin_prep_worker subprocess via --live-price). This is the
+        #      authoritative source inside the prep subprocess, where
+        #      api_server.bot is None and the price-engine path below
+        #      always falls through to the 0.0001 placeholder. Without
+        #      this branch, the post-prep drift verification produces a
+        #      false-positive `tier_size_post_prep_drift` ERROR every run
+        #      (CAT side ratio = 0.0001 / live_price ≈ 0.5×).
+        #   2. bot.price_engine cached last_price (live weighted Tibet+Dexie mid).
+        #   3. bot._bot_state["mid_price"] (last published by cycle).
+        #   4. Fresh price_engine.get_price() call (computes weighted mid).
+        #   5. 0.0001 placeholder as an absolute last resort.
         # The old implementation looked for `api_server.bot_state` as a
         # MODULE-level attribute, which never existed (the real attribute
         # lives on the BotLoop INSTANCE as `bot._bot_state`). Every lookup
@@ -652,42 +660,55 @@ def get_tier_sizes_mojos_from_cfg(is_cat: bool = False) -> Dict[str, int]:
         # F70 to reject legitimate extreme-sized CAT coins as misfits.
         price = None
         try:
-            import api_server as _api
-            _bot = getattr(_api, "bot", None)
-            if _bot is not None:
-                pe = getattr(_bot, "price_engine", None)
-                if pe is not None:
-                    try:
-                        last = pe.get_last_price()
-                        if last and last > 0:
-                            price = Decimal(str(last))
-                    except Exception:
-                        pass
-                if price is None or price <= 0:
-                    bs = getattr(_bot, "_bot_state", None) or {}
-                    mid = bs.get("mid_price")
-                    if mid:
+            import os as _os
+            _cli_price = (_os.getenv("_CLI_LIVE_PRICE") or "").strip()
+            if _cli_price:
+                try:
+                    p = Decimal(_cli_price)
+                    if p > 0:
+                        price = p
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        if price is None or price <= 0:
+            try:
+                import api_server as _api
+                _bot = getattr(_api, "bot", None)
+                if _bot is not None:
+                    pe = getattr(_bot, "price_engine", None)
+                    if pe is not None:
                         try:
-                            price = Decimal(str(mid))
-                            if price <= 0:
+                            last = pe.get_last_price()
+                            if last and last > 0:
+                                price = Decimal(str(last))
+                        except Exception:
+                            pass
+                    if price is None or price <= 0:
+                        bs = getattr(_bot, "_bot_state", None) or {}
+                        mid = bs.get("mid_price")
+                        if mid:
+                            try:
+                                price = Decimal(str(mid))
+                                if price <= 0:
+                                    price = None
+                            except Exception:
                                 price = None
+                    if (price is None or price <= 0) and pe is not None:
+                        try:
+                            fresh = pe.get_price()
+                            if isinstance(fresh, dict):
+                                p = fresh.get("mid_price") or fresh.get("mid") or fresh.get("price")
+                            else:
+                                p = fresh
+                            if p:
+                                price = Decimal(str(p))
+                                if price <= 0:
+                                    price = None
                         except Exception:
                             price = None
-                if (price is None or price <= 0) and pe is not None:
-                    try:
-                        fresh = pe.get_price()
-                        if isinstance(fresh, dict):
-                            p = fresh.get("mid_price") or fresh.get("mid") or fresh.get("price")
-                        else:
-                            p = fresh
-                        if p:
-                            price = Decimal(str(p))
-                            if price <= 0:
-                                price = None
-                    except Exception:
-                        price = None
-        except Exception:
-            price = None
+            except Exception:
+                price = None
         if price is None or price <= 0:
             # Last-resort placeholder. Only happens before the bot is wired
             # up or when the price engine is completely unavailable. Note:
@@ -3541,9 +3562,29 @@ class CoinManager:
         Includes active reservation totals as informational fields so callers
         and the GUI can see how much capacity is currently reserved by
         in-flight offer creation attempts across threads.
+
+        Wallet-type guard: under Sage, ``self._xch_coins`` is already the
+        count of UNLOCKED coins — Sage's owned-coin snapshot puts coins
+        with an ``offer_id`` into a separate ``locked_ids`` set, and
+        ``selectable_records`` (the source of ``self._xch_coins``)
+        excludes them. Subtracting ``active_buy_count`` then double-counts
+        the lock and produces ``free_xch = 0`` whenever the bot has more
+        active offers than spare coins — exactly the steady state of a
+        live ladder. That triggers a false-positive "Coin headroom is low"
+        alert in runtime_monitor every cycle. Detect that condition
+        (active count > spendable count is only possible when spendable
+        already excluded the locks) and skip the subtraction. The legacy
+        chia-full-wallet path, where spendable did include offer-locked
+        coins, still uses the subtraction.
         """
-        free_xch = max(0, self._xch_coins - active_buy_count)
-        free_cat = max(0, self._cat_coins - active_sell_count)
+        if active_buy_count > self._xch_coins:
+            free_xch = self._xch_coins
+        else:
+            free_xch = max(0, self._xch_coins - active_buy_count)
+        if active_sell_count > self._cat_coins:
+            free_cat = self._cat_coins
+        else:
+            free_cat = max(0, self._cat_coins - active_sell_count)
 
         # Fetch active reservation totals (mojos held by in-flight creates).
         # Fail-open: reservation data is additive, not critical path.

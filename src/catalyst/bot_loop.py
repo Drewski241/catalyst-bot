@@ -2133,7 +2133,27 @@ class BotLoop:
         ladder runs short. Detection only — surfaces a persistent banner
         and a log line. The fix is "re-run Smart Settings", which the user
         triggers from the alert.
+
+        Self-healing: every run, reclassify tier_spare coins against the
+        CURRENT cfg before measuring. Without this, a coin labeled
+        "tier_spare/inner" by a previous prep against an OLDER tier-size
+        config keeps that label even after Smart Settings has rewritten the
+        tier sizes — and the median of stale-labeled coins drifts against
+        the new target by exactly the cfg delta, firing a false positive
+        on the very first cycle after a clean prep + Smart Settings re-run.
+        Reclassification re-stamps the coin against the current cfg so the
+        drift measurement reflects only coins that genuinely belong to that
+        tier under the live targets. Genuine drift (coin sizes don't fit
+        any tier) still surfaces as findings.
         """
+        try:
+            from coin_manager import reclassify_tier_spare_coins
+            reclassify_tier_spare_coins()
+        except Exception as _reclass_err:
+            log_event("debug", "tier_size_drift_reclassify_failed",
+                      f"Pre-drift reclassification failed (non-fatal): "
+                      f"{_reclass_err}")
+
         try:
             findings = self.coin_manager.check_tier_size_drift()
         except Exception as _err:

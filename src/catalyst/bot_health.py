@@ -1567,6 +1567,111 @@ def check_unclaimed_deposits(auto_repair: bool = True) -> HealthCheck:
     advised = _advised_deposits()
     live_alert_ids = set()
 
+    # Post-prep race recovery. The coin_prep_worker's backfill records
+    # reserve coin_ids and per-side reserve totals at the end of prep, but
+    # the post-merge consolidation TX (`_merge_xch_fee_change_into_reserve`)
+    # can confirm faster than the wallet RPC's snapshot updates. When that
+    # happens, prep's final sweep doesn't see the merged reserve coin and
+    # neither the advised-coin list nor the per-side baseline records it.
+    # The bot's startup reconciliation tags the now-visible coin as
+    # 'reserve', the advisory runs on its first cycle, and fires a false
+    # alert because nothing on disk recognises the post-merge id.
+    #
+    # Self-heal: if `coin_prep_last.json` was written within the last
+    # 30 min AND the current reserve coin set differs from what's
+    # advised/baselined, treat the current reserve coins as the
+    # post-prep state and write them in. This protects against the race
+    # without over-suppressing — once the 30 min window expires, any new
+    # reserve coin is treated as a genuine deposit.
+    # Cap how many "unaccounted" reserve coins per side qualify as a
+    # post-prep race. Prep typically leaves 1 reserve coin per side; a
+    # post-merge confirm lag could produce 1-2 unaccounted coins. Anything
+    # beyond that is more likely a genuine deposit flood and should NOT be
+    # silently suppressed — the per-pass alert cap further down handles
+    # that case correctly.
+    _RACE_MAX_UNACCOUNTED_PER_SIDE = 2
+    try:
+        import os as _os
+        from user_paths import data_dir as _dd
+        from database import get_reserve_coins, set_setting, get_setting as _gs
+        _prep_json = _os.path.join(_dd(), "coin_prep_last.json")
+        # Recovery only fires when there's evidence the prep race actually
+        # occurred for THIS side: the per-side baseline key must exist AND
+        # be recorded as "0". A missing key means no prep ran (e.g. unit
+        # tests, fresh install) — those scenarios must alert normally.
+        _file_recent = False
+        if _os.path.isfile(_prep_json):
+            _mtime = _os.path.getmtime(_prep_json)
+            _RECENT_PREP_WINDOW_SECS = 30 * 60  # 30 min
+            _file_recent = (now_ts - _mtime) < _RECENT_PREP_WINDOW_SECS
+        if _file_recent:
+            _additions = []
+            for _wt in ("xch", "cat"):
+                # Race signature check: the prep worker writes the recorded
+                # total at the very end of prep. If the merge confirm
+                # lagged the wallet snapshot, sweep saw zero reserve coins
+                # and recorded 0; the now-visible coin is genuinely
+                # ours and safe to suppress. If the key is unset (None),
+                # no prep ran — leave the alert flow alone.
+                _baseline_raw = _gs(
+                    f"last_prep_reserve_total_mojos_{_wt}", None
+                )
+                if _baseline_raw is None:
+                    continue
+                try:
+                    _baseline = int(str(_baseline_raw).strip() or "0")
+                except Exception:
+                    _baseline = 0
+                if _baseline != 0:
+                    continue  # prep recorded the reserves correctly
+                try:
+                    _coins = get_reserve_coins(_wt) or []
+                except Exception:
+                    _coins = []
+                _total = 0
+                _new_ids: list = []
+                for _rc in _coins:
+                    _cid = (_rc.get("coin_id") or "").strip()
+                    if not _cid:
+                        continue
+                    try:
+                        _total += int(_rc.get("amount_mojos") or 0)
+                    except Exception:
+                        pass
+                    if _cid not in advised:
+                        _new_ids.append(_cid)
+                if len(_new_ids) > _RACE_MAX_UNACCOUNTED_PER_SIDE:
+                    continue  # too many — looks like a real deposit flood
+                if _new_ids:
+                    for _cid in _new_ids:
+                        advised.add(_cid)
+                    _additions.extend(_new_ids)
+                    try:
+                        set_setting(
+                            "deposit_advisory_advised_coins",
+                            ",".join(sorted(advised)),
+                        )
+                    except Exception:
+                        pass
+                # Refresh the per-side total so subsequent runs see the
+                # truth and skip recovery (baseline != 0).
+                if _total > 0:
+                    try:
+                        set_setting(
+                            f"last_prep_reserve_total_mojos_{_wt}",
+                            str(int(_total)),
+                        )
+                    except Exception:
+                        pass
+            if _additions:
+                slog("BOT_HEALTH",
+                     f"Post-prep race recovery: backfilled "
+                     f"{len(_additions)} reserve coin(s) into the "
+                     f"advised list and refreshed per-side baselines",
+                     level="info")
+    except Exception:
+        pass
+
     for wallet_type, budget_cfg, reserve_cfg, is_cat in (
         ("xch", "TOPUP_POOL_XCH", "XCH_RESERVE", False),
         ("cat", "TOPUP_POOL_CAT", "CAT_RESERVE", True),
@@ -1646,6 +1751,31 @@ def check_unclaimed_deposits(auto_repair: bool = True) -> HealthCheck:
                 # reserve + max(tier×10 headroom, one top-up cycle)
                 headroom = max(threshold_mojos, topup_mojos)
                 threshold_mojos = reserve_mojos + headroom
+
+            # Lift the threshold above the post-prep reserve total recorded
+            # by coin_prep_worker. Prep records the total mojos it left in
+            # the reserve slot under `last_prep_reserve_total_mojos_<side>`;
+            # any reserve coin at-or-near that total is the prep leftover,
+            # not a new deposit. This matters most under XCH_RESERVE=0,
+            # where `reserve_mojos > 0` is False and the only protection
+            # was the per-coin advised list — which doesn't survive a
+            # post-prep merge that changes coin_id, or a DB reset.
+            try:
+                from database import get_setting
+                _key = f"last_prep_reserve_total_mojos_{wallet_type}"
+                _raw = get_setting(_key, "") or ""
+                _post_prep_total = int(_raw) if _raw.strip().isdigit() else 0
+            except Exception:
+                _post_prep_total = 0
+            if _post_prep_total > 0:
+                # Allow the recorded total + headroom (one tier-block worth
+                # of slack) before flagging — covers tiny rounding deltas
+                # in the consolidation step.
+                _baseline_threshold = _post_prep_total + max(
+                    threshold_mojos, topup_mojos, smallest_mojos
+                )
+                if _baseline_threshold > threshold_mojos:
+                    threshold_mojos = _baseline_threshold
         except Exception:
             continue
 
@@ -1694,12 +1824,20 @@ def check_unclaimed_deposits(auto_repair: bool = True) -> HealthCheck:
             reserve_current = Decimal(str(
                 getattr(cfg, reserve_cfg, 0) or 0
             ))
+            # Wording note: this coin lives in the "reserve" DB designation
+            # (the bot's hard-reserve slot). The previous copy described it
+            # as "sitting in the topup pool", which conflated reserve with
+            # the separate topup_pool bucket and was self-contradictory.
+            # The numbers in parentheses are the user's CURRENT settings
+            # so they have context for the action choice.
             message = (
                 f"Detected {display_amount:,.4f} {unit} in reserve coin "
-                f"{short_id}. It's sitting in the topup pool but the "
-                f"budget ({pool_current:,} {unit}) doesn't cover it yet. "
-                f"Choose: add to trading pool, keep as hard reserve "
-                f"({reserve_current:,} {unit}), or split."
+                f"{short_id}. This coin is in your hard-reserve slot but "
+                f"exceeds your configured hard reserve "
+                f"({reserve_current:,} {unit}) and your topup-pool budget "
+                f"({pool_current:,} {unit}), so the bot can't reach it for "
+                f"trading. Choose: add the excess to the trading pool, "
+                f"raise the hard reserve to keep it parked, or split it."
             )
             # action_value carries enough for the GUI to open the modal
             # without another API round-trip.
