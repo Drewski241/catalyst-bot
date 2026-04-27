@@ -1797,6 +1797,7 @@ class BotLoop:
                         "price": p,
                         "size_xch": Decimal(str(s)),
                         "trade_id": r.get("trade_id") or "",
+                        "tier": tier,
                     })
                 except Exception:
                     continue

@@ -22,9 +22,12 @@ REVERSE_TIER_SIZES = {
 REVERSE_TIER_COUNTS = {"inner": 10, "mid": 5, "outer": 3, "extreme": 2}
 
 
-def _offer(price, size_xch):
+def _offer(price, size_xch, tier=None):
     """Factory for a minimal offer dict."""
-    return {"price": price, "size_xch": size_xch}
+    offer = {"price": price, "size_xch": size_xch}
+    if tier is not None:
+        offer["tier"] = tier
+    return offer
 
 
 class TestHealthyReverseLadder:
@@ -50,6 +53,31 @@ class TestHealthyReverseLadder:
         )
         assert result.ok is True
         assert len(result.issues) == 0
+
+    def test_db_tier_labels_prevent_interleaved_price_false_positive(self):
+        offers = []
+        # Live requotes can leave lower-priced mid/outer/extreme offers ahead
+        # of inner offers by price order. If the DB tier labels and sizes are
+        # correct, watchdog should trust those labels instead of slot position.
+        for i in range(5):
+            offers.append(_offer(0.000126 + i * 0.00000001, 0.9288, "mid"))
+        for i in range(3):
+            offers.append(_offer(0.0001265 + i * 0.00000001, 0.4222, "outer"))
+        for i in range(2):
+            offers.append(_offer(0.0001268 + i * 0.00000001, 0.2111, "extreme"))
+        for i in range(10):
+            offers.append(_offer(0.000127 + i * 0.00000001, 1.6887, "inner"))
+
+        result = audit_ladder_shape(
+            side="sell", offers=offers,
+            tier_sizes_xch=REVERSE_TIER_SIZES,
+            tier_counts=REVERSE_TIER_COUNTS,
+            reversed_ladder=True,
+        )
+        codes = [i.code for i in result.issues]
+        assert result.ok is True
+        assert "ladder_size_taper_violated" not in codes
+        assert result.summary["tier_source"] == "offer"
 
 
 class TestReverseLadderInversion:

@@ -152,6 +152,29 @@ def audit_ladder_shape(
     for tier in tier_order:
         slot_to_tier.extend([tier] * int(tier_counts.get(tier, 0) or 0))
 
+    def _normalise_tier(value: Any) -> Optional[str]:
+        tier = str(value or "").strip().lower()
+        return tier if tier in tier_order else None
+
+    # DB-backed audits carry the persisted tier for each offer. Prefer that
+    # label over price-position inference, because live requotes can leave the
+    # price bands interleaved while the per-tier coin sizes are still correct.
+    # Older/unit callers may omit tier; those continue using slot position.
+    tier_label_counts: Dict[str, int] = {t: 0 for t in tier_order}
+    for offer in sorted_offers:
+        tier = _normalise_tier(offer.get("tier"))
+        if tier:
+            tier_label_counts[tier] += 1
+    expected_label_counts = {
+        t: int(tier_counts.get(t, 0) or 0)
+        for t in tier_order
+    }
+    use_offer_tiers = (
+        sum(tier_label_counts.values()) == len(sorted_offers)
+        and tier_label_counts == expected_label_counts
+    )
+    result.summary["tier_source"] = "offer" if use_offer_tiers else "slot"
+
     # Track size violations
     size_violations: List[Dict[str, Any]] = []
     # Track per-tier observed sizes for taper check
@@ -161,10 +184,15 @@ def audit_ladder_shape(
     trade_ids_by_tier: Dict[str, List[str]] = {t: [] for t in tier_order}
 
     for i, offer in enumerate(sorted_offers):
-        if i >= len(slot_to_tier):
-            # Extra offer beyond configured slot count
-            continue
-        expected_tier = slot_to_tier[i]
+        if use_offer_tiers:
+            expected_tier = _normalise_tier(offer.get("tier"))
+            if not expected_tier:
+                continue
+        else:
+            if i >= len(slot_to_tier):
+                # Extra offer beyond configured slot count
+                continue
+            expected_tier = slot_to_tier[i]
         expected_size = tier_sizes_xch.get(expected_tier)
         if expected_size is None or expected_size <= 0:
             continue
