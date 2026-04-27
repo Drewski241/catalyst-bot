@@ -1226,6 +1226,9 @@ class CoinManager:
         self._last_topup_time: float = 0
         self._last_drip_time: float = 0          # last proactive drip check timestamp
         self._topup_is_drip: bool = False        # current run was drip-triggered (not emergency)
+        self._topup_budget_backoff_until: float = 0
+        self._topup_budget_backoff_count: int = 0
+        self._topup_budget_backoff_probe: Optional[Dict[str, int | bool | str]] = None
 
         # Warning throttle
         self._last_low_coin_warning: float = 0
@@ -4140,6 +4143,8 @@ class CoinManager:
                 return False
         if self._prep_running:
             return False
+        if self._topup_budget_backoff_active():
+            return False
 
         # Cooldown — exponential when no coins are available
         if self._no_coins_backoff:
@@ -5170,6 +5175,7 @@ class CoinManager:
                     self._last_topup_time = time.time()
                 self._no_coins_backoff = False
                 self._no_coins_backoff_count = 0
+                self._clear_topup_budget_backoff("topup action succeeded")
                 log_event("info", "topup_single_action_done",
                           f"Single-action topup complete — "
                           f"next check in ~{_TOPUP_DRIP_INTERVAL}s for TX confirmation")
@@ -5188,6 +5194,7 @@ class CoinManager:
                 self._last_topup_time = 0  # immediate re-evaluation next cycle
             self._no_coins_backoff = False
             self._no_coins_backoff_count = 0
+            self._clear_topup_budget_backoff("topup confirmation succeeded")
 
             # V3: Re-check reserve after topup (in case reserve was split)
             if cfg.TIER_ENABLED:
@@ -5368,6 +5375,11 @@ class CoinManager:
                     )
                     if budget_cap is not None and budget_cap < num_to_create:
                         if budget_cap < 1:
+                            self._mark_topup_budget_backoff(
+                                name=name,
+                                is_cat=is_cat,
+                                trading_size_mojos=trading_size_mojos,
+                            )
                             log_event(
                                 "info",
                                 f"topup_{name.lower()}_budget_empty_skip",
@@ -5970,6 +5982,80 @@ class CoinManager:
 
         remaining = max(0, budget_mojos - spent_mojos)
         return remaining // trading_size_mojos
+
+    def _mark_topup_budget_backoff(self, name: str, is_cat: bool,
+                                   trading_size_mojos: int) -> None:
+        """Back off when the soft topup budget cannot fund one more coin."""
+        now = time.time()
+        self._topup_budget_backoff_count += 1
+        backoff_secs = min(
+            _TOPUP_BACKOFF_MAX,
+            _TOPUP_BACKOFF_BASE * (2 ** max(0, self._topup_budget_backoff_count - 1)),
+        )
+        self._topup_budget_backoff_until = now + backoff_secs
+        self._topup_budget_backoff_probe = {
+            "name": str(name),
+            "is_cat": bool(is_cat),
+            "trading_size_mojos": int(trading_size_mojos),
+        }
+        # The drip gate used to let this same budget refusal run every bot cycle.
+        # Stamp both clocks so the next retry follows the explicit backoff window.
+        self._last_topup_time = now
+        self._last_drip_time = now
+        log_event(
+            "info",
+            "topup_budget_backoff",
+            f"{name} topup budget cannot fund another coin; backing off "
+            f"{int(backoff_secs // 60)} min. Re-run Smart Settings to replenish "
+            f"the budget, or wait for fills/refunds to restore headroom.",
+        )
+
+    def _clear_topup_budget_backoff(self, reason: str) -> None:
+        if self._topup_budget_backoff_until <= 0 and self._topup_budget_backoff_count == 0:
+            return
+        self._topup_budget_backoff_until = 0
+        self._topup_budget_backoff_count = 0
+        self._topup_budget_backoff_probe = None
+        log_event("debug", "topup_budget_backoff_reset",
+                  f"Topup budget backoff reset: {reason}")
+
+    def _topup_budget_backoff_active(self) -> bool:
+        """Return True while a budget-exhausted topup is cooling down.
+
+        If Smart Settings has replenished the budget in the meantime, the
+        stored probe sees that at least one coin can now be funded and clears
+        the backoff immediately.
+        """
+        until = float(getattr(self, "_topup_budget_backoff_until", 0) or 0)
+        if until <= 0:
+            return False
+        now = time.time()
+        if now >= until:
+            self._topup_budget_backoff_until = 0
+            return False
+
+        probe = getattr(self, "_topup_budget_backoff_probe", None)
+        if probe:
+            try:
+                cap = self._max_coins_within_topup_budget(
+                    is_cat=bool(probe.get("is_cat")),
+                    trading_size_mojos=int(probe.get("trading_size_mojos") or 0),
+                )
+                if cap is None or cap >= 1:
+                    self._clear_topup_budget_backoff("budget headroom returned")
+                    return False
+            except Exception:
+                pass
+
+        if now - self._last_low_coin_warning > 600:
+            remaining = max(1, int((until - now) // 60))
+            log_event(
+                "info",
+                "topup_budget_backoff_active",
+                f"Topup budget exhausted; skipping retry for ~{remaining} min",
+            )
+            self._last_low_coin_warning = now
+        return True
 
     def _record_topup_pool_spend(self, is_cat: bool, amount_mojos: int) -> None:
         """Persist an incremental topup pool spend to bot_settings.
@@ -7803,6 +7889,7 @@ class CoinManager:
             self._last_drip_time = 0   # clear drip cooldown too
             log_event("debug", "topup_backoff_reset",
                       "Topup backoff reset — fills brought new coins, cooldown cleared")
+        self._clear_topup_budget_backoff("fills brought new coins")
 
     def get_status(self) -> Dict:
         """Get current coin manager status for GUI/API."""
@@ -7816,6 +7903,8 @@ class CoinManager:
             "prep_running": self._prep_running,
             "topup_running": self._topup_running,
             "no_coins_backoff": self._no_coins_backoff,
+            "topup_budget_backoff": self._topup_budget_backoff_active(),
+            "topup_budget_backoff_until": self._topup_budget_backoff_until,
             "inventory": self.get_inventory_summary(),
         }
 

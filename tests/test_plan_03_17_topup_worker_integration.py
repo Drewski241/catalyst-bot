@@ -312,6 +312,45 @@ class TestTopupCooldownState(_TempDB):
         self.assertFalse(cm._topup_running)
         self.assertFalse(cm._prep_running)
 
+    def test_budget_backoff_blocks_low_coins_even_when_drip_ready(self):
+        """A spent topup budget should not retry every bot cycle via drip readiness."""
+        with patch.object(_cm_mod, "cfg", _fake_cfg()):
+            cm = CoinManager()
+            cm._xch_coins = 0
+            cm._cat_coins = 20
+            cm._last_topup_time = 0
+            cm._last_drip_time = 0
+            cm._topup_budget_backoff_until = time.time() + 600
+            cm._topup_budget_backoff_probe = {
+                "name": "XCH-extreme",
+                "is_cat": False,
+                "trading_size_mojos": 1_000,
+            }
+
+            with patch.object(cm, "_max_coins_within_topup_budget", return_value=0):
+                self.assertFalse(cm.needs_topup())
+
+    def test_budget_backoff_clears_when_headroom_returns(self):
+        """Re-running Smart Settings resets spend; the next status check should notice."""
+        with patch.object(_cm_mod, "cfg", _fake_cfg()):
+            cm = CoinManager()
+            cm._xch_coins = 0
+            cm._cat_coins = 20
+            cm._last_topup_time = 0
+            cm._last_drip_time = 0
+            cm._topup_budget_backoff_until = time.time() + 600
+            cm._topup_budget_backoff_count = 1
+            cm._topup_budget_backoff_probe = {
+                "name": "XCH-extreme",
+                "is_cat": False,
+                "trading_size_mojos": 1_000,
+            }
+
+            with patch.object(cm, "_max_coins_within_topup_budget", return_value=1):
+                self.assertTrue(cm.needs_topup())
+            self.assertEqual(cm._topup_budget_backoff_until, 0)
+            self.assertEqual(cm._topup_budget_backoff_count, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
