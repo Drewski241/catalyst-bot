@@ -109,7 +109,10 @@ from _version import __version__ as APP_VERSION
 
 APP_NAME = "CATalyst"
 FLASK_HOST = "127.0.0.1"
-FLASK_PORT = 5000
+try:
+    FLASK_PORT = int(os.environ.get("CATALYST_FLASK_PORT", "5000"))
+except (TypeError, ValueError):
+    FLASK_PORT = 5000
 WINDOW_WIDTH = 1600
 WINDOW_HEIGHT = 1000
 WINDOW_MIN_WIDTH = 1000
@@ -434,9 +437,20 @@ def _acquire_instance_lock() -> bool:
     try:
         if sys.platform == "win32":
             import msvcrt
+            # msvcrt.locking() locks bytes starting at the *current* file
+            # position. "a+" leaves the position at end-of-file, so without
+            # this seek a second launcher (which sees the file populated by
+            # instance #1) would lock a different byte and the call would
+            # succeed; both processes pass the singleton check, both run
+            # coin-prep, both race the wallet -> MEMPOOL_CONFLICT cascade.
+            # Pin the lock to byte 0 so every process contends on the same
+            # region.
+            fh.seek(0)
             msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
         else:
             import fcntl
+            # flock locks the open file description, not a byte range, so
+            # file position doesn't matter on POSIX.
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except (OSError, IOError):
         try:
@@ -445,7 +459,10 @@ def _acquire_instance_lock() -> bool:
             pass
         return False
     try:
-        fh.seek(0)
+        # Identify this process in the lock file. We must seek past the
+        # locked byte (Windows: byte 0) before truncating, otherwise the
+        # subsequent write/truncate could clip the locked region.
+        fh.seek(1) if sys.platform == "win32" else fh.seek(0)
         fh.truncate()
         fh.write(f"pid={os.getpid()} started={int(time.time())}\n")
         fh.flush()

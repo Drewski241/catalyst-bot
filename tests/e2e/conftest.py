@@ -91,6 +91,7 @@ def flask_server():
     _DATA_DIR.mkdir(exist_ok=True)
     env = os.environ.copy()
     env["CMM_DATA_DIR"] = str(_DATA_DIR)
+    env["CATALYST_FLASK_PORT"] = str(_E2E_PORT)
     # Explicitly avoid pulling the user's real wallet — tests should run
     # against an unconfigured app and exercise the disclaimer/connect flow.
     env.pop("SAGE_FINGERPRINT", None)
@@ -106,11 +107,8 @@ def flask_server():
 
     try:
         if not _wait_for_port(_E2E_PORT, timeout=30):
-            # Fall back to default port — desktop_app.py defaults to 5000
-            if not _wait_for_port(5000, timeout=10):
-                proc.terminate()
-                pytest.skip("Flask server failed to start within 30s")
-            base_url = "http://127.0.0.1:5000"
+            proc.terminate()
+            pytest.skip(f"Flask server failed to start on port {_E2E_PORT} within 30s")
         else:
             base_url = f"http://127.0.0.1:{_E2E_PORT}"
         yield base_url

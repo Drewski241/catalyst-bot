@@ -13,6 +13,41 @@ import os
 import io
 
 # ---------------------------------------------------------------------------
+# Isolate the test run from the user's real %APPDATA%\Catalyst\ data dir.
+#
+# Tests import api_server / database, both of which call user_paths.data_dir()
+# at module-load time to decide where bot.db, bot_superlog_*.log, .env, and
+# the singleton lock live. Without an override that resolves to the user's
+# production data dir, so:
+#   - every pytest session writes bot_superlog_*.log files into the live data
+#     dir, mixed in with the user's real bot logs;
+#   - a buggy test teardown that resets DB_PATH back to the original could
+#     run real-DB queries against a partially-migrated schema and corrupt the
+#     production bot.db (the 26-04 incident class of bug).
+#
+# Setting CMM_DATA_DIR before user_paths is imported (any catalyst import
+# pulls it in transitively) pins data_dir() to a throwaway temp dir for the
+# whole session. setdefault() lets CI override.
+# ---------------------------------------------------------------------------
+import atexit as _atexit
+import shutil as _shutil
+import tempfile as _tempfile
+
+if not os.environ.get("CMM_DATA_DIR"):
+    _TEST_DATA_DIR = _tempfile.mkdtemp(prefix="catalyst-tests-")
+    os.environ["CMM_DATA_DIR"] = _TEST_DATA_DIR
+
+    def _cleanup_test_data_dir(path=_TEST_DATA_DIR):
+        # Tolerant of WinError 32 when SQLite/log handles are still open;
+        # the OS reaps stale entries under TEMP eventually.
+        try:
+            _shutil.rmtree(path, ignore_errors=True)
+        except Exception:
+            pass
+
+    _atexit.register(_cleanup_test_data_dir)
+
+# ---------------------------------------------------------------------------
 # Src-layout bootstrap: add src/catalyst/ to sys.path so tests can use
 # flat imports (`from database import X`) against the reorganised source
 # tree.  This runs at conftest load time, before any collection happens.

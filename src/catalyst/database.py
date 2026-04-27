@@ -553,73 +553,13 @@ def init_database():
     conn = get_connection()
     conn.executescript(SCHEMA_SQL)
 
-    # Migration: add 'boost' to tier CHECK constraint if the table was created
-    # with an older schema. SQLite doesn't support ALTER CHECK, so we recreate
-    # the table if the constraint is outdated.
-    #
-    # Detection: inspect the stored CREATE TABLE SQL from sqlite_master rather
-    # than doing a test INSERT. A test INSERT can hit "cannot start a transaction
-    # within a transaction" or leave the connection in an implicit transaction,
-    # and would also fail spuriously on other CHECK columns. Reading sqlite_master
-    # is read-only and side-effect free.
-    needs_boost_migration = False
-    try:
-        row = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='offers'"
-        ).fetchone()
-        if row and row[0]:
-            create_sql = row[0]
-            # If the stored CREATE TABLE for 'offers' does not mention 'boost'
-            # inside its tier CHECK, the old schema is in place and must be
-            # rebuilt. We look for the literal token 'boost' — cheap and safe
-            # because the schema is fully controlled by us.
-            if "'boost'" not in create_sql and '"boost"' not in create_sql:
-                needs_boost_migration = True
-    except Exception as detect_err:
-        log_event("warn", "db_migration",
-                  f"Could not inspect offers schema for boost-tier migration: {detect_err}")
-
-    if needs_boost_migration:
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            conn.execute("ALTER TABLE offers RENAME TO offers_old")
-            conn.execute("""CREATE TABLE offers (
-                trade_id        TEXT PRIMARY KEY,
-                side            TEXT NOT NULL CHECK(side IN ('buy', 'sell')),
-                price_xch       TEXT NOT NULL,
-                size_xch        TEXT NOT NULL,
-                size_cat        TEXT NOT NULL,
-                tier            TEXT DEFAULT 'mid' CHECK(tier IN ('inner', 'mid', 'outer', 'extreme', 'sniper', 'boost')),
-                status          TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'filled', 'cancelled', 'expired')),
-                dexie_id        TEXT,
-                dexie_posted    INTEGER DEFAULT 0,
-                created_at      TEXT NOT NULL,
-                filled_at       TEXT,
-                cancelled_at    TEXT,
-                expires_at      TEXT,
-                cat_asset_id    TEXT NOT NULL,
-                coin_id         TEXT
-            )""")
-            # Copy data — old table has same columns, just a different CHECK on tier
-            old_cols = [row[1] for row in conn.execute("PRAGMA table_info(offers_old)").fetchall()]
-            new_cols = [row[1] for row in conn.execute("PRAGMA table_info(offers)").fetchall()]
-            shared = [c for c in old_cols if c in new_cols]
-            col_list = ", ".join(shared)
-            conn.execute(f"INSERT INTO offers ({col_list}) SELECT {col_list} FROM offers_old")
-            conn.execute("DROP TABLE offers_old")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_offers_status ON offers(status)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_offers_side ON offers(side)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_offers_cat ON offers(cat_asset_id)")
-            conn.commit()
-            log_event("info", "db_migration", "Migrated offers table: added 'boost' tier")
-        except Exception as mig_err:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            log_event("error", "db_migration_failed",
-                      f"Offers table migration failed (data preserved in offers_old): {mig_err}")
-            raise
+    # The boost tier CHECK migration runs AFTER all ADD COLUMN migrations
+    # (see _migrate_offers_tier_check_for_boost below). Older revisions of
+    # this code recreated the offers table here with a hand-coded CREATE
+    # listing only SCHEMA_SQL columns, which silently dropped post-SCHEMA
+    # columns (lifecycle_state, offer_bech32, fee_mojos_xch, etc.) on already-
+    # migrated DBs and exposed a window where get_open_offers() could fail
+    # with "no such column: lifecycle_state".
 
     conn.commit()
 
@@ -942,6 +882,65 @@ def init_database():
         except Exception:
             pass
 
+    # Migration: add 'boost' to the tier CHECK constraint on the offers
+    # table. SQLite has no ALTER CHECK so the table must be recreated.
+    # MUST run AFTER every ADD COLUMN migration above so the rebuild
+    # preserves columns those migrations introduced (lifecycle_state,
+    # offer_bech32, cancel_last_attempt_at, fee_mojos_xch, etc.). The
+    # rebuild SQL is derived from the current CREATE TABLE recorded in
+    # sqlite_master, so any future ADD COLUMN added before this block
+    # is preserved automatically.
+    try:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='offers'"
+        ).fetchone()
+        if row and row[0] and "'boost'" not in row[0] and '"boost"' not in row[0]:
+            import re as _re
+            existing_sql = row[0]
+            # Replace the tier CHECK constraint while leaving every other
+            # column definition intact. The regex is anchored on `tier IN`
+            # so it can't accidentally match the side/status CHECKs.
+            new_sql, n_subs = _re.subn(
+                r"CHECK\s*\(\s*tier\s+IN\s*\([^\)]+\)\s*\)",
+                "CHECK(tier IN ('inner', 'mid', 'outer', 'extreme', 'sniper', 'boost'))",
+                existing_sql, count=1, flags=_re.IGNORECASE,
+            )
+            if n_subs == 0:
+                # Old schema with no tier CHECK at all; nothing to fix.
+                pass
+            else:
+                # Rebuild via offers_new so we never have a window where
+                # the table is missing.
+                new_sql = _re.sub(
+                    r'CREATE\s+TABLE\s+(IF\s+NOT\s+EXISTS\s+)?["`\[]?offers["`\]]?',
+                    "CREATE TABLE offers_new",
+                    new_sql, count=1, flags=_re.IGNORECASE,
+                )
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(new_sql)
+                cols = [r[1] for r in conn.execute("PRAGMA table_info(offers)").fetchall()]
+                col_list = ", ".join(f'"{c}"' for c in cols)
+                conn.execute(
+                    f"INSERT INTO offers_new ({col_list}) SELECT {col_list} FROM offers"
+                )
+                conn.execute("DROP TABLE offers")
+                conn.execute("ALTER TABLE offers_new RENAME TO offers")
+                # Indexes were dropped with the old table.
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_offers_status ON offers(status)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_offers_side ON offers(side)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_offers_cat ON offers(cat_asset_id)")
+                conn.commit()
+                log_event("info", "db_migration",
+                          "Migrated offers table: added 'boost' tier (preserved all columns)")
+    except Exception as boost_mig_err:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        log_event("error", "db_migration_failed",
+                  f"Boost-tier migration failed: {boost_mig_err}")
+        raise
+
     # Repair pass: reconcile lifecycle_state with terminal status values.
     # `update_offer_status()` writes both fields atomically, but legacy
     # code paths (or older migrations) set `status` directly and left
@@ -1017,6 +1016,47 @@ def init_database():
             )
     except Exception:
         pass  # non-fatal — bot can run with a non-zero WAL
+
+    # Recent-corruption surfacing. attempt_db_recovery() in desktop_app
+    # leaves bot.db.corrupt_<timestamp> backups behind whenever it has to
+    # rebuild the DB. Bursts of these (4 in 4 minutes on 26-04) are the
+    # tell-tale of a singleton-lock race or a multi-process WAL writer
+    # hitting a known-bad SQLite case. Surface them at startup so the
+    # operator sees the pattern instead of finding it only when trades
+    # start failing.
+    try:
+        import glob as _glob
+        import time as _time
+        db_dir = os.path.dirname(os.path.abspath(DB_PATH)) or "."
+        backups = _glob.glob(os.path.join(db_dir, "bot.db.corrupt_*"))
+        # Filter to canonical files (skip -wal / -shm sidecars).
+        primaries = [
+            p for p in backups
+            if not p.endswith(("-wal", "-shm"))
+            and "_" in os.path.basename(p)
+        ]
+        now = _time.time()
+        recent = []
+        for p in primaries:
+            try:
+                age_h = (now - os.path.getmtime(p)) / 3600.0
+                if age_h <= 24.0:
+                    recent.append((p, age_h))
+            except OSError:
+                continue
+        if recent:
+            log_event(
+                "warning", "database_recent_corruption_detected",
+                f"Found {len(recent)} corrupt DB backup(s) in the last 24h "
+                f"({len(primaries)} total). Likely cause: two desktop_app "
+                f"processes wrote to the same bot.db (singleton lock race "
+                f"or coin_prep_worker subprocess survived a parent kill). "
+                f"Most recent: {os.path.basename(recent[0][0])} "
+                f"({recent[0][1]:.1f}h ago).",
+                data={"recent_backups": [os.path.basename(p) for p, _ in recent[:10]]},
+            )
+    except Exception:
+        pass  # diagnostic only — never block startup
 
 
 # ---------------------------------------------------------------------------

@@ -42,6 +42,49 @@ _PACKAGE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 bp = Blueprint("coin_prep", __name__)
 
+_coin_prep_trigger_lock = threading.Lock()
+
+
+def _coin_prep_already_running_response(reason: str):
+    """Return a successful idempotent response for duplicate prep starts."""
+    return jsonify({
+        "success": True,
+        "status": "already_running",
+        "message": (
+            "Coin prep is already starting."
+            if reason == "starting"
+            else "Coin prep is already running."
+        ),
+    })
+
+
+def _coin_prep_is_active(bot) -> bool:
+    """True when a coin-prep run is already starting or running."""
+    if bool(api_server._coin_prep_state.get("running")):
+        return True
+
+    proc = api_server._coin_prep_proc
+    if proc is not None:
+        try:
+            if proc.poll() is None:
+                return True
+        except Exception:
+            return True
+
+    cm = getattr(bot, "coin_manager", None) if bot is not None else None
+    if cm is not None:
+        if getattr(cm, "_prep_running", False) is True:
+            return True
+        cm_proc = getattr(cm, "_prep_process", None)
+        if cm_proc is not None:
+            try:
+                if cm_proc.poll() is None:
+                    return True
+            except Exception:
+                return True
+
+    return False
+
 
 @bp.route("/api/coins")
 def api_coins():
@@ -793,6 +836,20 @@ def api_coin_prep_verify():
 
 @bp.route("/api/coin-prep/trigger", methods=["POST"])
 def api_coin_prep_trigger():
+    """Trigger coin preparation behind an atomic duplicate-start guard."""
+    bot = api_server.bot
+    if not _coin_prep_trigger_lock.acquire(blocking=False):
+        return _coin_prep_already_running_response("starting")
+
+    try:
+        if _coin_prep_is_active(bot):
+            return _coin_prep_already_running_response("running")
+        return _api_coin_prep_trigger_locked()
+    finally:
+        _coin_prep_trigger_lock.release()
+
+
+def _api_coin_prep_trigger_locked():
     """Trigger coin preparation.
 
     Launches the coin_prep_worker subprocess via coin_manager.

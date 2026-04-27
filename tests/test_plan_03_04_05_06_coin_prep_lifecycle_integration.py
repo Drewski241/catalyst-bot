@@ -82,6 +82,15 @@ class _TempDB(unittest.TestCase):
         # Snapshot coin prep state so tearDown can restore it
         self._orig_coin_prep_state = dict(api_server._coin_prep_state)
         self._orig_coin_prep_proc = api_server._coin_prep_proc
+        api_server._coin_prep_state.update({
+            "running": False,
+            "complete": False,
+            "error": None,
+            "phase": "idle",
+            "run_id": None,
+            "started_at": None,
+        })
+        api_server._coin_prep_proc = None
 
     def tearDown(self):
         if hasattr(_db._local, "conn") and _db._local.conn:
@@ -132,11 +141,11 @@ class _TempDB(unittest.TestCase):
         """POST /api/coin-prep/trigger with threading mocked out."""
         mock_thread = MagicMock()
         with patch.object(api_server, "bot", bot_mock or self._make_bot()), \
-             patch("api_server.threading") as mock_threading, \
-             patch("api_server.log_event"), \
+             patch("blueprints.coin_prep.threading.Thread") as mock_thread_cls, \
+             patch("blueprints.coin_prep.log_event"), \
              patch("os.path.exists", return_value=True), \
              patch("builtins.open", unittest.mock.mock_open()):
-            mock_threading.Thread.return_value = mock_thread
+            mock_thread_cls.return_value = mock_thread
             return self.client.post(
                 "/api/coin-prep/trigger",
                 json={"full_reset": full_reset},
@@ -213,9 +222,10 @@ class TestCoinPrepFullCycle(_TempDB):
         self.assertTrue(body.get("running"))
 
     def test_second_run_id_differs_from_first(self):
-        """Two consecutive triggers produce different run_ids."""
+        """A fresh trigger after reset produces a different run_id."""
         self._trigger()
         first_id = api_server._coin_prep_state.get("run_id")
+        self._reset()
         self._trigger()
         second_id = api_server._coin_prep_state.get("run_id")
         self.assertNotEqual(first_id, second_id)

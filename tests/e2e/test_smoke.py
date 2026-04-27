@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 
 import pytest
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, expect
 
 from .conftest import dismiss_disclaimer
 
@@ -35,15 +36,19 @@ def test_app_loads_with_disclaimer(app_page):
     assert close_btn.is_visible()
 
 
-def test_dismissing_disclaimer_reveals_wallet_connect(app_page):
-    """Continuing past the disclaimer should land on the Sage-connect screen."""
+def test_dismissing_disclaimer_reveals_wallet_gate(app_page):
+    """Continuing past the disclaimer should land on a Sage startup gate."""
     assert dismiss_disclaimer(app_page) is True
-    # The wallet-connect screen advertises Sage by name. The exact button
-    # text is "Connect to Sage"; assert via accessible-name match so the
-    # test doesn't break if the button gets restyled.
+    # In the Sage-free smoke environment the expected branch is "wallet not
+    # open"; on a developer box with Sage already running, the same gate may
+    # instead show the "Connect to Sage" button.
     connect = app_page.get_by_role("button", name=re.compile(r"Connect to Sage", re.I))
-    connect.first.wait_for(state="visible", timeout=10_000)
-    assert connect.first.is_visible()
+    wallet_not_open = app_page.locator("#startupSubtitle")
+    try:
+        connect.first.wait_for(state="visible", timeout=7_000)
+    except PlaywrightTimeoutError:
+        expect(wallet_not_open).to_contain_text("Sage wallet isn't running", timeout=10_000)
+    assert connect.first.is_visible() or "Sage wallet isn't running" in wallet_not_open.text_content()
 
 
 def test_primary_nav_tabs_present(app_page):

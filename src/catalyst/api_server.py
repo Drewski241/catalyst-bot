@@ -2777,11 +2777,16 @@ if __name__ == "__main__":
     # disclosure, via POST /api/wallet/begin-startup.  This ensures no wallet
     # RPC calls are made before the user has acknowledged the disclaimer.
 
-    log_event("info", "server_started", "API server starting on port 5000")
+    try:
+        _port = int(os.environ.get("CATALYST_FLASK_PORT", "5000"))
+    except (TypeError, ValueError):
+        _port = 5000
+
+    log_event("info", "server_started", f"API server starting on port {_port}")
 
     app.run(
         host="127.0.0.1",
-        port=5000,
+        port=_port,
         debug=False,
         threaded=True
     )

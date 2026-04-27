@@ -36,6 +36,11 @@ class _FlaskBase(unittest.TestCase):
 
     def tearDown(self):
         api_server._rate_limit_log.clear()
+        api_server._coin_prep_state["running"] = False
+        api_server._coin_prep_state["complete"] = False
+        api_server._coin_prep_state["error"] = None
+        api_server._coin_prep_state["phase"] = "idle"
+        api_server._coin_prep_proc = None
 
     def _post(self, path, body=None, auth=True):
         headers = dict(self.auth) if auth else {}
@@ -218,6 +223,21 @@ class TestCoinPrepTrigger(_FlaskBase):
             mock_thread.return_value.start = MagicMock()
             self._post("/api/coin-prep/trigger")
         bot.stop.assert_called_once()
+
+    def test_duplicate_trigger_does_not_start_second_worker(self):
+        with patch("threading.Thread") as mock_thread, \
+             patch.object(api_server, "_reset_fresh_run_session",
+                          return_value=self._FAKE_SUMMARY), \
+             patch.object(api_server, "bot", None):
+            mock_thread.return_value.start = MagicMock()
+            first = self._post("/api/coin-prep/trigger")
+            second = self._post("/api/coin-prep/trigger")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertTrue(first.get_json().get("success"))
+        self.assertEqual(second.get_json().get("status"), "already_running")
+        self.assertEqual(mock_thread.call_count, 1)
 
 
 # ---------------------------------------------------------------------------
