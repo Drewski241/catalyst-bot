@@ -47,6 +47,8 @@ def _wrap_method(obj, method_name, category, log_args=False, arg_names=None,
     original = getattr(obj, method_name, None)
     if original is None or not callable(original):
         return
+    if getattr(original, "_super_log_hook", False):
+        return
 
     @wraps(original)
     def wrapper(*args, **kwargs):
@@ -95,6 +97,8 @@ def _wrap_method(obj, method_name, category, log_args=False, arg_names=None,
                  {"time_ms": f"{elapsed_ms:.1f}", "thread": thread}, level="error")
             raise
 
+    wrapper._super_log_hook = True
+    wrapper._super_log_original = getattr(original, "_super_log_original", original)
     setattr(obj, method_name, wrapper)
 
 
@@ -103,6 +107,8 @@ def _wrap_function(module, func_name, category, log_args=False, arg_names=None,
     """Wrap a module-level function with level-aware logging."""
     original = getattr(module, func_name, None)
     if original is None or not callable(original):
+        return
+    if getattr(original, "_super_log_hook", False):
         return
 
     @wraps(original)
@@ -146,6 +152,8 @@ def _wrap_function(module, func_name, category, log_args=False, arg_names=None,
                  {"time_ms": f"{elapsed_ms:.1f}", "thread": thread}, level="error")
             raise
 
+    wrapper._super_log_hook = True
+    wrapper._super_log_original = getattr(original, "_super_log_original", original)
     setattr(module, func_name, wrapper)
 
 

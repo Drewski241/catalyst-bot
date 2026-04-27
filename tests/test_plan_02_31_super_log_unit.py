@@ -7,6 +7,7 @@ cycle_note/end_cycle, log_db_write/log_db_lock, and get_log_stats keys.
 
 import sys
 import time
+import types
 import unittest
 
 try:
@@ -227,6 +228,60 @@ class TestGetLogStats(unittest.TestCase):
     def test_ring_buffer_capacity_is_positive(self):
         stats = _sl.get_log_stats()
         self.assertGreater(stats["ring_buffer_capacity"], 0)
+
+
+@unittest.skipIf(_SKIP is not None, f"super_log unavailable: {_SKIP}")
+class TestLogEventInterceptor(unittest.TestCase):
+    def test_intercept_log_event_is_idempotent(self):
+        calls = []
+
+        fake_database = types.ModuleType("database")
+
+        def original_log_event(severity, event_type, message, data=None):
+            calls.append((severity, event_type, message, data))
+            return True
+
+        fake_database.log_event = original_log_event
+
+        direct_modules = [
+            "coin_manager", "bot_loop", "offer_manager", "fill_tracker",
+            "risk_manager", "price_engine", "market_intel", "sniper",
+            "boost_manager", "splash_manager", "dexie_manager",
+            "coin_prep_worker", "wallet_sage", "wallet_chia",
+        ]
+        saved_database = sys.modules.get("database")
+        saved_direct_attrs = []
+        for name in direct_modules:
+            module = sys.modules.get(name)
+            if module is not None and hasattr(module, "log_event"):
+                saved_direct_attrs.append((module, getattr(module, "log_event")))
+
+        orig_initialized = _sl._initialized
+        orig_original_log_event = _sl._original_log_event
+        sys.modules["database"] = fake_database
+        _sl._initialized = False
+        try:
+            _sl.intercept_log_event()
+            first_wrapper = fake_database.log_event
+            _sl.intercept_log_event()
+
+            self.assertIs(fake_database.log_event._super_log_original,
+                          original_log_event)
+            self.assertIsNot(fake_database.log_event._super_log_original,
+                             first_wrapper)
+
+            result = fake_database.log_event("info", "test_event", "message")
+            self.assertTrue(result)
+            self.assertEqual(calls, [("info", "test_event", "message", None)])
+        finally:
+            if saved_database is None:
+                sys.modules.pop("database", None)
+            else:
+                sys.modules["database"] = saved_database
+            for module, attr in saved_direct_attrs:
+                module.log_event = attr
+            _sl._initialized = orig_initialized
+            _sl._original_log_event = orig_original_log_event
 
 
 if __name__ == "__main__":

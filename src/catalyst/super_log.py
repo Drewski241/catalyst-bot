@@ -792,7 +792,24 @@ def intercept_log_event():
     global _original_log_event
     try:
         import database
-        _original_log_event = database.log_event
+        current_log_event = database.log_event
+        original_log_event = current_log_event
+
+        # Repeated imports of api_server in tests can call this more than once
+        # in the same Python process. Always unwrap to the real DB writer so
+        # wrappers do not call wrappers and recurse forever.
+        seen = set()
+        while getattr(original_log_event, "_super_log_interceptor", False):
+            marker_id = id(original_log_event)
+            if marker_id in seen:
+                break
+            seen.add(marker_id)
+            original_log_event = getattr(
+                original_log_event,
+                "_super_log_original",
+                original_log_event,
+            )
+        _original_log_event = original_log_event
 
         # Map database severity to super_log levels
         _severity_map = {
@@ -807,7 +824,10 @@ def intercept_log_event():
             lvl = _severity_map.get(severity.lower(), "info")
             slog("EVENT", f"[{severity.upper():7s}] [{event_type}] {message}",
                  data if data else None, level=lvl)
-            return _original_log_event(severity, event_type, message, data)
+            return original_log_event(severity, event_type, message, data)
+
+        _patched_log_event._super_log_interceptor = True
+        _patched_log_event._super_log_original = original_log_event
 
         database.log_event = _patched_log_event
 
