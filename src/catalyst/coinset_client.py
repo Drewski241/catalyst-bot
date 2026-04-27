@@ -332,6 +332,69 @@ class CoinsetClient:
 
         return None
 
+    def get_coin_records_by_parent_ids(
+        self,
+        parent_ids: List[str],
+        include_spent_coins: bool = True,
+    ) -> Optional[List[Dict]]:
+        """List coin records (children) for the given parent coin ids.
+
+        Mirrors Chia full-node /get_coin_records_by_parent_ids. Used by
+        coin_prep to confirm a split landed on chain when Sage's local
+        wallet view lags or its tx tracker drops the transaction. Each
+        returned record carries the child coin's amount and confirmed
+        block index, so the caller can compare on-chain reality against
+        the expected split count without depending on the wallet RPC.
+        """
+        if not getattr(cfg, "COINSET_ENABLED", True):
+            return None
+        if not parent_ids:
+            return None
+        if time.time() < self._rate_limited_until:
+            return None
+
+        normalised = []
+        for pid in parent_ids:
+            if not pid:
+                continue
+            s = str(pid).lower()
+            if not s.startswith("0x"):
+                s = "0x" + s
+            normalised.append(s)
+        if not normalised:
+            return None
+
+        api_url = getattr(cfg, "COINSET_API_URL", "https://api.coinset.org")
+        timeout = getattr(cfg, "COINSET_TIMEOUT", 5)
+        url = f"{api_url.rstrip('/')}/get_coin_records_by_parent_ids"
+        payload = {
+            "parent_ids": normalised,
+            "include_spent_coins": include_spent_coins,
+        }
+
+        self._record_api_call("get_coin_records_by_parent_ids")
+        try:
+            r = requests.post(
+                url, json=payload,
+                headers=COINSET_HEADERS,
+                timeout=timeout,
+            )
+            if r.status_code == 429:
+                try:
+                    retry_after = min(int(r.headers.get("Retry-After", "60")), 300)
+                except (ValueError, TypeError):
+                    retry_after = 60
+                self._rate_limited_until = time.time() + retry_after
+                return None
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("success"):
+                    return data.get("coin_records") or []
+        except Exception as e:
+            log_event("debug", "coinset_records_by_parent_error",
+                      f"get_coin_records_by_parent_ids failed: {e}")
+        return None
+
     # -------------------------------------------------------------------
     # F34 (2026-04-08): Fill verification fallback via Coinset.
     # When Spacescan is rate-limited, down, or out of budget, we still

@@ -3240,6 +3240,9 @@ class CoinPrepWorker:
             tx_confirmed_logged = set()
             owned_ready_logged = set()
             grace_extensions = {}  # pending index -> number of pending-tx grace extensions used
+            owned_high_water = {}  # idx -> max owned_output_count ever seen
+            chain_confirmed = set()  # idx -> coinset confirmed split landed on chain
+            chain_check_failures = {}  # idx -> consecutive coinset query failures
             split_deadlines = {idx: timeout_s for idx in range(len(pending_splits))}
             # Sage on a busy chain regularly takes 50-80s to confirm a split
             # broadcast. The previous 45s threshold fired a "still intact"
@@ -3361,6 +3364,16 @@ class CoinPrepWorker:
                         wid, cnt, pm, pcid, idx, owned_coin_map, selectable_coin_ids
                     )
                     tx_state = self._get_transaction_confirmation_state(tx_ids)
+                    # High-water mark: once we've observed `cnt` exact-amount
+                    # outputs, that's durable evidence the split landed.
+                    # Sage's owned view occasionally drops a coin (e.g. when
+                    # a pre-existing same-amount coin gets consumed by an
+                    # unrelated TX), and without this mark we'd reset the
+                    # confirmation gate and wait until the 300s timeout.
+                    prev_hw = owned_high_water.get(idx, 0)
+                    cur_owned = split_state["owned_output_count"]
+                    if cur_owned > prev_hw:
+                        owned_high_water[idx] = cur_owned
                     later_same_batch_confirmed = any(
                         prev_idx in confirmed and
                         prev_wid == wid and
@@ -3390,11 +3403,63 @@ class CoinPrepWorker:
                             )
                         owned_ready_logged.add(idx)
 
-                    if (
+                    # Chain-truth shortcut: when Sage's local view stops
+                    # making progress (pool gone, but owned count under cnt
+                    # or selectable lagging, and tx tracker silent), ask
+                    # Coinset whether the split actually landed on chain.
+                    # This caps the wait at ~2 blocks instead of the 300s
+                    # outer timeout. We only call out if the local view
+                    # can't make a decision on its own.
+                    needs_chain_check = (
+                        split_state["pool_consumed"]
+                        and idx not in chain_confirmed
+                        and not tx_state["confirmed"]
+                        and elapsed_s >= 30
+                        and not (
+                            split_state["outputs_selectable"]
+                            and split_state["owned_output_count"] >= cnt
+                        )
+                    )
+                    if needs_chain_check:
+                        chain_result = self._coinset_split_landed_on_chain(
+                            split_state["pool_coin_id"], cnt
+                        )
+                        if chain_result is True:
+                            chain_confirmed.add(idx)
+                            self.log(
+                                f"      ✅ {sl} {tn} split confirmed on chain via Coinset "
+                                f"(local view: {split_state['owned_output_count']}/{cnt} owned, "
+                                f"{split_state['selectable_output_count']}/{cnt} selectable)"
+                            )
+                        elif chain_result is False:
+                            # Pool not yet spent on chain — keep waiting.
+                            # Don't escalate; the broadcast may just be slow.
+                            pass
+                        else:
+                            # Coinset unreachable / not yet indexed
+                            chain_check_failures[idx] = chain_check_failures.get(idx, 0) + 1
+
+                    # Confirmation: any of —
+                    #   (a) Sage shows everything: pool gone, all outputs
+                    #       owned and selectable (or tx tracker confirmed)
+                    #   (b) High-water mark hit cnt at any point AND pool
+                    #       consumed AND chain-truth says the split landed
+                    #   (c) Pool consumed AND chain-truth confirmed AND we
+                    #       have at least cnt-1 outputs owned locally
+                    sage_view_complete = (
                         split_state["pool_consumed"]
                         and split_state["owned_output_count"] >= cnt
                         and (split_state["outputs_selectable"] or tx_state["confirmed"])
-                    ):
+                    )
+                    chain_view_complete = (
+                        idx in chain_confirmed
+                        and split_state["pool_consumed"]
+                        and (
+                            owned_high_water.get(idx, 0) >= cnt
+                            or split_state["owned_output_count"] >= max(1, cnt - 1)
+                        )
+                    )
+                    if sage_view_complete or chain_view_complete:
                         newly_confirmed.append((idx, sl, tn, cnt, elapsed_s, split_state["outputs_selectable"]))
                         continue
 
@@ -4084,6 +4149,81 @@ class CoinPrepWorker:
                     time.sleep(error_wait_s)
 
         return []
+
+    def _get_coinset_client(self):
+        """Lazily build a CoinsetClient for chain-truth lookups.
+
+        The worker runs in a subprocess that doesn't share the bot's
+        client instance, so we create our own. Returns None if Coinset
+        is disabled, the import fails, or construction fails — the
+        caller should fall back to wallet RPC heuristics in that case.
+        """
+        client = getattr(self, "_coinset_client_instance", None)
+        if client is not None:
+            return client
+        if getattr(self, "_coinset_client_failed", False):
+            return None
+        try:
+            from coinset_client import CoinsetClient
+            self._coinset_client_instance = CoinsetClient()
+            return self._coinset_client_instance
+        except Exception as e:
+            self._coinset_client_failed = True
+            self.log(f"   ⚠️ Coinset client unavailable: {e}")
+            return None
+
+    def _coinset_split_landed_on_chain(
+        self,
+        pool_coin_id: str,
+        expected_count: int,
+    ) -> Optional[bool]:
+        """Ask Coinset whether a split TX has landed on chain.
+
+        Returns:
+          True  — pool coin is spent on chain AND >= expected_count children
+                  exist as on-chain coin records (or 1 less, allowing for
+                  the rare fee-deduction edge where one output is short).
+          False — pool coin is still unspent on chain (the split TX has
+                  NOT landed; do NOT mark this split confirmed).
+          None  — Coinset is unreachable / rate-limited / coin not yet
+                  indexed; caller keeps using local heuristics.
+        """
+        if not pool_coin_id or expected_count <= 0:
+            return None
+        client = self._get_coinset_client()
+        if client is None:
+            return None
+
+        normalised = str(pool_coin_id).lower()
+        if not normalised.startswith("0x"):
+            normalised = "0x" + normalised
+
+        try:
+            record = client.get_coin_by_name(normalised)
+        except Exception:
+            record = None
+        if not record:
+            return None
+        try:
+            spent_idx = int(record.get("spent_block_index", 0) or 0)
+        except (TypeError, ValueError):
+            spent_idx = 0
+        if spent_idx <= 0:
+            return False
+
+        try:
+            children = client.get_coin_records_by_parent_ids([normalised])
+        except Exception:
+            children = None
+        if children is None:
+            # Pool spent but children index lagging — caller will retry
+            return None
+
+        # Allow 1 missing child (Sage occasionally surfaces N-1 outputs
+        # when a tiny CAT fee-adjusted coin lands at a slightly different
+        # amount). The on-chain truth that the pool is spent + most
+        # children are present is enough to stop waiting.
+        return len(children) >= max(1, expected_count - 1)
 
     def _get_owned_coin_amount_map(self, wallet_id: int, name: str) -> Dict[str, int]:
         """Return the wallet's owned coin set as {coin_id: amount_mojos}.
