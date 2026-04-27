@@ -1110,13 +1110,32 @@ def _get_reconcile_tier_sizes_mojos(wallet_type: str) -> Dict[str, int]:
 
         # XCH wallet funds BUY offers → use buy tier sizes.
         # CAT wallet funds SELL offers → use sell tier sizes.
-        _get = get_sell_tier_size_xch if wallet_type == "cat" else get_buy_tier_size_xch
-        tier_sizes_xch = {
-            "inner":   Decimal(str(_get("inner") or 0)),
-            "mid":     Decimal(str(_get("mid") or 0)),
-            "outer":   Decimal(str(_get("outer") or 0)),
-            "extreme": Decimal(str(_get("extreme") or 0)),
-        }
+        if wallet_type == "xch" and bool(getattr(_cfg, "BUY_LADDER_REVERSED", False)):
+            # BUY_* values are slot-position indexed when the buy ladder is
+            # reversed, but coin rows are labelled by coin-size bucket.
+            # Mirror coin_manager.get_tier_sizes_mojos_from_cfg().
+            buy_reversed_position_to_coin_size = {
+                "inner": "extreme",
+                "mid": "outer",
+                "outer": "mid",
+                "extreme": "inner",
+            }
+            buy_reversed_coin_size_to_position = {
+                coin_size: position
+                for position, coin_size in buy_reversed_position_to_coin_size.items()
+            }
+            tier_sizes_xch = {}
+            for coin_tier in ("inner", "mid", "outer", "extreme"):
+                position_tier = buy_reversed_coin_size_to_position[coin_tier]
+                tier_sizes_xch[coin_tier] = Decimal(str(get_buy_tier_size_xch(position_tier) or 0))
+        else:
+            _get = get_sell_tier_size_xch if wallet_type == "cat" else get_buy_tier_size_xch
+            tier_sizes_xch = {
+                "inner":   Decimal(str(_get("inner") or 0)),
+                "mid":     Decimal(str(_get("mid") or 0)),
+                "outer":   Decimal(str(_get("outer") or 0)),
+                "extreme": Decimal(str(_get("extreme") or 0)),
+            }
 
         sniper_enabled = bool(getattr(_cfg, "SNIPER_ENABLED", False))
         sniper_prep_count = int(getattr(_cfg, "SNIPER_PREP_COUNT", 0) or 0)

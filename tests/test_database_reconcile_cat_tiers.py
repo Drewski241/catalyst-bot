@@ -33,6 +33,7 @@ os.environ["BUY_INNER_SIZE_XCH"] = "0"
 os.environ["BUY_MID_SIZE_XCH"] = "0"
 os.environ["BUY_OUTER_SIZE_XCH"] = "0"
 os.environ["BUY_EXTREME_SIZE_XCH"] = "0"
+os.environ["BUY_LADDER_REVERSED"] = "false"
 os.environ["SNIPER_ENABLED"] = "false"
 os.environ["CAT_DECIMALS"] = "3"
 os.environ["CAT_COIN_SIZE"] = "4000"
@@ -71,6 +72,7 @@ class DatabaseReconcileCatTierTests(unittest.TestCase):
         os.environ["BUY_MID_SIZE_XCH"] = "0"
         os.environ["BUY_OUTER_SIZE_XCH"] = "0"
         os.environ["BUY_EXTREME_SIZE_XCH"] = "0"
+        os.environ["BUY_LADDER_REVERSED"] = "false"
         os.environ["SNIPER_ENABLED"] = "false"
         os.environ["CAT_DECIMALS"] = "3"
         os.environ["CAT_COIN_SIZE"] = "4000"
@@ -130,6 +132,38 @@ class DatabaseReconcileCatTierTests(unittest.TestCase):
         self.assertIsNotNone(row)
         self.assertEqual(row["designation"], "tier_spare")
         self.assertEqual(row["assigned_tier"], "inner")
+
+    def test_reconcile_flips_reversed_buy_sizes_for_xch_new_coins(self):
+        os.environ["BUY_LADDER_REVERSED"] = "true"
+        os.environ["BUY_INNER_SIZE_XCH"] = "0.5"
+        os.environ["BUY_MID_SIZE_XCH"] = "1.0"
+        os.environ["BUY_OUTER_SIZE_XCH"] = "1.5"
+        os.environ["BUY_EXTREME_SIZE_XCH"] = "2.0"
+        config.cfg.reload()
+        sys.modules["config"] = config
+
+        coin_id = "0xreversedmid"
+        # Reversed buy: coin-size mid is funded by the outer slot size.
+        amount_mojos = 1_650_000_000_000
+        stats = database.reconcile_coins_with_wallet(
+            wallet_selectable={coin_id: amount_mojos},
+            wallet_owned={coin_id: amount_mojos},
+            wallet_type="xch",
+        )
+
+        self.assertEqual(stats["added"], 1)
+
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT designation, assigned_tier FROM coins WHERE coin_id=?",
+            (coin_id,),
+        ).fetchone()
+        conn.close()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(row["designation"], "tier_spare")
+        self.assertEqual(row["assigned_tier"], "mid")
 
 
 if __name__ == "__main__":
