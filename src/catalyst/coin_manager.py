@@ -4902,7 +4902,13 @@ class CoinManager:
                     xch_topup_threshold = max(1, int(round(xch_spare_target * _topup_tier_pct(tier_name, "xch")))) if xch_spare_target > 0 else 0
                     if xch_spare_target > 0 and xch_have < xch_topup_threshold and cfg.ENABLE_BUY:
                         any_tier_needed = True
-                        xch_tier_size = int(live_tier_sizes_xch.get(tier_name, cfg.MID_SIZE_XCH) * self._get_coin_prep_headroom_multiplier() * xch_scale)
+                        xch_tier_size = int(xch_tier_mojos.get(tier_name, 0) or 0)
+                        if xch_tier_size <= 0:
+                            xch_tier_size = int(
+                                Decimal(str(live_tier_sizes_xch.get(tier_name, cfg.MID_SIZE_XCH)))
+                                * self._get_coin_prep_headroom_multiplier()
+                                * xch_scale
+                            )
                         target_full = xch_spare_target
                         # Buffer: 25% of spare allocation, min 1, max 2.
                         # Scales with tier depth rather than being flat +2 for all
@@ -4918,6 +4924,11 @@ class CoinManager:
                             xch_inv, xch_tier_size, deficit,
                             is_cat=False,
                             tier_is_empty=(xch_have == 0),
+                            soft_budget_bypass_reason=(
+                                "floor-nearest buy slot"
+                                if tier_name == _default_tier_order[0]
+                                else None
+                            ),
                         )
                         if result is True:
                             did_anything = True
@@ -4963,6 +4974,11 @@ class CoinManager:
                                 cat_inv, cat_tier_mojos_val, deficit,
                                 is_cat=True,
                                 tier_is_empty=(cat_have == 0),
+                                soft_budget_bypass_reason=(
+                                    "floor-nearest sell slot"
+                                    if tier_name == "inner"
+                                    else None
+                                ),
                             )
                             if result:
                                 did_anything = True
@@ -5246,7 +5262,8 @@ class CoinManager:
                              inventory: Dict[str, list],
                              trading_size_mojos: int, needed: int,
                              is_cat: bool = False,
-                             tier_is_empty: bool = False) -> bool:
+                             tier_is_empty: bool = False,
+                             soft_budget_bypass_reason: Optional[str] = None) -> bool:
         """Smart topup for one wallet. Returns True if an action was taken.
 
         Two-step process (mirrors coin_prep_worker):
@@ -5359,7 +5376,7 @@ class CoinManager:
                 # spares already on hand the spend is bounded by what
                 # we already hold (hard reserve still applies inside
                 # _check_topup_reserve_guards).
-                bypass_pre_clamp = tier_is_empty
+                bypass_pre_clamp = tier_is_empty or bool(soft_budget_bypass_reason)
                 if not bypass_pre_clamp:
                     requested_pool_mojos = num_to_create * trading_size_mojos
                     excess_mojos_pre = self._unlocked_excess_spare_mojos(
@@ -5432,6 +5449,7 @@ class CoinManager:
                         is_cat=is_cat,
                         tier_is_empty=tier_is_empty,
                         inventory=inventory,
+                        soft_budget_bypass_reason=soft_budget_bypass_reason,
                     )
 
                     if not guard_ok:
@@ -5674,7 +5692,8 @@ class CoinManager:
                                     pool_amount_mojos: int,
                                     is_cat: bool,
                                     tier_is_empty: bool = False,
-                                    inventory: Optional[Dict[str, list]] = None) -> bool:
+                                    inventory: Optional[Dict[str, list]] = None,
+                                    soft_budget_bypass_reason: Optional[str] = None) -> bool:
         """Return True if a split of `pool_amount_mojos` is permitted.
 
         Checks (in order):
@@ -5692,7 +5711,11 @@ class CoinManager:
           a. ``tier_is_empty=True`` — every offer on this slot is
              already blocked, which is worse than overspending the soft
              budget.
-          b. ``inventory`` shows excess unlocked spare coins across
+          b. ``soft_budget_bypass_reason`` — the caller has identified
+             this as the floor-nearest live slot. The soft budget should
+             not starve that slot while the hard reserve guard still
+             passes.
+          c. ``inventory`` shows excess unlocked spare coins across
              OTHER trading tiers that could fund this refill. As long
              as the wallet has spare capacity it should be allowed to
              use it; the soft budget exists to prevent unbounded spend
@@ -5835,6 +5858,20 @@ class CoinManager:
                             f"{name} tier is empty (0 free coins) — bypassing "
                             f"topup pool budget ({spent_mojos / _display_scale:.4f} "
                             f"spent + {pool_amount_mojos / _display_scale:.4f} "
+                            f"requested > {budget_mojos / _display_scale:.4f} "
+                            f"{_unit} {budget_label}). Hard reserve guard still "
+                            f"honoured.",
+                        )
+                        return True
+
+                    if soft_budget_bypass_reason:
+                        log_event(
+                            "info",
+                            f"topup_{name.lower()}_budget_bypass_floor_priority",
+                            f"{name} bypassing topup pool budget for "
+                            f"{soft_budget_bypass_reason} "
+                            f"({spent_mojos / _display_scale:.4f} spent + "
+                            f"{pool_amount_mojos / _display_scale:.4f} "
                             f"requested > {budget_mojos / _display_scale:.4f} "
                             f"{_unit} {budget_label}). Hard reserve guard still "
                             f"honoured.",
@@ -7710,11 +7747,15 @@ class CoinManager:
         Returns {"inner": mojos, "mid": mojos, "outer": mojos, "extreme": mojos}
         For CAT, derives from XCH tier sizes / price with configurable prep headroom.
         """
+        if not is_cat:
+            result = dict(get_tier_sizes_mojos_from_cfg(is_cat=False))
+            if self._fee_pool_enabled():
+                result[get_fee_tier_name()] = get_fee_coin_size_mojos()
+            return result
+
         prep_mult = self._get_coin_prep_headroom_multiplier()
-        # XCH wallet feeds BUY offers → use buy tier sizes.
         # CAT wallet feeds SELL offers → use sell tier sizes.
-        side = "sell" if is_cat else "buy"
-        tier_sizes_xch = self._configured_tier_sizes_xch(side=side)
+        tier_sizes_xch = self._configured_tier_sizes_xch(side="sell")
         if is_cat:
             price = self._get_current_price()
             cat_scale = Decimal(10) ** Decimal(cfg.CAT_DECIMALS)
@@ -7725,15 +7766,6 @@ class CoinManager:
                 else:
                     cat_amount = cfg.CAT_COIN_SIZE
                 result[tier] = int(cat_amount * cat_scale)
-            return result
-        else:
-            xch_scale = Decimal("1000000000000")
-            result = {
-                tier: int((size_xch * prep_mult) * xch_scale)
-                for tier, size_xch in tier_sizes_xch.items()
-            }
-            if self._fee_pool_enabled():
-                result[get_fee_tier_name()] = get_fee_coin_size_mojos()
             return result
 
     def get_target_xch_coin_size(self, side: str = "buy") -> Decimal:

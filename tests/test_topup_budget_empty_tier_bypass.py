@@ -209,6 +209,56 @@ class EmptyTierBudgetBypassTests(unittest.TestCase):
                         and "budget_bypass_empty_tier" in str(c.args[1])]
         self.assertTrue(bypass_calls)
 
+    def test_xch_floor_priority_bypasses_exhausted_budget_even_when_not_empty(self):
+        """The floor-nearest tier must refill even when the soft budget is spent."""
+        manager = self._make_manager()
+        cfg = coin_manager.cfg
+        with patch.object(cfg, "XCH_RESERVE", Decimal("0")), \
+             patch.object(cfg, "TOPUP_POOL_XCH", Decimal("1")), \
+             patch("wallet.get_wallet_balance",
+                   _FakeWalletBalance(total_mojos=100_000_000_000_000)), \
+             patch("database.get_setting",
+                   return_value=str(900_000_000_000)), \
+             patch.object(coin_manager, "log_event") as log_spy:
+            # Same exhausted-budget shape as above, but the tier is not empty.
+            # Floor-priority bypass should still allow the split.
+            result = manager._check_topup_reserve_guards(
+                name="XCH-extreme",
+                wallet_id=1,
+                pool_amount_mojos=500_000_000_000,
+                is_cat=False,
+                tier_is_empty=False,
+                soft_budget_bypass_reason="floor-nearest buy slot",
+            )
+        self.assertTrue(result)
+        bypass_calls = [c for c in log_spy.call_args_list
+                        if len(c.args) >= 2
+                        and "budget_bypass_floor_priority" in str(c.args[1])]
+        self.assertTrue(bypass_calls)
+
+    def test_floor_priority_does_not_bypass_hard_reserve(self):
+        """Floor-priority bypass is soft-budget only; hard reserve still wins."""
+        manager = self._make_manager()
+        cfg = coin_manager.cfg
+        with patch.object(cfg, "XCH_RESERVE", Decimal("1000")), \
+             patch.object(cfg, "TOPUP_POOL_XCH", Decimal("1")), \
+             patch("wallet.get_wallet_balance",
+                   _FakeWalletBalance(total_mojos=500_000_000_000)), \
+             patch.object(coin_manager, "log_event") as log_spy:
+            result = manager._check_topup_reserve_guards(
+                name="XCH-extreme",
+                wallet_id=1,
+                pool_amount_mojos=500_000_000_000,
+                is_cat=False,
+                tier_is_empty=False,
+                soft_budget_bypass_reason="floor-nearest buy slot",
+            )
+        self.assertFalse(result)
+        reserve_calls = [c for c in log_spy.call_args_list
+                         if len(c.args) >= 2
+                         and "blocked_by_reserve" in str(c.args[1])]
+        self.assertTrue(reserve_calls)
+
 
 if __name__ == "__main__":
     unittest.main()

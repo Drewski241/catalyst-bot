@@ -166,6 +166,24 @@ class TierSizesReverseBuyTests(unittest.TestCase):
         self.assertEqual(sizes["mid"], int(Decimal("1.1598") * 10**12))
         self.assertEqual(sizes["outer"], int(Decimal("0.6379") * 10**12))
 
+    def test_coin_manager_method_uses_same_bucket_mapping(self):
+        """Runtime topup must split the same size bucket the classifier expects."""
+        import coin_manager
+        from coin_manager import get_tier_sizes_mojos_from_cfg
+
+        self._patch_cfg(_StubCfg(reversed_buy=True))
+        with patch.object(coin_manager.CoinManager, "_resolve_fingerprint",
+                          return_value="123456789"):
+            manager = coin_manager.CoinManager()
+
+        expected = get_tier_sizes_mojos_from_cfg(is_cat=False)
+        self.assertEqual(manager._get_tier_sizes_mojos(is_cat=False), expected)
+        self.assertEqual(
+            expected["extreme"], int(Decimal("0.29") * 10**12),
+            "Floor-nearest reversed-buy topup must create extreme-bucket "
+            "coins, not the larger extreme-position size.",
+        )
+
     def test_reverse_buy_cat_path_unchanged(self):
         """Sell side should be unaffected by reverse-buy."""
         from coin_manager import get_tier_sizes_mojos_from_cfg
