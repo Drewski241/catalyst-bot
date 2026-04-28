@@ -135,6 +135,10 @@ version_info.txt
 # --- Claude Code agent scratch ---
 .claude/
 
+# --- Codex / local agent instructions and skills ---
+.agents/
+AGENTS.md
+
 # --- Internal dev notes (stay local, kept out of GitHub) ---
 # Claude-session handoff prompts, internal audit plans, and other
 # material that would confuse external contributors or leak workflow
