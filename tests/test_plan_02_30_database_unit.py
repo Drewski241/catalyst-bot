@@ -231,6 +231,35 @@ class TestGetOpenOffers(_TempDB):
 
 
 @unittest.skipIf(_SKIP is not None, f"database unavailable: {_SKIP}")
+class TestOfferLifecycleSummary(_TempDB):
+    """get_offer_lifecycle_summary — compact counts for GUI diagnostics."""
+
+    def test_counts_status_and_lifecycle_by_side_for_one_cat(self):
+        _db.add_offer("open-buy", "buy", Decimal("1.00"), Decimal("0.5"),
+                      Decimal("500"), "assetA")
+        _db.add_offer("open-sell", "sell", Decimal("1.10"), Decimal("0.3"),
+                      Decimal("300"), "assetA")
+        _db.add_offer("cancel-buy", "buy", Decimal("1.00"), Decimal("0.5"),
+                      Decimal("500"), "assetA")
+        _db.add_offer("pending-sell", "sell", Decimal("1.10"), Decimal("0.3"),
+                      Decimal("300"), "assetA")
+        _db.add_offer("other-cat", "buy", Decimal("1.00"), Decimal("0.5"),
+                      Decimal("500"), "assetB")
+
+        _db.update_offer_status("cancel-buy", "cancelled")
+        _db.update_offer_lifecycle_state("pending-sell", "cancel_requested")
+
+        summary = _db.get_offer_lifecycle_summary(cat_asset_id="assetA")
+
+        self.assertEqual(summary["total"], 4)
+        self.assertEqual(summary["by_side"]["buy"]["open"], 1)
+        self.assertEqual(summary["by_side"]["buy"]["cancelled"], 1)
+        self.assertEqual(summary["by_side"]["sell"]["open"], 2)
+        self.assertEqual(summary["by_lifecycle"]["cancel_requested"], 1)
+        self.assertEqual(summary["pending_cancel"], 1)
+
+
+@unittest.skipIf(_SKIP is not None, f"database unavailable: {_SKIP}")
 class TestRecordFill(_TempDB):
     """record_fill and get_fills — fill recording round-trip."""
 

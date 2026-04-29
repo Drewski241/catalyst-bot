@@ -10906,6 +10906,7 @@ class BotLoop:
         # Add market intelligence stats (NEW — ecosystem)
         state["market_intel"] = self.market_intel.get_stats()
         state["diagnostics"] = self.runtime_monitor.get_state()
+        state["requote_diagnostics"] = self._get_requote_diagnostics()
 
         # Add Splash stats (V3 — P2P broadcasting)
         state["splash"] = self.splash_manager.get_stats()
@@ -10963,6 +10964,53 @@ class BotLoop:
             state["stats"] = {}
 
         return state
+
+    def _get_requote_diagnostics(self) -> Dict:
+        """Expose compact requote pressure for the GUI."""
+        try:
+            mid_price = Decimal(str(self._current_mid_price or 0))
+        except Exception:
+            mid_price = Decimal("0")
+
+        def threshold_bps(name: str, fallback: str) -> str:
+            try:
+                fraction = Decimal(str(getattr(cfg, name, Decimal(fallback))))
+                return f"{(fraction * Decimal('10000')):.1f}"
+            except Exception:
+                return "0"
+
+        thresholds = {
+            "inner_bps": threshold_bps("REQUOTE_DRIFT_INNER", "0.003"),
+            "mid_bps": threshold_bps("REQUOTE_DRIFT_MID", "0.008"),
+            "full_bps": threshold_bps("REQUOTE_DRIFT_FULL", "0.02"),
+            "emergency_bps": threshold_bps("REQUOTE_DRIFT_EMERGENCY", "0.05"),
+        }
+
+        sides = {}
+        for side in ("buy", "sell"):
+            baseline = Decimal(str(self._last_quoted_price.get(side, "0") or "0"))
+            if mid_price > 0 and baseline > 0:
+                move_bps = abs(mid_price - baseline) / baseline * Decimal("10000")
+            else:
+                move_bps = Decimal("0")
+            sides[side] = {
+                "baseline": str(baseline),
+                "move_bps": f"{move_bps:.1f}",
+                "forced": bool(self._force_requote.get(side, False)),
+                "backoff_secs": round(self._requote_backoff_remaining(side), 1),
+                "pending_cancel": len(self._pending_cancel_wallet_ids(side)),
+            }
+
+        retry_map = getattr(getattr(self, "offer_manager", None), "_pending_cancel_retries", {}) or {}
+        return {
+            "mid_price": str(mid_price),
+            "thresholds": thresholds,
+            "batch_size": int(getattr(cfg, "REQUOTE_BATCH_SIZE", 0) or 0),
+            "cooldown_secs": int(getattr(cfg, "REQUOTE_COOLDOWN_SECS", 0) or 0),
+            "pending_cancel_total": sum(int(v.get("pending_cancel", 0) or 0) for v in sides.values()),
+            "pending_cancel_retries": len(retry_map),
+            "sides": sides,
+        }
 
     def get_price_info(self) -> Dict:
         """Get current price information."""

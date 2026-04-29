@@ -300,6 +300,48 @@ def api_dbx_claim():
     return jsonify(result)
 
 
+@bp.route("/api/market/price-history")
+def api_market_price_history():
+    """Return persisted price samples for the active pair."""
+    asset_id = api_server._active_cat.get("asset_id") or getattr(cfg, "CAT_ASSET_ID", "")
+    if not asset_id:
+        return jsonify({"success": False, "error": "No active CAT", "points": []}), 400
+
+    try:
+        hours = float(request.args.get("hours", "0.333333") or "0.333333")
+    except (TypeError, ValueError):
+        hours = 0.333333
+    hours = max(0.01, min(hours, 24.0))
+
+    try:
+        limit = int(request.args.get("limit", "3000") or "3000")
+    except (TypeError, ValueError):
+        limit = 3000
+    limit = max(2, min(limit, 5000))
+
+    try:
+        from database import get_recent_prices
+        rows = get_recent_prices(asset_id, hours=hours, limit=limit)
+        points = [
+            {
+                "timestamp": row.get("timestamp"),
+                "mid": row.get("combined_price"),
+                "dexie": row.get("dexie_price"),
+                "tibet": row.get("tibet_price"),
+                "strategy": row.get("strategy_used"),
+            }
+            for row in rows
+        ]
+        return jsonify({
+            "success": True,
+            "asset_id": asset_id,
+            "range_hours": hours,
+            "points": points,
+        })
+    except Exception as e:
+        return api_server._api_error(e, request.path)
+
+
 @bp.route("/api/market/orderbook")
 def api_market_orderbook():
     """Force refresh and return orderbook data."""
