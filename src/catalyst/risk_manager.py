@@ -1157,7 +1157,7 @@ class RiskManager:
                 buy_bps = buy_spread * Decimal("10000")
                 sell_bps = sell_spread * Decimal("10000")
                 if buy_bps <= min_bps or sell_bps <= min_bps:
-                    conditions.append(("amber", "Spread compressed to minimum clamp — raise MIN_SPREAD_BPS in Settings → Spread if this persists."))
+                    conditions.append(("amber", "Dynamic spread is at the configured minimum clamp — review Smart Settings or MIN_SPREAD_BPS only if this persists."))
                 if (buy_bps >= max_bps or sell_bps >= max_bps) and loop_count >= 3:
                     conditions.append(("amber", "High volatility — spreads widened to maximum clamp (protective). Reduce MAX_SPREAD_BPS only if comfortable with the risk."))
         except Exception:

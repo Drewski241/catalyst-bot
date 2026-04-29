@@ -2502,6 +2502,153 @@
             font-size: var(--text-xs);
             color: var(--text-tertiary);
         }
+        .workflow-diagnostics-layout {
+            display: grid;
+            grid-template-columns: minmax(0, 2fr) minmax(250px, 0.85fr);
+            gap: var(--space-4);
+            align-items: stretch;
+            margin-bottom: var(--space-5);
+        }
+        .workflow-diagnostics-layout .v4-orderbook {
+            margin-bottom: 0;
+        }
+        .diagnostic-panel {
+            background: var(--bg-surface);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-lg);
+            padding: var(--space-4);
+        }
+        .diagnostic-panel-title {
+            color: var(--text-secondary);
+            font-size: var(--text-sm);
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            margin-bottom: var(--space-3);
+        }
+        .diagnostic-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: var(--space-2);
+        }
+        .diagnostic-tile {
+            min-width: 0;
+            background: rgba(255,255,255,0.035);
+            border: 1px solid rgba(255,255,255,0.075);
+            border-radius: 8px;
+            padding: 10px;
+        }
+        .diagnostic-label {
+            color: var(--text-tertiary);
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            margin-bottom: 4px;
+        }
+        .diagnostic-value {
+            color: var(--text-primary);
+            font-family: var(--font-mono);
+            font-size: var(--text-lg);
+            font-weight: 700;
+            line-height: 1.15;
+        }
+        .diagnostic-sub {
+            color: var(--text-tertiary);
+            font-size: 10px;
+            line-height: 1.35;
+            margin-top: 4px;
+        }
+        .diagnostic-value.buy {
+            color: var(--status-success);
+        }
+        .diagnostic-value.sell {
+            color: var(--status-danger);
+        }
+        .diagnostic-value.warn {
+            color: var(--status-warning);
+        }
+        .intel-price-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 2fr) minmax(260px, 0.8fr);
+            gap: var(--space-4);
+            align-items: stretch;
+            margin-bottom: var(--space-4);
+        }
+        .intel-price-grid .v4-card {
+            margin-bottom: 0 !important;
+        }
+        .price-history-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+        .price-range-btn {
+            border: 1px solid var(--border-subtle);
+            background: rgba(255,255,255,0.035);
+            color: var(--text-secondary);
+            border-radius: 6px;
+            padding: 4px 8px;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .price-range-btn.active,
+        .price-range-btn:hover {
+            color: var(--text-primary);
+            border-color: rgba(99,102,241,0.45);
+            background: rgba(99,102,241,0.14);
+        }
+        .source-coverage-list {
+            display: grid;
+            gap: 8px;
+        }
+        .coverage-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            color: var(--text-secondary);
+            font-size: var(--text-xs);
+        }
+        .coverage-pill {
+            border-radius: 999px;
+            padding: 3px 8px;
+            background: rgba(255,255,255,0.06);
+            color: var(--text-tertiary);
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+        .coverage-pill.ok {
+            background: rgba(16,185,129,0.14);
+            color: var(--status-success);
+        }
+        .coverage-pill.warn {
+            background: rgba(245,158,11,0.14);
+            color: var(--status-warning);
+        }
+        .pnl-flow-diagnostics {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: var(--space-3);
+            margin-bottom: var(--space-5);
+        }
+        @media (max-width: 980px) {
+            .workflow-diagnostics-layout,
+            .intel-price-grid {
+                grid-template-columns: 1fr;
+            }
+            .pnl-flow-diagnostics {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+        }
+        @media (max-width: 560px) {
+            .diagnostic-grid,
+            .pnl-flow-diagnostics {
+                grid-template-columns: 1fr;
+            }
+        }
 
         /* ================================================================
            V4 PHASE 3: FILTER BUTTONS
@@ -9273,15 +9420,43 @@
                         </div>
                     </div>
 
-        <!-- Visual Orderbook -->
-        <div class="v4-orderbook" id="v4Orderbook">
-            <div class="v4-orderbook-title">Order Book Depth</div>
-            <div class="v4-orderbook-chart" id="v4ObChart">
-                <div style="text-align: center; color: var(--text-tertiary); font-size: var(--text-xs); padding: var(--space-4);">Start the bot to see your order book</div>
+        <div class="workflow-diagnostics-layout">
+            <!-- Visual Orderbook -->
+            <div class="v4-orderbook" id="v4Orderbook">
+                <div class="v4-orderbook-title">Order Book Depth</div>
+                <div class="v4-orderbook-chart" id="v4ObChart">
+                    <div style="text-align: center; color: var(--text-tertiary); font-size: var(--text-xs); padding: var(--space-4);">Start the bot to see your order book</div>
+                </div>
+                <div class="v4-ob-summary">
+                    <span id="v4ObBuyTotal" style="color: var(--status-success);">Buy: 0 offers, 0 XCH</span>
+                    <span id="v4ObSellTotal" style="color: var(--status-danger);">Sell: 0 offers, 0 XCH</span>
+                </div>
             </div>
-            <div class="v4-ob-summary">
-                <span id="v4ObBuyTotal" style="color: var(--status-success);">Buy: 0 offers, 0 XCH</span>
-                <span id="v4ObSellTotal" style="color: var(--status-danger);">Sell: 0 offers, 0 XCH</span>
+
+            <div class="diagnostic-panel">
+                <div class="diagnostic-panel-title">Execution Diagnostics</div>
+                <div class="diagnostic-grid" id="offersDiagnosticsGrid">
+                    <div class="diagnostic-tile">
+                        <div class="diagnostic-label">Buy Requote Pressure</div>
+                        <div class="diagnostic-value buy" id="diagBuyRequotePressure">—</div>
+                        <div class="diagnostic-sub" id="diagBuyRequoteSub">waiting for baseline</div>
+                    </div>
+                    <div class="diagnostic-tile">
+                        <div class="diagnostic-label">Sell Requote Pressure</div>
+                        <div class="diagnostic-value sell" id="diagSellRequotePressure">—</div>
+                        <div class="diagnostic-sub" id="diagSellRequoteSub">waiting for baseline</div>
+                    </div>
+                    <div class="diagnostic-tile">
+                        <div class="diagnostic-label">Pending Cancels</div>
+                        <div class="diagnostic-value warn" id="diagPendingCancels">0</div>
+                        <div class="diagnostic-sub" id="diagPendingCancelsSub">Sage/Dexie settle watch</div>
+                    </div>
+                    <div class="diagnostic-tile">
+                        <div class="diagnostic-label">Requote Batch</div>
+                        <div class="diagnostic-value" id="diagRequoteBatch">—</div>
+                        <div class="diagnostic-sub" id="diagRequoteBatchSub">offers per side</div>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -9465,6 +9640,29 @@
                     </div>
                 </div>
 
+                <div class="pnl-flow-diagnostics" id="pnlFlowDiagnostics">
+                    <div class="diagnostic-tile">
+                        <div class="diagnostic-label">Verified Fills</div>
+                        <div class="diagnostic-value" id="pnlVerifiedFlow">0</div>
+                        <div class="diagnostic-sub">booked into PnL</div>
+                    </div>
+                    <div class="diagnostic-tile">
+                        <div class="diagnostic-label">Pending Verification</div>
+                        <div class="diagnostic-value warn" id="pnlPendingVerification">0</div>
+                        <div class="diagnostic-sub">not counted yet</div>
+                    </div>
+                    <div class="diagnostic-tile">
+                        <div class="diagnostic-label">Buy / Sell Flow</div>
+                        <div class="diagnostic-value" id="pnlFlowSplit">—</div>
+                        <div class="diagnostic-sub">verified side balance</div>
+                    </div>
+                    <div class="diagnostic-tile">
+                        <div class="diagnostic-label">Fill Pace</div>
+                        <div class="diagnostic-value" id="pnlFlowPace">0.0/hr</div>
+                        <div class="diagnostic-sub">session velocity</div>
+                    </div>
+                </div>
+
                 <!-- Cumulative PnL Chart Area -->
                 <div style="background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: var(--space-4); margin-bottom: var(--space-5);">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-3);">
@@ -9613,13 +9811,35 @@
                         <span class="service-badge-inline service-badge-spacescan">Spacescan</span>
                     </div>
 
-                    <!-- ===== PRICE HISTORY CHART (moved from dashboard 2026-04-21) ===== -->
-                    <div class="v4-card" id="intelPriceHistoryPanel" style="margin-bottom: var(--space-4);">
-                        <div class="v4-card-header">
-                            <div class="v4-card-title">Mid Price — last 20 minutes</div>
-                            <span style="font-size: var(--text-xs); color: var(--text-secondary);">Samples every 5s · max 240 points</span>
+                    <div class="intel-price-grid">
+                        <!-- ===== PRICE HISTORY CHART (moved from dashboard 2026-04-21) ===== -->
+                        <div class="v4-card" id="intelPriceHistoryPanel">
+                            <div class="v4-card-header">
+                                <div class="v4-card-title" id="v4PriceHistoryTitle">Mid Price - last 20 minutes</div>
+                                <div class="price-history-toolbar" aria-label="Price history range">
+                                    <button class="price-range-btn active" type="button" data-price-range="0.333333" onclick="v4SetPriceHistoryRange(0.333333, this)">20m</button>
+                                    <button class="price-range-btn" type="button" data-price-range="1" onclick="v4SetPriceHistoryRange(1, this)">1h</button>
+                                    <button class="price-range-btn" type="button" data-price-range="6" onclick="v4SetPriceHistoryRange(6, this)">6h</button>
+                                    <button class="price-range-btn" type="button" data-price-range="24" onclick="v4SetPriceHistoryRange(24, this)">24h</button>
+                                </div>
+                            </div>
+                            <div id="v4PriceHistoryChart" style="height: 200px; position: relative;"></div>
                         </div>
-                        <div id="v4PriceHistoryChart" style="height: 200px; position: relative;"></div>
+
+                        <div class="diagnostic-panel">
+                            <div class="diagnostic-panel-title">Market Diagnostics</div>
+                            <div class="source-coverage-list" id="intelSourceCoverage">
+                                <div class="coverage-row"><span>Dexie orderbook</span><span class="coverage-pill" id="coverageDexie">waiting</span></div>
+                                <div class="coverage-row"><span>TibetSwap pool</span><span class="coverage-pill" id="coverageTibet">waiting</span></div>
+                                <div class="coverage-row"><span>Spacescan</span><span class="coverage-pill" id="coverageSpacescan">waiting</span></div>
+                                <div class="coverage-row"><span>Sage wallet</span><span class="coverage-pill" id="coverageSage">waiting</span></div>
+                            </div>
+                            <div style="margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--border-subtle);">
+                                <div class="diagnostic-label">Arb Gap</div>
+                                <div class="diagnostic-value" id="intelArbGapTrend">—</div>
+                                <div class="diagnostic-sub" id="intelArbGapTrendSub">Dexie vs Tibet live spread</div>
+                            </div>
+                        </div>
                     </div>
 
             <!-- Market Intelligence Content (moved from tab) -->
@@ -12463,6 +12683,7 @@
             // If switching to Intel, fetch fresh data
             if (viewName === 'intel' && typeof fetchMarketIntel === 'function') {
                 fetchMarketIntel();
+                try { v4LoadPriceHistory && v4LoadPriceHistory(); } catch (_) {}
             }
             // If switching back to Dashboard, force a fetchDashboard so the
             // Command Centre settings panel + market metrics show up-to-date
@@ -13597,8 +13818,73 @@
         // Updated on every status poll so the sparkline + dashboard chart
         // stay current. Stored in memory only — clears on page reload.
         const _v4PriceHistory = [];
-        const _V4_PRICE_HISTORY_MAX = 240;  // ~20 min at 5s polling
+        const _V4_PRICE_HISTORY_MAX = 2400;
+        let _v4PriceHistoryRangeHours = 0.333333;
+        let _v4PriceHistoryLoading = false;
         let _v4LastPriceSample = 0;
+        function _v4PriceHistoryCutoffMs() {
+            return Date.now() - (_v4PriceHistoryRangeHours * 3600000);
+        }
+        function _v4TrimPriceHistory() {
+            const cutoff = _v4PriceHistoryCutoffMs();
+            while (_v4PriceHistory.length && _v4PriceHistory[0].t < cutoff) {
+                _v4PriceHistory.shift();
+            }
+            while (_v4PriceHistory.length > _V4_PRICE_HISTORY_MAX) {
+                _v4PriceHistory.shift();
+            }
+        }
+        function _v4PriceRangeLabel(hours) {
+            if (hours >= 24) return 'last 24 hours';
+            if (hours >= 6) return 'last 6 hours';
+            if (hours >= 1) return 'last 1 hour';
+            return 'last 20 minutes';
+        }
+        function _v4UpdatePriceHistoryTitle(extraText) {
+            const title = document.getElementById('v4PriceHistoryTitle');
+            if (!title) return;
+            title.textContent = 'Mid Price - ' + _v4PriceRangeLabel(_v4PriceHistoryRangeHours)
+                + (extraText ? ' · ' + extraText : '');
+        }
+        async function v4LoadPriceHistory(force = false) {
+            if (_v4PriceHistoryLoading && !force) return;
+            if (!currentCAT || !currentCAT.asset_id) {
+                _v4PriceHistory.length = 0;
+                v4RenderPriceHistoryChart();
+                return;
+            }
+            _v4PriceHistoryLoading = true;
+            _v4UpdatePriceHistoryTitle('loading');
+            try {
+                const url = `${API_URL}/market/price-history?hours=${encodeURIComponent(_v4PriceHistoryRangeHours)}&limit=3000`;
+                const response = await apiFetch(url, { signal: AbortSignal.timeout(12000) });
+                const data = await response.json();
+                if (data && data.success && Array.isArray(data.points)) {
+                    _v4PriceHistory.length = 0;
+                    data.points.forEach(point => {
+                        const y = parseFloat(point.mid || point.combined_price || 0);
+                        const t = Date.parse(point.timestamp || '') || Date.now();
+                        if (y > 0 && Number.isFinite(y)) {
+                            _v4PriceHistory.push({ t, y });
+                        }
+                    });
+                    _v4TrimPriceHistory();
+                }
+            } catch (err) {
+                console.warn('[PRICE HISTORY] Fetch failed:', err.message || err);
+            } finally {
+                _v4PriceHistoryLoading = false;
+                _v4UpdatePriceHistoryTitle();
+                v4RenderPriceHistoryChart();
+            }
+        }
+        function v4SetPriceHistoryRange(hours, btn) {
+            _v4PriceHistoryRangeHours = Number(hours || 0.333333);
+            document.querySelectorAll('.price-range-btn').forEach(b => {
+                b.classList.toggle('active', b === btn || Number(b.dataset.priceRange) === _v4PriceHistoryRangeHours);
+            });
+            v4LoadPriceHistory(true);
+        }
         function v4RecordPrice(price) {
             const p = parseFloat(price || 0);
             if (!p || !isFinite(p) || p <= 0) return;
@@ -13607,9 +13893,7 @@
             if (now - _v4LastPriceSample < 4000) return;
             _v4LastPriceSample = now;
             _v4PriceHistory.push({ t: now, y: p });
-            if (_v4PriceHistory.length > _V4_PRICE_HISTORY_MAX) {
-                _v4PriceHistory.shift();
-            }
+            _v4TrimPriceHistory();
             // Render the full-size chart if it exists
             try { v4RenderPriceHistoryChart(); } catch (_) {}
         }
@@ -13650,6 +13934,7 @@
             });
         }
         window.v4RecordPrice = v4RecordPrice;
+        window.v4SetPriceHistoryRange = v4SetPriceHistoryRange;
 
         // ── Inventory/position history ─────────────────────────────────
         // Mirrors the price history recorder. Position is a signed number
@@ -13814,6 +14099,85 @@
             }
             const heroLoops = document.getElementById('heroLoops');
             if (heroLoops && data.stats) heroLoops.textContent = (data.stats.loop_count || 0) + ' loops';
+        }
+
+        function _diagText(id, value) {
+            const node = document.getElementById(id);
+            if (node) node.textContent = value;
+        }
+        function _diagPill(id, ok, label) {
+            const node = document.getElementById(id);
+            if (!node) return;
+            node.textContent = label || (ok ? 'ready' : 'limited');
+            node.className = 'coverage-pill ' + (ok ? 'ok' : 'warn');
+        }
+        function _fmtDiagBps(raw) {
+            const n = Number(raw || 0);
+            if (!Number.isFinite(n)) return '0.0 bps';
+            return n.toFixed(1) + ' bps';
+        }
+        function updateOfferDiagnostics(data = {}) {
+            const rq = data.requote_diagnostics || {};
+            const sides = rq.sides || {};
+            const thresholds = rq.thresholds || {};
+            const inner = Number(thresholds.inner_bps || 30);
+            const mid = Number(thresholds.mid_bps || 80);
+            const renderSide = (side, valueId, subId) => {
+                const s = sides[side] || {};
+                const move = Number(s.move_bps || 0);
+                _diagText(valueId, _fmtDiagBps(move));
+                const parts = [];
+                if (s.forced) parts.push('forced');
+                if (Number(s.backoff_secs || 0) > 0) parts.push(String(Math.ceil(Number(s.backoff_secs))) + 's backoff');
+                parts.push(move >= mid ? 'mid-tier pressure' : move >= inner ? 'inner-tier pressure' : 'below threshold');
+                _diagText(subId, parts.join(' · '));
+            };
+            renderSide('buy', 'diagBuyRequotePressure', 'diagBuyRequoteSub');
+            renderSide('sell', 'diagSellRequotePressure', 'diagSellRequoteSub');
+
+            const lifecyclePending = Number((data.offer_lifecycle || {}).pending_cancel || 0);
+            const pending = Number(rq.pending_cancel_total || 0) || lifecyclePending;
+            _diagText('diagPendingCancels', String(pending));
+            _diagText('diagPendingCancelsSub', pending > 0 ? 'creation guarded until clear' : 'no blocked cancels');
+            _diagText('diagRequoteBatch', rq.batch_size ? String(rq.batch_size) : '—');
+            _diagText('diagRequoteBatchSub', rq.cooldown_secs ? (String(rq.cooldown_secs) + 's cooldown') : 'offers per side');
+        }
+        function updateIntelDiagnostics(data = {}) {
+            const pricing = data.pricing || {};
+            const hasDexie = Number(pricing.bid || 0) > 0 || Number(pricing.ask || 0) > 0;
+            const amm = (typeof _lastAmmPriceData !== 'undefined' && _lastAmmPriceData) || {};
+            const summary = (typeof _lastMarketSummary !== 'undefined' && _lastMarketSummary) || {};
+            const summaryTibetXch = Number(summary.pool_xch || 0);
+            const hasTibet = Number(pricing.tibet_price || 0) > 0
+                || String(pricing.source || '').toLowerCase() === 'tibetswap'
+                || Boolean(amm.available)
+                || Number(amm.amm_price || 0) > 0
+                || Number(amm.xch_reserve || 0) > 0
+                || summaryTibetXch > 0;
+            const health = data.chia_health || {};
+            const healthText = String(health.status || health.wallet || '').toLowerCase();
+            const sageOk = healthText.indexOf('error') === -1 && healthText.indexOf('offline') === -1;
+            const spacescan = data.diagnostics && data.diagnostics.spacescan_enabled !== false;
+            _diagPill('coverageDexie', hasDexie, hasDexie ? 'ready' : 'thin');
+            _diagPill('coverageTibet', hasTibet, hasTibet ? 'ready' : 'none');
+            _diagPill('coverageSpacescan', spacescan, spacescan ? 'enabled' : 'limited');
+            _diagPill('coverageSage', sageOk, sageOk ? 'ready' : 'check');
+
+            const gap = Number(data.arb_gap_bps || 0);
+            _diagText('intelArbGapTrend', gap > 0 ? (gap / 100).toFixed(2) + '%' : '0.00%');
+            _diagText('intelArbGapTrendSub', gap >= 500 ? 'shock-risk range' : gap >= 200 ? 'sniper watch' : 'normal watch');
+        }
+        function updatePnlFlowDiagnostics(data = {}) {
+            const stats = data.stats || {};
+            const fills = Number(stats.total_fills || stats.verified_fills || 0);
+            const pending = Number(stats.pending_verification_count || stats.pending_fills || 0);
+            const fillRate = Number(stats.fill_rate_per_hour || 0);
+            const buyFills = Number(stats.buy_fills || stats.total_buy_fills || 0);
+            const sellFills = Number(stats.sell_fills || stats.total_sell_fills || 0);
+            _diagText('pnlVerifiedFlow', String(fills));
+            _diagText('pnlPendingVerification', String(pending));
+            _diagText('pnlFlowSplit', (buyFills || sellFills) ? (buyFills + 'B / ' + sellFills + 'S') : '—');
+            _diagText('pnlFlowPace', fillRate.toFixed(1) + '/hr');
         }
 
         // -----------------------------------------------------------------
@@ -15191,6 +15555,33 @@
         let _saLastSuggestions = [];
         let _saLastActionKey = '';
         let _advisorActionItems = [];
+        const _SA_CLOSE_GAP_PROMOTE_BPS = 200;
+        const _SA_CLOSE_GAP_CLEAR_BPS = 120;
+        const _SA_CLOSE_GAP_CONFIRM_UPDATES = 3;
+        let _saCloseGapSignal = { key: '', hits: 0, misses: 0, confirmed: false };
+
+        function saCloseGapSignalReady(candidate, key, holdAllowed) {
+            const nextKey = String(key || 'default');
+            if (candidate) {
+                if (_saCloseGapSignal.key !== nextKey) {
+                    _saCloseGapSignal = { key: nextKey, hits: 0, misses: 0, confirmed: false };
+                }
+                _saCloseGapSignal.hits += 1;
+                _saCloseGapSignal.misses = 0;
+                if (_saCloseGapSignal.hits >= _SA_CLOSE_GAP_CONFIRM_UPDATES) {
+                    _saCloseGapSignal.confirmed = true;
+                }
+                return _saCloseGapSignal.confirmed;
+            }
+
+            if (_saCloseGapSignal.confirmed && holdAllowed && _saCloseGapSignal.misses < 2) {
+                _saCloseGapSignal.misses += 1;
+                return true;
+            }
+
+            _saCloseGapSignal = { key: '', hits: 0, misses: 0, confirmed: false };
+            return false;
+        }
 
         function getAdvisorActionTitle(actionType) {
             switch (String(actionType || '')) {
@@ -15412,6 +15803,39 @@
             const totalFills = parseInt(perf.total_fills ?? 0, 10) || 0;
             const sniperEnabled = !!(s.features && s.features.sniper);
             const isRunning = !!(bot_state && bot_state.running);
+            const _spreadCooldownActive = Date.now() < _saSpreadActionCooldownUntil;
+            const _arbDataReliable = competitorBestBid > 0 && competitorBestAsk > 0;
+            const closeGapSafeRoom = baseBps - Math.max(arbGapBps + 20, 80);
+            const closeGapWideEnough = competitorBps > 0
+                ? baseBps >= Math.max(600, competitorBps * 1.75)
+                : baseBps >= 600;
+            const closeGapKey = [
+                currentCAT && currentCAT.asset_id ? currentCAT.asset_id : 'pair',
+                Math.round(baseBps / 50) * 50,
+                Math.round(competitorBps / 50) * 50
+            ].join(':');
+            const closeGapCandidate = isRunning
+                && !ladderStillBuilding
+                && liveOpenBuys > 0
+                && liveOpenSells > 0
+                && !_gapCloserActive
+                && baseBps > 400
+                && !_spreadCooldownActive
+                && arbGapBps >= _SA_CLOSE_GAP_PROMOTE_BPS
+                && closeGapSafeRoom > 150
+                && _arbDataReliable
+                && closeGapWideEnough
+                && uptimeSecs >= 900;
+            const closeGapHoldAllowed = isRunning
+                && !ladderStillBuilding
+                && !_gapCloserActive
+                && !_spreadCooldownActive
+                && arbGapBps >= _SA_CLOSE_GAP_CLEAR_BPS;
+            const closeGapReady = saCloseGapSignalReady(
+                closeGapCandidate,
+                closeGapKey,
+                closeGapHoldAllowed
+            );
 
             function pushSuggestion(item) {
                 if (!item) return;
@@ -15589,19 +16013,20 @@
                     });
                 }
 
-                if (arbGapBps >= 100) {
+                if (arbGapBps >= 100 && !closeGapReady) {
                     const edgeMsg = bothSidesAtEdge
                         ? ' Your live book is already sitting on the edge, so tightening now would mostly feed arb.'
                         : '';
+                    const gapAdvice = arbGapBps >= _SA_CLOSE_GAP_PROMOTE_BPS
+                        ? ' Waiting for the gap to hold across multiple cycles before recommending Close the Gap.'
+                        : ' Let the gap settle before changing spreads aggressively.';
                     pushSuggestion({
                         type: arbGapBps >= 200 ? 'warning' : 'info',
                         icon: '<>',
-                        msg: 'Arb gap is ' + fmtPct(arbGapBps) + ' between Dexie and TibetSwap.' + edgeMsg + ' Let the gap settle before changing spreads aggressively.',
+                        msg: 'Arb gap is ' + fmtPct(arbGapBps) + ' between Dexie and TibetSwap.' + edgeMsg + gapAdvice,
                         action: null
                     });
                 }
-
-                const _spreadCooldownActive = Date.now() < _saSpreadActionCooldownUntil;
 
                 // Smart action: adapts to market conditions.
                 //  • Arb gap present (≥50 bps) → "Close the Gap" (probe for arb floor)
@@ -15613,7 +16038,6 @@
                 // spread produced targets wider than BASE and the "Tighten"
                 // button silently widened the user's config.
                 if (!_gapCloserActive && baseBps > 400 && !_spreadCooldownActive) {
-                    const safeRoom = baseBps - Math.max(arbGapBps + 20, 80);
                     // Arb-gap reliability gate: the arb gap is computed
                     // against Dexie's price, which falls back to a stale
                     // 24h average for thin/illiquid pairs. Without legit
@@ -15622,8 +16046,7 @@
                     // act on, so probing is futile and the recommendation
                     // becomes misleading. Require a real two-sided Dexie
                     // market before suggesting Close the Gap.
-                    const _arbDataReliable = competitorBestBid > 0 && competitorBestAsk > 0;
-                    if (arbGapBps >= 50 && safeRoom > 150 && _arbDataReliable) {
+                    if (closeGapReady) {
                         // Active arb gap WITH a real two-sided Dexie market — probe makes sense
                         pushSuggestion({
                             type: 'warning',
@@ -15644,7 +16067,7 @@
                             msg: 'Arb gap reads ' + fmtPct(arbGapBps) + ' but Dexie has no live two-sided market for this pair — the gap is calculated against stale historical price data, not a real opportunity. Probing for the arb floor here would just expire offers without proving anything.',
                             action: null
                         });
-                    } else if (arbGapBps < 50 && fillsHr === 0 && safeRoom > 100 && configBaseBps > 400) {
+                    } else if (arbGapBps < 50 && fillsHr === 0 && closeGapSafeRoom > 100 && configBaseBps > 400) {
                         // No arb gap, but BASE is wide with zero fills — tighten the actual config.
                         //
                         // Only fire this when we have NO competitor data. The
@@ -21337,6 +21760,7 @@
                         if (typeof _v4LastInvSample !== 'undefined') _v4LastInvSample = 0;
                         window._v4LastOrderbookBuys = [];
                         window._v4LastOrderbookSells = [];
+                        try { v4LoadPriceHistory && v4LoadPriceHistory(true); } catch (_) {}
                         try { v4RenderPriceSparkline && v4RenderPriceSparkline(); } catch (_) {}
                         try { v4RenderPriceHistoryChart && v4RenderPriceHistoryChart(); } catch (_) {}
                         try { v4RenderInventoryChart && v4RenderInventoryChart(); } catch (_) {}
@@ -21449,11 +21873,13 @@
         // MARKET SUMMARY — Live market data strip
         // =================================================================
         let _marketSummaryTimer = null;
+        let _lastMarketSummary = null;
 
         async function fetchMarketSummary() {
             if (isWalletSwitchBusy()) return;
             // No trading pair selected — show friendly prompt instead of calling API
             if (!currentCAT || !currentCAT.asset_id) {
+                _lastMarketSummary = null;
                 const noPairMsg = 'Select pair';
                 const noPairColor = 'rgba(255,255,255,0.3)';
                 ['mktBestBid','mktBestAsk','mktPoolDepth','mktArbGap'].forEach(function(id) {
@@ -21474,6 +21900,7 @@
                 const resp = await apiFetch(`${API_URL}/market/summary`, { signal: AbortSignal.timeout(15000) });
                 const d = await resp.json();
                 if (!d.has_data) return;
+                _lastMarketSummary = d;
 
                 const fmt = (v, dec) => v > 0 ? parseFloat(v).toFixed(dec) : '—';
                 const fmtPrice = (v) => {
@@ -22160,6 +22587,9 @@
 
             // V4 Phase 3: Update visual orderbook
             v4UpdateOrderbook(data.offers.buy, data.offers.sell);
+            updateOfferDiagnostics(data);
+            updateIntelDiagnostics(data);
+            updatePnlFlowDiagnostics(data);
 
             // Show/hide empty state for offers view
             const offersEmptyState = document.getElementById('offersEmptyState');
@@ -23276,6 +23706,7 @@
             const pendingCount = Number(data.pending_verification_count || 0);
             const fillRate = Number(data.fill_rate_per_hour || 0);
             const sniperStats = data.sniper || ((_dashboardData && _dashboardData.sniper) ? _dashboardData.sniper : null);
+            try { updatePnlFlowDiagnostics({ stats: data }); } catch (_) {}
 
             if (data.realised_pnl_xch !== undefined) {
                 const pnl = parseFloat(data.realised_pnl_xch || 0);
@@ -24058,6 +24489,14 @@
             return merged;
         }
 
+        function normalizeMarketConditionText(text) {
+            const raw = String(text || '');
+            if (raw.indexOf('Spread compressed to minimum clamp') !== -1) {
+                return 'Dynamic spread is at the configured minimum clamp — review Smart Settings or MIN_SPREAD_BPS only if this persists.';
+            }
+            return raw;
+        }
+
         function updateMarketHealth(h) {
             // Update traffic light and market metrics from health data
             if (!h) return;
@@ -24103,7 +24542,7 @@
                 condEl.innerHTML = h.conditions.map(c => {
                     const color = c.level === 'red' ? 'var(--status-danger)' : (c.level === 'amber' ? 'var(--status-warning)' : 'var(--slate-400)');
                     const icon = c.level === 'red' ? '🔴 ' : (c.level === 'amber' ? '🟡 ' : 'ℹ️ ');
-                    return '<div class="cc-condition-item" style="color:' + color + '; line-height: 1.45; margin-bottom: 4px;">' + icon + escapeHtml(c.text) + '</div>';
+                    return '<div class="cc-condition-item" style="color:' + color + '; line-height: 1.45; margin-bottom: 4px;">' + icon + escapeHtml(normalizeMarketConditionText(c.text)) + '</div>';
                 }).join('');
             } else if (condEl) {
                 condEl.innerHTML = '';
@@ -25125,11 +25564,17 @@
                     const sizeNum = parseFloat(sizeRaw);
                     if (!Number.isNaN(sizeNum) && sizeNum > 0) msg += ' size ' + sizeNum.toFixed(4) + ' XCH';
                 }
-                msg += localStatus === 'expired' ? ' expired' : ' closed';
+                if (localStatus === 'expired') {
+                    msg += ' expired (no fill)';
+                } else if (localStatus === 'cancelled' || localStatus === 'canceled') {
+                    msg += ' cancelled (no fill)';
+                } else {
+                    msg += ' closed without fill';
+                }
                 return {
                     icon: localStatus === 'expired' ? '⌛' : 'ℹ️',
                     msg: msg,
-                    cls: side === 'BUY' ? 'la-buy' : (side === 'SELL' ? 'la-sell' : 'la-info')
+                    cls: 'la-info'
                 };
             }
             if (eventType === 'pnl_match')
@@ -31840,6 +32285,7 @@ document.addEventListener('DOMContentLoaded', () => {
 // the AMM status bar in the dashboard.
 
 let _ammPollInterval = null;
+let _lastAmmPriceData = null;
 
 async function pollAmmPrice() {
     try {
@@ -31853,6 +32299,7 @@ async function pollAmmPrice() {
 }
 
 function updateAmmStatusBar(data) {
+    _lastAmmPriceData = data || null;
     const bar = document.getElementById('ammStatusBar');
     if (!bar) return;
 

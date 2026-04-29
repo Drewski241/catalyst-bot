@@ -492,7 +492,7 @@ def api_status():
     bot = api_server.bot
     cfg = api_server.cfg
     try:
-        from database import get_recent_events, get_open_offers
+        from database import get_offer_lifecycle_summary, get_recent_events, get_open_offers
 
         # If bot hasn't been created yet, return minimal static state.
         # DO NOT make live network calls during polling — /api/status is called
@@ -1351,6 +1351,13 @@ def api_status():
         except Exception as _risk_err:
             risk_out = {"error": f"risk_state_unavailable: {_risk_err}"}
 
+        try:
+            lifecycle_out = get_offer_lifecycle_summary(
+                api_server._active_cat.get("asset_id") or getattr(cfg, "CAT_ASSET_ID", "")
+            )
+        except Exception:
+            lifecycle_out = {}
+
         # --- Assemble response ---
         result = {
             "running": raw.get("running", False),
@@ -1365,6 +1372,8 @@ def api_status():
             "risk": risk_out,
             "sniper": raw.get("sniper") or {},
             "diagnostics": raw.get("diagnostics") or {},
+            "requote_diagnostics": raw.get("requote_diagnostics") or {},
+            "offer_lifecycle": lifecycle_out,
             "chia_health": api_server._get_health_snapshot() if not raw.get("running", False) else (raw.get("chia_health") or {}),
             "wallet_type": raw.get("wallet_type", "sage"),
             "current_cat": {

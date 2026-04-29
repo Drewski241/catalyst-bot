@@ -1909,6 +1909,57 @@ def get_open_offers(side: str = None, cat_asset_id: str = None,
     return [dict(row) for row in rows]
 
 
+def get_offer_lifecycle_summary(cat_asset_id: str = None) -> Dict:
+    """Return compact offer status/lifecycle counts for GUI diagnostics."""
+    empty_side = {"open": 0, "filled": 0, "cancelled": 0, "expired": 0}
+    summary = {
+        "total": 0,
+        "by_side": {
+            "buy": dict(empty_side),
+            "sell": dict(empty_side),
+        },
+        "by_status": dict(empty_side),
+        "by_lifecycle": {},
+        "pending_cancel": 0,
+    }
+
+    conn = get_connection()
+    query = (
+        "SELECT side, status, COALESCE(lifecycle_state, status, 'open') AS lifecycle_state, "
+        "COUNT(*) AS count FROM offers"
+    )
+    params = []
+    if cat_asset_id:
+        query += " WHERE cat_asset_id=?"
+        params.append(cat_asset_id)
+    query += " GROUP BY side, status, COALESCE(lifecycle_state, status, 'open')"
+
+    for row in conn.execute(query, params).fetchall():
+        side = str(row["side"] or "").lower()
+        status = str(row["status"] or "open").lower()
+        lifecycle = str(row["lifecycle_state"] or status or "open").lower()
+        count = int(row["count"] or 0)
+
+        summary["total"] += count
+        if status not in summary["by_status"]:
+            summary["by_status"][status] = 0
+        summary["by_status"][status] += count
+
+        if side not in summary["by_side"]:
+            summary["by_side"][side] = dict(empty_side)
+        if status not in summary["by_side"][side]:
+            summary["by_side"][side][status] = 0
+        summary["by_side"][side][status] += count
+
+        summary["by_lifecycle"][lifecycle] = (
+            summary["by_lifecycle"].get(lifecycle, 0) + count
+        )
+        if lifecycle in ("cancel_requested", "cancel_sent"):
+            summary["pending_cancel"] += count
+
+    return summary
+
+
 def get_offer(trade_id: str) -> Optional[Dict]:
     """Get a single offer by trade_id."""
     conn = get_connection()
