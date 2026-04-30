@@ -69,3 +69,18 @@ def test_running_settings_restart_warning_is_setup_only():
     assert "isRunning && setupActive" in html
     assert "try { updateSettingsRestartBannerVisibility(); } catch (_) {}" in html
     assert "banner.classList.toggle('is-visible', isRunning);" not in html
+
+
+def test_recovery_guidance_collapses_expected_ladder_noise():
+    html = GUI.read_text(encoding="utf-8", errors="replace")
+
+    assert "function isRecoveryGuidanceActive()" in html
+    assert "ladderStillBuilding && !isRecoveryGuidanceActive()" in html
+    assert "function isRecoveryExpectedOfferCountDiagnostic(alert)" in html
+    assert "if (isRecoveryExpectedOfferCountDiagnostic(a)) return false;" in html
+
+
+def test_market_health_copy_distinguishes_recovery_from_market_health():
+    html = GUI.read_text(encoding="utf-8", errors="replace")
+
+    assert "Market healthy — bot rebuilding ladder" in html
