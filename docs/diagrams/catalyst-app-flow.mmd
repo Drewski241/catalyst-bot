@@ -7,6 +7,8 @@ flowchart LR
     TS["TibetSwap pool data"] --> PE["Price Engine"]
     DXM["Dexie market data"] --> PE
     DXM --> MI["Market Intel"]
+    CS["Coinset.org / local full node"] --> MW["Mempool watcher"]
+    MW -->|pending spends| BL
     PE -->|mid price + arb gap| BL
     MI -->|order book + depth| BL
 

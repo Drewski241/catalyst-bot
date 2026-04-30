@@ -1,5 +1,8 @@
-flowchart LR
-    BL["Bot Loop"] -->|create / cancel / requote| OM["Offer Manager"]
+flowchart TB
+    CS["Coinset.org / local full node"] -->|pending spends| MW["Mempool watcher"]
+    MW -->|fill-imminent signal| BL["Bot Loop"]
+
+    BL -->|create / cancel / requote| OM["Offer Manager"]
     CM["Coin Manager"] -->|tier coins + fee coins| OM
     RM["Risk Manager"] -->|spread + skew limits| OM
 
