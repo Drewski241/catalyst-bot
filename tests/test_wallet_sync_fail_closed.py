@@ -39,6 +39,7 @@ class WalletSyncFailClosedTests(unittest.TestCase):
         fake_database.transition_offer = lambda *args, **kwargs: None
         fake_database.mark_cancel_attempted = lambda *args, **kwargs: None
         fake_database.update_offer_coin_id = lambda *args, **kwargs: None
+        fake_database.update_offer_bech32 = lambda *args, **kwargs: None
         fake_database.get_open_offers = lambda *args, **kwargs: []
         fake_database.get_offer = lambda *args, **kwargs: None
         fake_database.record_fill = lambda *args, **kwargs: 1

@@ -8068,8 +8068,8 @@
             <div class="gate-explainer" id="startupExplainerCard" style="display: none;">
                 <div class="gate-explainer-title">What is Sage Wallet?</div>
                 <div class="gate-explainer-text">
-                    <strong>Sage</strong> is a fast, lightweight Chia wallet that doesn't need a full node — it syncs
-                    in seconds and connects directly to the blockchain. This bot uses Sage for all wallet operations:
+                    <strong>Sage</strong> is the wallet this app uses for live trading. It syncs
+                    quickly and connects directly to the Chia blockchain. This bot uses Sage for all wallet operations:
                     creating offers, managing coins, and tracking your portfolio.
                 </div>
                 <a href="/api/open-external?url=https%3A%2F%2Fsagewallet.net%2F" target="startupExternalLinkFrame" rel="noopener" class="gate-explainer-link">
@@ -11812,7 +11812,7 @@
                     <div>
                         <div class="v4-modal-kicker">About</div>
                         <h2 class="v4-modal-title"><span class="catalyst-cat">CAT</span><span class="catalyst-alyst">alyst</span></h2>
-                        <p class="v4-modal-copy">A native desktop app for automated Chia CAT market making on Dexie. Runs a live buy/sell ladder, monitors fills via mempool, tracks PnL, reads market intel from Dexie, TibetSwap, and Spacescan, and manages coins — all from a single window.</p>
+                        <p class="v4-modal-copy">A native desktop app for automated Chia CAT market making from Sage Wallet. CATalyst builds and manages a live buy/sell ladder on Dexie, watches TibetSwap and Coinset for fast market and mempool signals, verifies fills with Sage, Dexie, and Spacescan evidence, and keeps coin pools prepared for the next cycle.</p>
                         <div class="about-modal-brand">
                             <div class="about-modal-brand-note">Created by <strong>MonkeyZoo</strong></div>
                             <img class="about-modal-brand-logo" src="/assets/MonkeyZoo_Logo.png" alt="MonkeyZoo logo">
@@ -11824,20 +11824,18 @@
                     <div class="v4-modal-panel v4-modal-panel--info">
                         <div class="v4-modal-panel-title">What the app does</div>
                         <div class="v4-modal-panel-copy">
-                            Watches wallet state, prepares offer-sized coins, builds a tiered buy/sell ladder, monitors market data, reacts to fills, and manages live offers while applying inventory, spread, sniper, and recovery rules. A mempool watcher detects incoming fills within seconds of a blockchain spend. Broadcast support via Splash P2P network is included.
+                            Connects to Sage Wallet, prepares offer-sized XCH and CAT coins, builds a tiered buy/sell ladder, posts offers to Dexie, optionally broadcasts through Splash P2P, monitors live market data, tracks fills, updates PnL, and applies spread, inventory, sniper, TibetSwap shock, cancel-settle, topup, and recovery guards while trading.
                         </div>
                     </div>
                     <div class="v4-modal-panel">
-                        <div class="v4-modal-panel-title">What's new — April 2026 refresh</div>
+                        <div class="v4-modal-panel-title">What's current — April 2026 live build</div>
                         <div class="v4-modal-panel-copy">
-                            <strong>Dashboard layout overhaul</strong> — Running bar sits directly under the token pill, with clearly labelled <em>TibetSwap Live AMM</em> and <em>Volume &amp; Token Info</em> strips (each shows its data source), plus a symmetrical 5×2 grid of info cards.<br>
-                            <strong>Guidance panel</strong> — Recommendations + Advisor merged into a single card so you see actions and context in one place; paired with a 5-line rolling Activity feed (timestamps restored, no scrollbar).<br>
-                            <strong>Settings sub-tabs</strong> — Settings now splits into <em>Live</em> (hot-reload tweaks safe while running) and <em>Setup</em> (full config). Live Controls moved here from the dashboard. Saving Setup edits while running shows an amber "applies on next restart" banner instead of hard-locking fields.<br>
-                            <strong>Data Reset tab</strong> — Reset P&amp;L, Clear Offer History, and Full Reset split out of Settings into their own left-nav tab.<br>
-                            <strong>Sharper recommendations</strong> — Panel dedup so circuit-breaker, reserve-floor, and capacity alerts no longer render twice. Spacescan-fed tips flag themselves when the 24h cache is stale. The "long uptime zero fills" nudge now also fires for sparse-fill runs, not just zero-fill ones.<br>
-                            <strong>Deposit advisor hardening</strong> — Coin-prep consolidation outputs no longer trigger false "New XCH/CAT deposit — allocate?" prompts. One-shot startup migration clears any alerts left over from earlier runs.<br>
-                            <strong>Smart Defaults v2 additions</strong> — Proactive coin-topup drip, topup-budget autoscale, F87 MAX_POSITION guard consistency, misfit-orphan reclaim, external-deposit allocation modal.<br>
-                            <strong>Website link fix</strong> — Dexie token website URLs without a protocol (e.g. <code>www.example.com</code>) are now opened correctly in the default browser instead of being silently blocked as same-origin.
+                            <strong>Sage-only startup</strong> - First run guides testers through Sage RPC, fingerprint selection, Spacescan setup, Splash setup, Smart Settings, coin prep, and the start guard using the same wallet path the live bot uses.<br>
+                            <strong>Smart Settings refresh</strong> - Smart Settings uses the selected CAT, live Dexie/TibetSwap/Spacescan/Sage context where available, handles thin or new CATs conservatively, and writes TibetSwap shock-cancel fields, reserves, ladder depth, tier sizes, topup pool, and safety limits together.<br>
+                            <strong>Safer requote and cancel recovery</strong> - Defensive TibetSwap shock cancels block replacement stacking until Sage stops reporting cancelled offers as active. A stale pending-cancel watchdog retries old wallet-active cancels while keeping replacement creation blocked.<br>
+                            <strong>Coin prep and topup improvements</strong> - Prepared XCH/CAT pools, fee coins, reserve coins, and sniper/topup outputs are classified immediately so live topup does not churn useful coins back into reserve.<br>
+                            <strong>Dashboard guidance cleanup</strong> - Guidance waits for stronger tipping points before showing advice, deduplicates overlapping alerts, and keeps action items separate from lower-confidence advisor notes.<br>
+                            <strong>Diagnostics and charts</strong> - Market Diagnostics show Dexie, TibetSwap, Spacescan, Sage, Splash, and arb-gap health in the relevant tabs, with longer price context and more detailed order/depth views where the data exists.
                         </div>
                     </div>
                     <div class="v4-modal-panel">
@@ -11846,7 +11844,7 @@
                             <strong>Desktop shell</strong> — native window, system tray, and OS notifications.<br>
                             <strong>Mempool watcher</strong> — fill detection in 5–18 seconds via Coinset mempool scanning.<br>
                             <strong>Hardened safeguards</strong> — silent-loss rate alerts, position sanity checks, cancel-storm protection, daily DB↔wallet reconciliation, background-thread liveness watchdog, WAL monitoring, and per-cycle SLA timing.<br>
-                            <strong>Startup self-test</strong> — pings every external service (Sage, Coinset, Tibet, Dexie, Spacescan) at startup and tells you what will be missing if anything is down.<br>
+                            <strong>Startup self-test</strong> — pings every external service used by the app (Sage, Coinset, TibetSwap, Dexie, Spacescan, Splash where enabled) and tells you what will be missing if anything is down.<br>
                             <strong>Settings audit log</strong> — every config change is recorded with who/when/what so you can investigate after the fact.<br>
                             <strong>Light mode polish</strong> — every panel and modal now reads cleanly on a light background.<br>
                             <strong>PnL statistics</strong> — volume, avg fill size, avg trip time, avg profit per trip, open legs panel.<br>
@@ -11856,7 +11854,7 @@
                     <div class="v4-modal-panel v4-modal-panel--warning">
                         <div class="v4-modal-panel-title">Important risks</div>
                         <div class="v4-modal-panel-copy">
-                            This app can create, cancel, and replace real on-chain offers using your wallet. Market gaps, wallet sync issues, price shocks, bad settings, network delays, or third-party service failures can still lead to losses, missed fills, or unmanaged exposure.
+                            This app can create, cancel, and replace real on-chain offers using Sage Wallet. Market gaps, wallet sync issues, price shocks, bad settings, network delays, stale third-party data, or delayed cancel settlement can still lead to losses, missed fills, or unmanaged exposure.
                         </div>
                     </div>
                     <div class="v4-modal-panel v4-modal-panel--danger">
@@ -11921,45 +11919,46 @@
                 <!-- OVERVIEW -->
                 <div id="help_overview" class="help-panel">
                     <h3 style="color: var(--accent-primary-hover); margin-top: 0;">What does this bot do?</h3>
-                    <p>This bot is an <strong>automated market maker</strong> for Chia blockchain CAT tokens on the <strong>Dexie exchange</strong>. It continuously creates buy and sell offers around a reference price, earning the spread when both sides fill.</p>
+                    <p>This bot is an <strong>automated market maker</strong> for Chia blockchain CAT tokens using <strong>Sage Wallet</strong>, <strong>Dexie</strong>, <strong>TibetSwap</strong>, <strong>Coinset</strong>, <strong>Spacescan</strong>, and optional <strong>Splash P2P</strong>. It continuously creates buy and sell offers around a reference price, protects against obvious arb pressure, and tracks fills, inventory, PnL, coins, and service health from one local desktop app.</p>
                     <h3 style="color: var(--accent-primary-hover);">How it works — the cycle</h3>
-                    <p>The bot runs a complete cycle every loop interval (default 45s). Three background watchers run continuously to give the main loop fast signals: a <strong>price watcher</strong> polls TibetSwap every 12 seconds for swaps; an <strong>AMM monitor</strong> tracks Tibet pool reserve drift continuously; and a <strong>mempool watcher</strong> hits the Coinset mempool every 5 seconds looking for pending spends on the Tibet pool coin AND for spends of any coin currently locked by one of your live offers. Any of these signals can wake the main loop early — so fill detection and price-shift response typically happen within 10–30 seconds, not minutes.</p>
+                    <p>The bot runs a complete cycle on the configured loop interval (default 90s, often lowered by Smart Settings for active markets). Background watchers keep it reactive between full cycles: the price watcher polls TibetSwap for swaps, the AMM monitor tracks pool reserve drift, and the mempool watcher checks Coinset for pending spends of the Tibet pool coin and coins locked by your live offers. These signals can wake the main loop early, so fill detection and price-shift response usually happen much faster than the main loop interval.</p>
                     <p>Each cycle runs these steps:</p>
                     <ol style="padding-left: 20px;">
-                        <li><strong>Fetch prices</strong> from Dexie + TibetSwap to find the current mid-price</li>
-                        <li><strong>Check health</strong> — is the wallet reachable and ready? Any circuit breakers active?</li>
-                        <li><strong>Detect fills</strong> — compare current offers vs last cycle to find what was taken</li>
+                        <li><strong>Fetch prices</strong> from Dexie and TibetSwap where available to find the current mid-price and arb gap</li>
+                        <li><strong>Check health</strong> - is Sage reachable, is the wallet ready, and are any circuit breakers active?</li>
+                        <li><strong>Detect fills</strong> - compare Sage, Dexie, and on-chain evidence before booking fills</li>
                         <li><strong>Match PnL</strong> — pair up buy fills with sell fills to calculate profit</li>
                         <li><strong>Update inventory</strong> — track net position (are we accumulating CAT or XCH?)</li>
                         <li><strong>Clean expired offers</strong> and pre-emptively refresh any expiring within 5 minutes</li>
                         <li><strong>Fire sniper</strong> if there's an arb opportunity between Dexie and TibetSwap</li>
-                        <li><strong>Emergency requote</strong> if a price shock is detected (large sudden arb gap)</li>
+                        <li><strong>Defensive cancel</strong> if a TibetSwap price shock is detected, then wait for Sage to stop reporting cancelled offers before replacements are created</li>
                         <li><strong>Regular requote</strong> if the price has drifted beyond the threshold</li>
-                        <li><strong>Create new offers</strong> with tiered sizing and inventory-skewed spreads</li>
+                        <li><strong>Create new offers</strong> with tiered sizing, inventory skew, competitor awareness, and pending-cancel guards</li>
                         <li><strong>Post to Dexie</strong> (and optionally Splash P2P) for visibility</li>
-                        <li><strong>Check coins</strong> — adaptive topup based on trading pace (busy/normal/slow)</li>
+                        <li><strong>Check coins</strong> - reconcile locks, classify new outputs, and run adaptive topup when prepared pools get low</li>
                     </ol>
                     <h3 style="color: var(--accent-primary-hover);">Key concepts</h3>
                     <p><strong>Spread:</strong> The difference between your buy and sell price, shown as a %. Wider = safer but fewer fills. Narrower = more fills but more risk.</p>
                     <p><strong>Inventory:</strong> Your net position. If people keep buying your CAT, you accumulate XCH (go short CAT). The bot skews spreads to rebalance.</p>
-                    <p><strong>Coins:</strong> Chia uses a UTXO model — each offer locks a specific coin. You need pre-split coins of the right size.</p>
+                    <p><strong>Coins:</strong> Chia uses a UTXO model - each offer locks a specific coin. Coin prep and topup keep correctly sized XCH, CAT, fee, reserve, and sniper coins available so the ladder can rebuild cleanly.</p>
                 </div>
 
                 <!-- GETTING STARTED -->
                 <div id="help_getting-started" class="help-panel" style="display: none;">
                     <h3 style="color: var(--accent-primary-hover); margin-top: 0;">Welcome! Here's how to get started</h3>
-                    <p>The bot is designed to work out of the box. It connects to your Sage wallet and handles all the technical setup for you.</p>
+                    <p>The bot is designed to guide a new tester through the live local setup. It connects to Sage Wallet, helps choose the wallet fingerprint and CAT pair, checks optional services, and prepares coins before trading starts.</p>
                     <ol style="padding-left: 20px;">
-                        <li><strong>Make sure Sage is running</strong> — Open the Sage wallet app. The bot connects via its RPC server automatically.</li>
-                        <li><strong>Wait for the green light</strong> — Watch the sync indicator in the top-left corner. Once it shows green "Ready", your wallet is reachable and ready.</li>
-                        <li><strong>Pick your trading pair</strong> — Use the Quick Start panel at the top of the dashboard to choose which CAT token you want to trade.</li>
-                        <li><strong>Review your settings</strong> — Click the Quick Start panel's <strong>Review Settings</strong> button to check your spread, trade sizes, and number of offers. The defaults work well for beginners.</li>
-                        <li><strong>Prepare your coins</strong> — Click "Prepare Coins" to split your wallet balance into the right sizes for trading. This will take around five minutes to complete.</li>
-                        <li><strong>Hit Start Bot</strong> — Click the green "Start Bot" button and you're live! The bot will create offers and manage them automatically.</li>
+                        <li><strong>Open Sage and enable RPC</strong> - Sage must be running, unlocked, and have its RPC server enabled in Settings -> Advanced.</li>
+                        <li><strong>Select the wallet fingerprint</strong> - Choose the Sage fingerprint the app should use. Use a signing wallet, not watch-only, for live trading.</li>
+                        <li><strong>Pick your CAT pair</strong> - Choose the CAT / XCH pair. New or thin CATs are allowed, but Smart Settings will be more conservative when Dexie, TibetSwap, or Spacescan data is limited.</li>
+                        <li><strong>Run Smart Settings</strong> - Review the suggested spread, reserves, tier sizes, offer count, topup pool, and TibetSwap shock cancel settings before saving.</li>
+                        <li><strong>Prepare your coins</strong> - Coin prep cancels existing offers first, then splits XCH and CAT into the right fee, reserve, ladder, topup, and sniper pools for the saved plan.</li>
+                        <li><strong>Start the bot</strong> - The start guard checks wallet readiness, prepared coins, service health, and settings before the first offer wave.</li>
                     </ol>
                     <h3 style="color: var(--accent-primary-hover);">Tips for beginners</h3>
-                    <p><strong>Start small</strong> — Use small trade sizes while you're learning. You can always increase them later in Settings.</p>
-                    <p><strong>Everything is in Settings</strong> — All normal app configuration is done through the Settings screen. No manual file editing should be needed for day-to-day use.</p>
+                    <p><strong>Start small</strong> - Use small trade sizes while you're learning. You can always increase them later in Settings.</p>
+                    <p><strong>Everything is in Settings</strong> - All normal app configuration is done through the Settings screen. No manual file editing should be needed for day-to-day use.</p>
+                    <p><strong>Use Smart Settings per CAT</strong> - Do not reuse one token's plan blindly on another CAT. Each CAT can have different liquidity, volume, holder count, pool depth, and orderbook behavior.</p>
                     <p><strong>Live vs Setup</strong> — Settings has two sub-tabs. <em>Live</em> holds the hot-reloadable tweaks (spread slider, skew, feature toggles) and is safe to touch while the bot is running. <em>Setup</em> holds the full configuration; saved changes apply on next restart when the bot is live.</p>
                     <p><strong>Guidance + Activity</strong> — Once running, the two panels below the info cards show what to act on (Guidance) and what the bot is doing right now (Activity). Anything with a button goes to Guidance; informational notes sit below the same card.</p>
                     <p><strong>Command Centre</strong> — The three-panel summary further down shows your settings, market health, and wallet performance at a glance. Hover over any <strong>?</strong> icon for an explanation.</p>
@@ -12056,28 +12055,28 @@
                     <h3 style="color: var(--accent-primary-hover); margin-top: 0;">Why coins matter</h3>
                     <p>Chia's UTXO model means every offer locks a specific coin. If you have one big coin, you can only make one offer. The bot needs many pre-split coins of the right size.</p>
                     <h3 style="color: var(--accent-primary-hover);">Coin preparation</h3>
-                    <p>Click <strong>"Prepare Coins"</strong> to split your wallet into offer-sized coins. This:</p>
+                    <p>Click <strong>"Prepare Coins"</strong> after saving settings to split your wallet into offer-sized coins. Coin prep starts by cancelling existing offers so old locks do not collide with the fresh plan. It then:</p>
                     <ol style="padding-left: 20px;">
-                        <li>Calculates how many XCH and CAT coins you need based on your tier sizes</li>
-                        <li>Finds your largest coin and splits it using blockchain transactions</li>
-                        <li>Waits for confirmations (~60 seconds)</li>
-                        <li>Leaves a reserve coin for future expansion</li>
+                        <li>Calculates how many XCH, CAT, fee, reserve, topup, and sniper coins the saved ladder needs</li>
+                        <li>Builds the fee pool first, then creates the prepared XCH and CAT pools using Sage transactions</li>
+                        <li>Tracks split landing checks through Sage and Coinset where available</li>
+                        <li>Labels outputs immediately as reserve, tier spare, fee, topup, or sniper coins so they do not get mistaken for dust</li>
                     </ol>
                     <h3 style="color: var(--accent-primary-hover);">Adaptive live topup</h3>
-                    <p>While running, the bot monitors coin counts and tops up automatically based on trading pace:</p>
+                    <p>While running, the bot monitors coin counts and tops up automatically based on trading pace and per-tier spare levels. The topup pool is working fuel, not a safety reserve; the true reserve is the XCH/CAT amount held back from trading in Settings.</p>
                     <ul style="padding-left: 20px;">
                         <li><strong>Busy</strong> (many fills/hour) — tops up when spare coins drop below 50%</li>
                         <li><strong>Normal</strong> — tops up at 30% spare coins</li>
                         <li><strong>Slow</strong> (few fills/hour) — tops up at 20% spare coins</li>
                     </ul>
                     <h3 style="color: var(--accent-primary-hover);">Coin health in the dashboard</h3>
-                    <p>The Wallet &amp; Performance panel shows Free, Locked, and Total coin counts for both XCH and CAT. The bot also tracks locked XCH and CAT values to show how much capital is committed to open offers.</p>
+                    <p>The Wallet &amp; Performance panel shows Free, Locked, Total, and tier spare counts for both XCH and CAT. The bot also tracks locked values, topup activity, and prepared coin health so you can see whether the book can rebuild after fills, cancels, or recovery.</p>
                 </div>
 
                 <!-- MARKET INTEL -->
                 <div id="help_intel" class="help-panel" style="display: none;">
                     <h3 style="color: var(--accent-primary-hover); margin-top: 0;">Market Intelligence</h3>
-                    <p>The Market Intel tab provides ecosystem awareness for the live CAT pair. Today it is driven mainly by the Dexie orderbook and TibetSwap pool context, with Spacescan supporting the app's wider on-chain verification and token-health analysis.</p>
+                    <p>The Market Intel tab provides ecosystem awareness for the live CAT pair. Dexie orderbook and TibetSwap pool context drive executable pricing, Coinset supports mempool and coin checks, and Spacescan adds token-health and on-chain verification context when data is available.</p>
                     <h3 style="color: var(--accent-primary-hover);">Competitor monitoring</h3>
                     <p>When Competitor Aware is enabled, the bot scans the Dexie orderbook for other market makers and adjusts your spread:</p>
                     <ul style="padding-left: 20px;">
@@ -12088,12 +12087,12 @@
                     <h3 style="color: var(--accent-primary-hover);">TibetSwap pool depth</h3>
                     <p>Shows the ratio of your trade size to the TibetSwap pool. If your trade is large relative to the pool, the bot widens spreads to account for slippage.</p>
                     <h3 style="color: var(--accent-primary-hover);">Where Spacescan helps</h3>
-                    <p>Spacescan is used in this app as an on-chain helper rather than a live orderbook feed. It assists with fill verification, balance discrepancy checks, and token-health inputs used by Smart Settings and safety checks. It also provides the <strong>holder count</strong> shown in the Market Health panel (e.g. 3,948 holders for MZ), and the <strong>token icon</strong> displayed throughout the app. Spacescan data is cached for 24 hours due to API rate limits — it won't update every cycle.</p>
+                    <p>Spacescan is used in this app as an on-chain helper rather than a live orderbook feed. It assists with fill verification, balance discrepancy checks, and token-health inputs used by Smart Settings and safety checks. If a token is new or missing from Spacescan, the app continues with reduced confidence and Smart Settings falls back to conservative assumptions. Spacescan data is cached for 24 hours due to API rate limits, so it will not update every cycle.</p>
                     <p><strong>Free tier vs Pro tier.</strong> If you skipped the API-key step during setup you're on the <em>free tier</em>, which only returns the token icon and basic price/supply data. The <strong>Activity Level</strong>, <strong>On-Chain Risk</strong>, and <strong>Holders</strong> panels will show "Free tier" instead of a value — that's expected, not a fault. Adding a Spacescan Pro API key (Settings → Spacescan → Save &amp; Verify) unlocks all three fields and improves the Smart Settings risk estimate.</p>
                     <h3 style="color: var(--accent-primary-hover);">Token icons</h3>
                     <p>When you select a trading pair, the app automatically fetches the token's logo from the <strong>Dexie icon CDN</strong> and shows it next to the token name in the titlebar, pair selector, and wallet balance labels. If no icon exists for a token, the space is simply left blank — no broken images.</p>
                     <h3 style="color: var(--accent-primary-hover);">Splash incoming offers</h3>
-                    <p>If Splash listening is enabled, the <strong>Received</strong> counter in the Market Intel tab counts every inbound peer offer seen this session (cumulative). The <strong>Relevant</strong> counter shows how many of those matched your current trading pair. These numbers only reset when the bot restarts.</p>
+                    <p>If Splash listening is enabled, the <strong>Received</strong> counter in the Market Intel tab counts inbound peer offers seen by the local listener this session. The <strong>Relevant</strong> counter shows how many matched your current trading pair. Splash gossip can be sparse, so zero received offers with connected peers is not automatically a fault.</p>
                     <h3 style="color: var(--accent-primary-hover);">DBX rewards</h3>
                     <p>Dexie rewards liquidity providers with DBX tokens. You're eligible when your spread is below the DBX Max Spread threshold (default 5%). Check the Market Intel tab for your eligibility status.</p>
                     <h3 style="color: var(--accent-primary-hover);">Offer broadcasting</h3>
@@ -12143,7 +12142,7 @@
                     <h3 style="color: var(--accent-primary-hover);">Floor handoff</h3>
                     <p>When the floor is found and proven stable, the gap closer creates a real inner-tier offer at that price and cancels the furthest existing inner offer — swapping old for new. The main book then converges naturally over time.</p>
                     <h3 style="color: var(--accent-primary-hover);">Using it</h3>
-                    <p>Open <strong>Live Controls</strong> on the dashboard and use the <strong>"Close the Gap"</strong> control there. You can set the aggression level (how wide to start). The control shows the current gap-closer spread while active. Stop it any time by clicking again.</p>
+                    <p>Open <strong>Settings -> Live</strong> and use the <strong>"Close the Gap"</strong> control there. You can set the aggression level (how wide to start). The control shows the current gap-closer spread while active. Stop it any time by clicking again.</p>
                 </div>
 
                 <!-- WALLET TYPES -->
@@ -12152,7 +12151,7 @@
                     <p>This desktop app is built around <strong>Sage Wallet only</strong>. The live startup flow, health checks, signing checks, and wallet guidance all assume Sage is the active wallet.</p>
                     <h3 style="color: var(--accent-secondary);">Sage Wallet</h3>
                     <ul style="padding-left: 20px;">
-                        <li>A lightweight wallet — <strong>no full node required</strong></li>
+                        <li>The supported wallet for this app's live startup, signing, offer, and coin-management flow</li>
                         <li>Connects via RPC on port 9257</li>
                         <li>Much faster sync (minutes, not hours)</li>
                         <li>Supports advanced features like coin ID selection for faster offer creation</li>
@@ -12211,6 +12210,14 @@
                             <td style="padding: 8px 4px; color: var(--status-warning); white-space: nowrap;"><strong>Splash P2P</strong></td>
                             <td style="padding: 8px 4px;">Broadcast offers to a decentralized peer-to-peer network for wider visibility beyond Dexie.</td>
                         </tr>
+                        <tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">
+                            <td style="padding: 8px 4px; color: var(--status-warning); white-space: nowrap;"><strong>Smart Settings</strong></td>
+                            <td style="padding: 8px 4px;">Calculates a CAT-specific plan from wallet balances, reserves, Dexie liquidity, TibetSwap pool data, Spacescan token context, and fallback assumptions when data is thin.</td>
+                        </tr>
+                        <tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">
+                            <td style="padding: 8px 4px; color: var(--status-warning); white-space: nowrap;"><strong>Tibet Shock Cancel</strong></td>
+                            <td style="padding: 8px 4px;">Defensively cancels exposed offers after a large TibetSwap move, then waits for Sage/Dexie state to settle before creating replacements.</td>
+                        </tr>
                         <tr>
                             <td style="padding: 8px 4px; color: var(--status-warning); white-space: nowrap;"><strong>Reserves</strong></td>
                             <td style="padding: 8px 4px;">Minimum XCH and CAT held back from trading. Protects against going to zero.</td>
@@ -12241,8 +12248,17 @@
                     <h4 style="color: var(--status-warning); margin-bottom: 4px;">"Not enough coins" error</h4>
                     <p>Your wallet doesn't have enough pre-split coins. Click "Prepare Coins" to split your balance. Each active offer needs its own coin. The bot will also auto-topup while running.</p>
 
+                    <h4 style="color: var(--status-warning); margin-bottom: 4px;">Coin prep cancelled all offers first</h4>
+                    <p>That is expected for a clean prep run. Coin prep cancels existing offers before splitting so Sage coins are not locked by an old book. After prep, the bot should create a fresh ladder from the prepared pools.</p>
+
+                    <h4 style="color: var(--status-warning); margin-bottom: 4px;">Cancelled offers still appear active</h4>
+                    <p>If Sage or Dexie still reports cancelled offers as fillable, the bot keeps replacement creation blocked on that side. The stale pending-cancel watchdog will retry cancels, but the anti-stack guard stays active until the old offers disappear.</p>
+
                     <h4 style="color: var(--status-warning); margin-bottom: 4px;">Price shows as 0 or "N/A"</h4>
                     <p>The bot cannot yet build a usable market view from Dexie and TibetSwap, or market intel is still warming up after startup. Check your internet connection and give the dashboard a little time to refresh.</p>
+
+                    <h4 style="color: var(--status-warning); margin-bottom: 4px;">New CAT or missing market data</h4>
+                    <p>If the CAT has no TibetSwap pool, very little Dexie history, or no Spacescan profile yet, Smart Settings falls back to conservative defaults and labels confidence lower. The bot can still run, but start with smaller offers and watch the first cycles closely.</p>
 
                     <h4 style="color: var(--status-warning); margin-bottom: 4px;">Logs show RPC errors</h4>
                     <p>The Sage RPC is not responding cleanly. Make sure Sage is open, the selected wallet fingerprint is loaded, and the app has not fallen into a watch-only or degraded wallet state. Restarting the app is often the quickest reset after repeated RPC timeouts.</p>
@@ -22642,19 +22658,13 @@
             const label = document.getElementById('walletTypeLabel');
             if (!badge || !icon || !label) return;
 
-            _walletType = walletType || 'sage';
-            _walletLabel = walletType === 'sage' ? 'Sage' : 'Chia';
-            _walletIcon = walletType === 'sage' ? '⚡' : '🌿';
+            _walletType = 'sage';
+            _walletLabel = 'Sage';
+            _walletIcon = '⚡';
 
-            if (walletType === 'sage') {
-                icon.textContent = '⚡';
-                label.textContent = 'Sage';
-                badge.title = 'Using Sage light wallet (port 9257, no full node)';
-            } else {
-                icon.textContent = '🌿';
-                label.textContent = 'Chia';
-                badge.title = 'Using official Chia wallet (port 9256)';
-            }
+            icon.textContent = '⚡';
+            label.textContent = 'Sage';
+            badge.title = 'Using Sage wallet RPC (port 9257)';
             // Badge colour is managed exclusively by the sync-state handler (updateSyncIndicator)
             // so that it reflects live connection health. Do not set colour here.
 
@@ -30415,7 +30425,7 @@
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = 'chia_bot_settings.env';
+            a.download = 'catalyst_settings.env';
             document.body.appendChild(a);
             a.click();
             setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
@@ -33416,7 +33426,7 @@ async function startupBegin() {
 
         // Detect wallet type from backend
         _startupWalletType = status.wallet_type || 'sage';
-        _startupWalletLabel = _startupWalletType === 'sage' ? 'Sage' : 'Chia';
+        _startupWalletLabel = 'Sage';
 
         if (!startupApplyVersionStatus(status)) {
             return;
@@ -33738,7 +33748,7 @@ function startupPollUntilReady() {
             // Detect wallet type from poll response
             if (status.wallet_type) {
                 _startupWalletType = status.wallet_type;
-                _startupWalletLabel = _startupWalletType === 'sage' ? 'Sage' : 'Chia';
+                _startupWalletLabel = 'Sage';
             }
 
             if (!startupApplyVersionStatus(status)) {
