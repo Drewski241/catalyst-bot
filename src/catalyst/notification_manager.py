@@ -164,6 +164,8 @@ class NotificationManager:
     def _send(self, title: str, message: str, timeout: int):
         """Actually send the notification (runs in background thread)."""
         try:
+            title = self._truncate_for_plyer(title, 64)
+            message = self._truncate_for_plyer(message, 240)
             plyer_notification.notify(
                 title=title,
                 message=message,
@@ -173,4 +175,14 @@ class NotificationManager:
         except Exception:
             # Notification failure is never critical — silently ignore
             pass
+
+    @staticmethod
+    def _truncate_for_plyer(text: str, max_len: int) -> str:
+        """Keep Windows balloon fields under Plyer's fixed buffer limits."""
+        text = str(text or "")
+        if len(text) <= max_len:
+            return text
+        if max_len <= 1:
+            return text[:max_len]
+        return text[:max_len - 1] + "…"
 

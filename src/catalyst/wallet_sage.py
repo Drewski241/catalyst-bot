@@ -1435,7 +1435,121 @@ def create_transaction_rpc(selected_coin_ids: list, actions: list,
     result = rpc("create_transaction", payload, timeout=60)
     if WALLET_DEBUG:
         print(f"  [Sage] create_transaction result: {result}")
+    if auto_submit:
+        return _submit_coin_spends_if_needed(result, "create_transaction")
     return result
+
+
+def _response_transaction_id(result: Optional[Dict]) -> Optional[str]:
+    if not isinstance(result, dict):
+        return None
+    single = result.get("transaction_id") or result.get("tx_id")
+    if single:
+        return str(single)
+    tx_ids = result.get("transaction_ids")
+    if isinstance(tx_ids, list) and tx_ids:
+        return str(tx_ids[0])
+    nested = result.get("transaction") or result.get("tx")
+    if isinstance(nested, dict):
+        nested_single = nested.get("transaction_id") or nested.get("tx_id")
+        if nested_single:
+            return str(nested_single)
+        nested_ids = nested.get("transaction_ids")
+        if isinstance(nested_ids, list) and nested_ids:
+            return str(nested_ids[0])
+    return None
+
+
+def _submit_coin_spends_if_needed(result: Optional[Dict], context: str) -> Optional[Dict]:
+    """Sign and submit Sage responses that only contain unsigned coin_spends."""
+    if not isinstance(result, dict):
+        return result
+    if result.get("error") or result.get("success") is False:
+        return result
+    if _response_transaction_id(result):
+        return result
+
+    coin_spends = result.get("coin_spends")
+    if not coin_spends:
+        return result
+
+    try:
+        sign_resp = _sage_post("sign_coin_spends", {
+            "coin_spends": coin_spends,
+            "auto_submit": False,
+            "partial": False,
+        }, timeout=30)
+    except Exception as exc:
+        return {
+            "success": False,
+            "error": f"{context} sign_coin_spends failed: {exc}",
+        }
+
+    if not isinstance(sign_resp, dict):
+        return {
+            "success": False,
+            "error": f"{context} sign_coin_spends returned non-dict response",
+        }
+
+    spend_bundle = sign_resp.get("spend_bundle")
+    if not spend_bundle or not spend_bundle.get("aggregated_signature"):
+        return {
+            "success": False,
+            "error": f"{context} sign_coin_spends returned no signed spend bundle",
+        }
+
+    try:
+        submit_resp = _sage_post("submit_transaction", {
+            "spend_bundle": spend_bundle,
+        }, timeout=30)
+    except Exception as exc:
+        return {
+            "success": False,
+            "error": f"{context} submit_transaction failed: {exc}",
+        }
+
+    if not isinstance(submit_resp, dict):
+        return {
+            "success": False,
+            "error": f"{context} submit_transaction returned non-dict response",
+        }
+
+    submit_error = submit_resp.get("error") or submit_resp.get("reason")
+    submit_status = str(submit_resp.get("status", "") or "").lower()
+    if (
+        submit_error
+        or submit_status in ("failed", "error", "rejected")
+        or submit_resp.get("success") is False
+    ):
+        return {
+            "success": False,
+            "error": f"{context} submit_transaction rejected: "
+                     f"{submit_error or submit_status or 'success=false'}",
+            "submit_response": submit_resp,
+        }
+
+    out = dict(result)
+    out["success"] = True
+    out["submitted"] = True
+    out["submit_response"] = submit_resp
+    tx_id = _response_transaction_id(submit_resp)
+    if tx_id:
+        out["transaction_id"] = tx_id
+    else:
+        try:
+            pending_count = len(get_pending_transactions() or [])
+        except Exception:
+            pending_count = None
+        if pending_count == 0:
+            return {
+                "success": False,
+                "error": (
+                    f"{context} submit_transaction returned no transaction id "
+                    "and Sage reports no pending transaction"
+                ),
+                "submit_response": submit_resp,
+            }
+    return out
 
 
 def sage_topup_split(source_coin_id: str, num_coins: int, trading_size_mojos: int,
@@ -1527,7 +1641,7 @@ def combine_coins(coin_ids: list, fee_mojos: int = 0) -> Optional[Dict]:
     result = rpc("combine", payload, timeout=120)
     if WALLET_DEBUG:
         print(f"  [Sage] combine result: {result}")
-    return result
+    return _submit_coin_spends_if_needed(result, "combine")
 
 
 def get_transaction(transaction_id: str, timeout: int = 10) -> Optional[Dict]:

@@ -118,6 +118,7 @@ class RuntimeMonitor:
         self._conditions: Dict[str, bool] = {
             "wallet_sync_stale": False,
             "db_wallet_divergence": False,
+            "book_under_target": False,
             "dexie_visibility_gap": False,
             "ladder_shape_drift": False,
             "coin_headroom_low": False,
@@ -127,6 +128,7 @@ class RuntimeMonitor:
         self._streaks: Dict[str, int] = {
             "wallet_sync_stale": 0,
             "db_wallet_divergence": 0,
+            "book_under_target": 0,
             "dexie_visibility_gap": 0,
             "ladder_shape_drift": 0,
             "coin_headroom_low": 0,
@@ -528,6 +530,26 @@ class RuntimeMonitor:
         if db_cancel_pending > 0:
             offer_churn_reasons.append(f"db_cancel_pending:{db_cancel_pending}")
         try:
+            sweep = getattr(self._bot, "_sweep_protection", {}) or {}
+            sweep_active = sorted(
+                side for side, expiry in sweep.items()
+                if float(expiry or 0) > time.time()
+            )
+            if sweep_active:
+                offer_churn_reasons.append(f"sweep_protection:{'+'.join(sweep_active)}")
+        except Exception:
+            pass
+        try:
+            backoffs = getattr(self._bot, "_requote_failure_backoff_until", {}) or {}
+            backoff_active = sorted(
+                side for side, expiry in backoffs.items()
+                if float(expiry or 0) > time.time()
+            )
+            if backoff_active:
+                offer_churn_reasons.append(f"requote_backoff:{'+'.join(backoff_active)}")
+        except Exception:
+            pass
+        try:
             last_bulk_create = float(getattr(self._bot, "_last_bulk_create_time", 0.0) or 0.0)
         except Exception:
             last_bulk_create = 0.0
@@ -711,6 +733,72 @@ class RuntimeMonitor:
                 detail=(
                     f"Wallet {market['wallet_buy']}/{market['wallet_sell']} vs "
                     f"DB {market['db_buy']}/{market['db_sell']}"
+                ),
+            ))
+
+        def _expected_side_target(side: str) -> int:
+            if side == "buy":
+                if not bool(getattr(cfg, "ENABLE_BUY", True)):
+                    return 0
+                target = int(getattr(cfg, "MAX_ACTIVE_BUY_OFFERS", 0) or 0)
+            else:
+                if not bool(getattr(cfg, "ENABLE_SELL", True)):
+                    return 0
+                target = int(getattr(cfg, "MAX_ACTIVE_SELL_OFFERS", 0) or 0)
+            try:
+                suspended = int(
+                    self._bot.offer_manager.get_suspended_slot_count(side) or 0
+                )
+            except Exception:
+                suspended = 0
+            return max(0, target - suspended)
+
+        buy_target = _expected_side_target("buy")
+        sell_target = _expected_side_target("sell")
+        buy_visible = max(
+            int(market["wallet_buy"]),
+            int(market["db_buy"]),
+            int(market["dexie_our_buy"]),
+        )
+        sell_visible = max(
+            int(market["wallet_sell"]),
+            int(market["db_sell"]),
+            int(market["dexie_our_sell"]),
+        )
+        buy_deficit = max(0, buy_target - buy_visible)
+        sell_deficit = max(0, sell_target - sell_visible)
+        under_target_total = buy_deficit + sell_deficit
+        book_under_target = (
+            (not startup_grace)
+            and wallet_fresh
+            and not gap_closer_active
+            and not offer_churn_active
+            and (
+                buy_deficit >= 2
+                or sell_deficit >= 2
+                or under_target_total >= 3
+            )
+        )
+        self._update_streak("book_under_target", book_under_target)
+        if self._apply_condition(
+            "book_under_target",
+            self._streaks["book_under_target"] >= 2,
+            severity="warning",
+            open_event="bot_health_book_under_target",
+            open_message=(
+                f"Book is under target after churn settled: "
+                f"buy {buy_visible}/{buy_target}, sell {sell_visible}/{sell_target}"
+            ),
+            close_event="bot_health_book_under_target_ok",
+            close_message="Live book counts are back on target",
+        ):
+            active_conditions.append(self._condition_entry(
+                "book_under_target",
+                "warning",
+                "Live book is under target",
+                detail=(
+                    f"Buy {buy_visible}/{buy_target}, sell {sell_visible}/{sell_target}; "
+                    "wallet, DB, and Dexie no longer show active churn"
                 ),
             ))
 

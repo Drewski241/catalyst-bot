@@ -304,18 +304,72 @@ class OfferManager:
             db_free = get_free_coins(wallet_type)
             _TRADING_DESIGS = {"tier_spare", "tier_active"}
             _SKIP_TIERS = {"none", "sniper", "reserve", "fee"}
-            spare_count = sum(
-                1 for c in db_free
-                if c.get("designation", "") in _TRADING_DESIGS
-                and c.get("assigned_tier", "none") not in _SKIP_TIERS
-            )
-            if spare_count > 0:
+            usable_by_tier: Dict[str, int] = {}
+            usable_total = 0
+            for coin in db_free:
+                designation = str(coin.get("designation", "") or "")
+                tier = str(coin.get("assigned_tier", "none") or "none").lower()
+                if designation not in _TRADING_DESIGS or tier in _SKIP_TIERS:
+                    continue
+                usable_total += 1
+                usable_by_tier[tier] = usable_by_tier.get(tier, 0) + 1
+            if usable_total <= 0:
+                return
+
+            slots_to_unsuspend: List[str] = []
+            if not cfg.TIER_ENABLED:
+                slots_to_unsuspend = suspended_for_side[:usable_total]
+            else:
+                total_slots = int(
+                    getattr(
+                        cfg,
+                        "MAX_ACTIVE_BUY_OFFERS" if side == "buy" else "MAX_ACTIVE_SELL_OFFERS",
+                        0,
+                    ) or 0
+                )
+                if total_slots <= 0:
+                    prefix_cfg = "BUY_" if side == "buy" else "SELL_"
+                    total_slots = sum(
+                        int(getattr(cfg, f"{prefix_cfg}{tier.upper()}_TIER_COUNT", 0) or 0)
+                        for tier in ("inner", "mid", "outer", "extreme")
+                    )
+                try:
+                    from coin_manager import coin_size_tier_for_slot_position
+                except Exception:
+                    def coin_size_tier_for_slot_position(tier, side=None):
+                        del side
+                        return tier
+
+                def _slot_index(key: str) -> int:
+                    try:
+                        return int(str(key).rsplit("_", 1)[1])
+                    except Exception:
+                        return 1_000_000
+
+                for key in sorted(suspended_for_side, key=_slot_index):
+                    slot = _slot_index(key)
+                    if slot >= 1_000_000:
+                        continue
+                    position_tier = self._classify_tier(slot, total_slots, side=side)
+                    coin_tier = str(
+                        coin_size_tier_for_slot_position(position_tier, side=side)
+                    ).lower()
+                    if usable_by_tier.get(coin_tier, 0) <= 0:
+                        continue
+                    usable_by_tier[coin_tier] -= 1
+                    slots_to_unsuspend.append(key)
+
+            if not slots_to_unsuspend:
+                return
+            suspended_for_side = slots_to_unsuspend
+            spare_count = len(slots_to_unsuspend)
+            if usable_total > 0:
                 for key in suspended_for_side:
                     self._suspended_slots.discard(key)
                     self._slot_fail_counts.pop(key, None)
                 log_event("info", "slots_unsuspended",
                           f"Unsuspended {len(suspended_for_side)} {side} slots — "
-                          f"{spare_count} spare tier coins now available")
+                          f"{spare_count} matching spare tier coin(s) now available")
         except Exception as e:
             log_event("debug", "slot_unsuspend_check_failed",
                       f"Could not check coins for slot unsuspension: {e}")
@@ -553,6 +607,14 @@ class OfferManager:
 
             if db_free_coins:
                 designated_candidates = []
+                oversize_designated_candidates = []
+                try:
+                    oversize_fallback_ratio = Decimal(str(
+                        getattr(cfg, "COIN_OVERSIZE_FALLBACK_RATIO", "2.0")
+                        or "2.0"
+                    ))
+                except Exception:
+                    oversize_fallback_ratio = Decimal("2.0")
                 for coin in db_free_coins:
                     coin_id = str(coin.get("coin_id", "")).strip().lower()
                     if not coin_id or coin_id in used_coins:
@@ -574,6 +636,25 @@ class OfferManager:
                     if coin_amount is None or coin_amount < amount_mojos:
                         continue
                     if max_amount_mojos is not None and coin_amount > max_amount_mojos:
+                        same_tier_designated = (
+                            strict_pref
+                            and designation in ("tier_spare", "tier_active")
+                            and assigned_tier == pref
+                        )
+                        if (
+                            same_tier_designated
+                            and oversize_fallback_ratio > 0
+                            and Decimal(coin_amount) <= (
+                                Decimal(amount_mojos) * oversize_fallback_ratio
+                            )
+                        ):
+                            priority = self._coin_designation_priority(
+                                designation, assigned_tier, preferred_tier
+                            )
+                            oversize_designated_candidates.append(
+                                (priority, coin_amount - amount_mojos, coin_id,
+                                 coin_amount, designation, assigned_tier)
+                            )
                         continue
                     # F70 SSOT misfit guard with DB-trust override (2026-04-26):
                     # The live-price classifier shifts tier-size cutoffs every
@@ -606,6 +687,21 @@ class OfferManager:
                               f"Selected designated coin {best_coin_id[:16]}... "
                               f"({best_amount} mojos, surplus={best_surplus}, "
                               f"{best_desig}/{best_tier})")
+                    return best_coin_id
+
+                if oversize_designated_candidates:
+                    oversize_designated_candidates.sort(key=lambda x: (x[0], x[1]))
+                    _, best_surplus, best_coin_id, best_amount, best_desig, best_tier = (
+                        oversize_designated_candidates[0]
+                    )
+                    log_event(
+                        "info",
+                        "coin_select_oversize_tier_fallback",
+                        f"Selected moderately oversized same-tier coin "
+                        f"{best_coin_id[:16]}... ({best_amount} mojos, "
+                        f"need={amount_mojos}, surplus={best_surplus}, "
+                        f"{best_desig}/{best_tier})",
+                    )
                     return best_coin_id
 
                 log_event("debug", "coin_select_none",
@@ -806,6 +902,12 @@ class OfferManager:
         planned_slots: List[int] = []
         for tier in ("inner", "mid", "outer", "extreme"):
             slots = tier_slots.get(tier, [])
+            if not slots:
+                continue
+            slots = [
+                slot for slot in slots
+                if not self.is_slot_suspended(side, slot)
+            ]
             if not slots:
                 continue
             live_count = live_counts.get(tier, 0)
@@ -1390,7 +1492,8 @@ class OfferManager:
                       coin_ids_enabled: bool = False,
                       slot_sequence: List[int] = None,
                       price_cap: Decimal = None,
-                      price_floor: Decimal = None) -> List[Dict]:
+                      price_floor: Decimal = None,
+                      interpolate_refill_prices: bool = True) -> List[Dict]:
         """Create a ladder of offers on one side (buy or sell).
 
         Places offers at evenly spaced prices from mid_price outward.
@@ -1411,6 +1514,10 @@ class OfferManager:
             slot_sequence: Optional canonical slot indexes to create. When
                 provided, these override slot_start/num sequencing and are used
                 for refill/top-up batches so they replenish the intended tiers.
+            interpolate_refill_prices: When True, refill batches interpolate
+                into the surviving tier's price band. Recovery anchor-drift
+                refills set this False so missing slots price from the current
+                grid instead of stale surviving offers.
 
         Returns list of created offer details (trade_id, price, size, etc.)
         """
@@ -1682,11 +1789,21 @@ class OfferManager:
             #     mid has drifted. Falls back to the grid formula when
             #     the target tier is empty or the surrounding data is
             #     insufficient.
-            if slot_sequence is not None and existing_prices_by_tier:
+            if interpolate_refill_prices and slot_sequence is not None and existing_prices_by_tier:
                 price = self._interpolate_refill_price(
                     slot, side, total_slots,
                     existing_prices_by_tier, mid_price, half_spread,
                 )
+                if price is None:
+                    price = self._get_ladder_price(
+                        slot, side, mid_price, half_spread, total_slots
+                    )
+                    log_event(
+                        "info",
+                        "refill_interpolation_fallback",
+                        f"{side} refill slot {slot} could not interpolate "
+                        f"from surviving tier prices; using current grid price",
+                    )
             else:
                 price = self._get_ladder_price(slot, side, mid_price, half_spread, total_slots)
             price = self._apply_price_bounds(
@@ -2535,7 +2652,8 @@ class OfferManager:
                      price_floor: Decimal = None,
                      live_offer_ids: set = None,
                      max_offers: int = 0,
-                     allowed_tiers: set = None) -> List[Dict]:
+                     allowed_tiers: set = None,
+                     force_cancel_storm: bool = False) -> List[Dict]:
         """Single-pass requote: cancel old offers, then create replacements.
 
         One pass through:
@@ -2772,7 +2890,11 @@ class OfferManager:
             }
 
         cancel_results = self.cancel_offers(
-            cancel_ids, reason="requote", skip_confirmation=False)
+            cancel_ids,
+            reason="requote",
+            skip_confirmation=False,
+            force_storm=force_cancel_storm,
+        )
         confirmed_cancel_ids = []
         pending_cancel_ids = []
         failed_cancel_ids = []

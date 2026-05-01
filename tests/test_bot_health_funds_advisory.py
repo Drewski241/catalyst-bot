@@ -7,10 +7,12 @@ the operating floor.
 """
 
 import sys
+import sqlite3
 import types
 import unittest
+from contextlib import ExitStack
 from decimal import Decimal
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 
 _INSTALLED_STUBS: list = []
@@ -246,6 +248,103 @@ class FundsAdvisoryTests(unittest.TestCase):
             # ...but no user-visible alert was pushed.
             self.assertNotIn("funds_advisory_xch", bus.alerts)
         finally:
+            self._uninstall_fake_bus()
+
+    # ------------------------------------------------------------------
+    # Tier-aware CAT shortage -> alert even when total CAT spendable is high
+    # ------------------------------------------------------------------
+
+    def test_cat_tier_reserve_shortage_raises_alert_despite_high_spendable(self):
+        """CAT reserve too small for missing inner spares -> dashboard alert."""
+        bus = self._install_fake_bus()
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            """
+            CREATE TABLE coins (
+                wallet_type TEXT,
+                status TEXT,
+                designation TEXT,
+                assigned_tier TEXT,
+                amount_mojos INTEGER
+            )
+            """
+        )
+        # Live-like shape: no free CAT-inner spares, reserve can fund only
+        # about two 45,084 CAT inner coins, while other CAT coins make the
+        # whole-wallet spendable balance look healthy.
+        conn.executemany(
+            "INSERT INTO coins VALUES (?, ?, ?, ?, ?)",
+            [
+                ("cat", "free", "reserve", "none", 81_178_000),
+                ("cat", "free", "reserve", "none", 14_154_603),
+                ("cat", "free", "tier_spare", "mid", 18_000_000),
+                ("cat", "free", "tier_spare", "outer", 12_000_000),
+                ("cat", "free", "tier_spare", "extreme", 7_000_000),
+                ("cat", "free", "tier_spare", "sniper", 90_000),
+                ("cat", "locked", "tier_active", "inner", 45_084_000),
+            ],
+        )
+        try:
+            cfg = bot_health.cfg
+            high_cat_balance = {"wallet_balance": {"spendable_balance": 700_000_000}}
+            high_xch_balance = {"wallet_balance": {"spendable_balance": 100 * 10**12}}
+
+            def _balance(wallet_id):
+                return high_cat_balance if int(wallet_id) == 2 else high_xch_balance
+
+            with ExitStack() as stack:
+                for name, value in {
+                    "TIER_ENABLED": True,
+                    "ENABLE_SELL": True,
+                    "MAX_ACTIVE_BUY_OFFERS": 24,
+                    "MAX_ACTIVE_SELL_OFFERS": 24,
+                    "SELL_INNER_TIER_COUNT": 7,
+                    "SELL_MID_TIER_COUNT": 7,
+                    "SELL_OUTER_TIER_COUNT": 6,
+                    "SELL_EXTREME_TIER_COUNT": 4,
+                    "SELL_INNER_TIER_SPARE_COUNT": 10,
+                    "SELL_MID_TIER_SPARE_COUNT": 0,
+                    "SELL_OUTER_TIER_SPARE_COUNT": 0,
+                    "SELL_EXTREME_TIER_SPARE_COUNT": 0,
+                    "SELL_INNER_SIZE_XCH": Decimal("4.5"),
+                    "LAST_QUOTED_MID": Decimal("0.0001"),
+                    "COIN_PREP_MULTIPLIER": Decimal("1.0"),
+                    "CAT_RESERVE": Decimal("0"),
+                    "CAT_DECIMALS": 3,
+                    "CAT_NAME": "Monkeyzoo Token",
+                    "CAT_WALLET_ID": 2,
+                    "WALLET_ID_XCH": 1,
+                    "WALLET_ADDRESS": "xch1demo123...",
+                }.items():
+                    stack.enter_context(patch.object(cfg, name, value, create=True))
+                stack.enter_context(patch("wallet.get_wallet_type", return_value="sage"))
+                stack.enter_context(
+                    patch("wallet_sage.get_wallet_balance", side_effect=_balance)
+                )
+                stack.enter_context(patch("database.get_connection", return_value=conn))
+                stack.enter_context(
+                    patch(
+                        "coin_manager.get_tier_sizes_mojos_from_cfg",
+                        return_value={
+                            "inner": 45_084_000,
+                            "mid": 18_000_000,
+                            "outer": 12_000_000,
+                            "extreme": 7_000_000,
+                        },
+                    )
+                )
+                check = bot_health.check_funds_advisory(auto_repair=True)
+
+            self.assertEqual(check.status, "warn")
+            self.assertIn("funds_advisory_cat", bus.alerts)
+            alert = bus.alerts["funds_advisory_cat"]
+            self.assertEqual(alert["severity"], "warning")
+            self.assertIn("CAT-inner", alert["message"])
+            self.assertIn("0/10", alert["message"])
+            self.assertIn("topup pool", alert["message"])
+        finally:
+            conn.close()
             self._uninstall_fake_bus()
 
 

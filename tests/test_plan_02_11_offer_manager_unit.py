@@ -10,7 +10,7 @@ import time
 import unittest
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 try:
     import offer_manager as _om_mod
@@ -238,6 +238,39 @@ class TestSlotSuspension(_OM):
         for _ in range(self._manager._slot_suspend_threshold):
             self._manager.record_slot_coin_failure("buy", 0)
         self.assertEqual(self._manager.get_suspended_slot_count("sell"), 0)
+
+    def test_unsuspend_requires_coin_for_the_suspended_slot_tier(self):
+        for _ in range(self._manager._slot_suspend_threshold):
+            self._manager.record_slot_coin_failure("sell", 0)
+
+        with patch("database.get_free_coins", return_value=[
+            {"designation": "tier_spare", "assigned_tier": "mid"},
+            {"designation": "tier_spare", "assigned_tier": "outer"},
+        ]):
+            self._manager.unsuspend_slots_if_coins_available("sell")
+
+        self.assertTrue(self._manager.is_slot_suspended("sell", 0))
+
+    def test_unsuspend_clears_slot_when_required_tier_coin_is_available(self):
+        for _ in range(self._manager._slot_suspend_threshold):
+            self._manager.record_slot_coin_failure("sell", 0)
+
+        with patch("database.get_free_coins", return_value=[
+            {"designation": "tier_spare", "assigned_tier": "inner"},
+        ]):
+            self._manager.unsuspend_slots_if_coins_available("sell")
+
+        self.assertFalse(self._manager.is_slot_suspended("sell", 0))
+
+    def test_replenishment_slots_skip_suspended_slots(self):
+        for _ in range(self._manager._slot_suspend_threshold):
+            self._manager.record_slot_coin_failure("sell", 0)
+            self._manager.record_slot_coin_failure("sell", 1)
+
+        with patch.object(_om_mod, "get_open_offers", return_value=[]):
+            slots = self._manager.get_replenishment_slots("sell", 7)
+
+        self.assertEqual(slots, [2, 3, 4, 5, 6])
 
     def test_clear_cycle_coins_empties_set(self):
         self._manager._cycle_used_coin_ids.add("0xcoin1")

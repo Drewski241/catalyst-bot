@@ -524,6 +524,10 @@ class BotLoop:
             "sides": tuple(),
             "tiers": tuple(),
         }
+        self._last_shock_requote: Dict[str, Dict] = {
+            "buy": {},
+            "sell": {},
+        }
         # How long to consider a defensive cancel still "in flight" — long
         # enough for the cancel to confirm on-chain and the coins to return.
         self._defensive_cancel_grace_secs: float = 90.0
@@ -574,6 +578,11 @@ class BotLoop:
         self._recovery_exit_healthy_cycles: int = 2
         self._recovery_min_side_deficit: int = 2
         self._recovery_min_total_deficit: int = 2
+        self._last_create_disabled_log: Dict[str, Dict] = {
+            "buy": {"at": 0.0, "signature": ""},
+            "sell": {"at": 0.0, "signature": ""},
+        }
+        self._create_disabled_log_cooldown: float = 60.0
 
         # Flag: __init__ complete — get_state() checks this to avoid
         # AttributeError when SSE connects before all attrs are set.
@@ -3225,6 +3234,39 @@ class BotLoop:
         except Exception:
             return set()
 
+    def _pending_cancel_settle_counts(self, sides: tuple = ("buy", "sell")) -> Dict[str, int]:
+        counts: Dict[str, int] = {}
+        for side in sides or ("buy", "sell"):
+            side_norm = str(side or "").strip().lower()
+            if side_norm not in ("buy", "sell"):
+                continue
+            pending = self._pending_cancel_wallet_ids(side_norm)
+            if pending:
+                counts[side_norm] = len(pending)
+        return counts
+
+    def _defer_probe_launch_for_pending_cancel(self, launch_reason: Optional[str]) -> Optional[str]:
+        if not launch_reason:
+            return launch_reason
+
+        pending_counts = self._pending_cancel_settle_counts()
+        pending_total = sum(pending_counts.values())
+        if pending_total <= 0:
+            return launch_reason
+
+        log_event(
+            "info",
+            "probe_launch_deferred_pending_cancel_settle",
+            f"Probe launch deferred - {pending_total} wallet-active pending "
+            f"cancel(s) must settle before {launch_reason}",
+            data={
+                "launch_reason": launch_reason,
+                "pending_cancel_counts": pending_counts,
+                "pending_cancel_total": pending_total,
+            },
+        )
+        return None
+
     def _filter_pending_cancel_wallet_ids_by_dexie(self, pending_by_side: Dict[str, set]) -> Dict[str, set]:
         """Drop Sage-lagged IDs once Dexie repeatedly reports terminal cancel.
 
@@ -3457,6 +3499,150 @@ class BotLoop:
                 )
 
         self._pending_cancel_settle_seen = seen
+
+    def _remember_tibet_shock(self, *, direction: str, pct: float,
+                              sides: tuple, tiers: tuple, reason: str,
+                              at: Optional[float] = None) -> None:
+        try:
+            self._last_tibet_shock = {
+                "at": float(at if at is not None else time.time()),
+                "direction": str(direction or ""),
+                "pct": float(pct or 0),
+                "sides": tuple(sides or ()),
+                "tiers": tuple(tiers or ()),
+                "reason": str(reason or ""),
+            }
+        except Exception:
+            pass
+
+    def _record_shock_requote(self, side: str, mid_price: Decimal,
+                              source: str, severity: str,
+                              new_count: int = 0,
+                              replaced_count: int = 0) -> None:
+        side_norm = str(side or "").strip().lower()
+        if side_norm not in ("buy", "sell"):
+            return
+        try:
+            records = getattr(self, "_last_shock_requote", None)
+            if not isinstance(records, dict):
+                records = {"buy": {}, "sell": {}}
+                self._last_shock_requote = records
+            records[side_norm] = {
+                "at": time.time(),
+                "mid_price": str(mid_price),
+                "source": str(source or ""),
+                "severity": str(severity or ""),
+                "new_count": int(new_count or 0),
+                "replaced_count": int(replaced_count or 0),
+            }
+        except Exception:
+            pass
+
+    def _recent_shock_requote_guard(self, side: str, direction: str,
+                                    new_price_xch) -> Optional[Dict]:
+        """Return recent reprice details when it already covers a shock."""
+        side_norm = str(side or "").strip().lower()
+        if side_norm not in ("buy", "sell"):
+            return None
+        try:
+            record = (getattr(self, "_last_shock_requote", {}) or {}).get(side_norm) or {}
+            at = float(record.get("at") or 0)
+            if at <= 0:
+                return None
+            guard_secs = max(
+                float(getattr(self, "_defensive_cancel_grace_secs", 90.0) or 90.0),
+                float(getattr(cfg, "LOOP_SECONDS", 60) or 60) * 3.0,
+            )
+            age = time.time() - at
+            if age < 0 or age > guard_secs:
+                return None
+
+            remaining_bps = Decimal("0")
+            quoted_mid = Decimal(str(record.get("mid_price") or "0"))
+            confirmed_price = Decimal(str(new_price_xch or "0"))
+            if quoted_mid > 0 and confirmed_price > 0:
+                direction_norm = str(direction or "").strip().lower()
+                if side_norm == "buy" and direction_norm == "down":
+                    remaining_bps = max(
+                        Decimal("0"),
+                        (quoted_mid - confirmed_price) / quoted_mid * Decimal("10000"),
+                    )
+                elif side_norm == "sell" and direction_norm == "up":
+                    remaining_bps = max(
+                        Decimal("0"),
+                        (confirmed_price - quoted_mid) / quoted_mid * Decimal("10000"),
+                    )
+            else:
+                if age > float(getattr(cfg, "LOOP_SECONDS", 60) or 60):
+                    return None
+
+            try:
+                allowed_bps = Decimal(str(getattr(cfg, "MIN_EDGE_BPS", 100) or 100))
+            except Exception:
+                allowed_bps = Decimal("100")
+            allowed_bps = max(Decimal("50"), allowed_bps)
+            if remaining_bps > allowed_bps:
+                return None
+
+            details = dict(record)
+            details["age_secs"] = age
+            details["guard_secs"] = guard_secs
+            details["remaining_bps"] = str(remaining_bps)
+            details["allowed_bps"] = str(allowed_bps)
+            return details
+        except Exception:
+            return None
+
+    def _recent_same_price_shock_requote_guard(self, side: str,
+                                               requote_mid: Decimal) -> Optional[Dict]:
+        """Return recent shock reprice details when Step 9 would repeat it."""
+        side_norm = str(side or "").strip().lower()
+        if side_norm not in ("buy", "sell"):
+            return None
+        try:
+            record = (getattr(self, "_last_shock_requote", {}) or {}).get(side_norm) or {}
+            at = float(record.get("at") or 0)
+            if at <= 0:
+                return None
+
+            guard_secs = max(
+                float(getattr(self, "_defensive_cancel_grace_secs", 90.0) or 90.0),
+                float(getattr(cfg, "LOOP_SECONDS", 60) or 60) * 3.0,
+            )
+            age = time.time() - at
+            if age < 0 or age > guard_secs:
+                return None
+
+            if max(
+                int(record.get("new_count") or 0),
+                int(record.get("replaced_count") or 0),
+            ) <= 0:
+                return None
+
+            quoted_mid = Decimal(str(record.get("mid_price") or "0"))
+            current_mid = Decimal(str(requote_mid or "0"))
+            if quoted_mid <= 0 or current_mid <= 0:
+                return None
+
+            drift_bps = abs(current_mid - quoted_mid) / quoted_mid * Decimal("10000")
+            try:
+                inner_threshold = Decimal(str(
+                    getattr(cfg, "REQUOTE_DRIFT_INNER", Decimal("0.003")) or Decimal("0.003")
+                )) * Decimal("10000")
+            except Exception:
+                inner_threshold = Decimal("30")
+            allowed_bps = max(Decimal("5"), inner_threshold)
+            if drift_bps > allowed_bps:
+                return None
+
+            details = dict(record)
+            details["age_secs"] = age
+            details["guard_secs"] = guard_secs
+            details["drift_bps"] = str(drift_bps)
+            details["allowed_bps"] = str(allowed_bps)
+            return details
+        except Exception:
+            return None
 
     def _recent_tibet_shock_guard(self, side: str) -> Optional[Dict]:
         """Return recent shock details when side should avoid create-first requote.
@@ -3780,14 +3966,94 @@ class BotLoop:
                         #                    offers now expensive → cancel buys.
                         # Unknown direction → fall back to both sides.
                         at_risk_sides = action.sides
+                        reason = f"mempool_price_move_{pct:.2f}pct_{direction}"
+                        pending_counts = self._pending_cancel_settle_counts()
+                        pending_total = sum(pending_counts.values())
+                        if pending_total > 0:
+                            for _side in at_risk_sides:
+                                _side_norm = str(_side or "").strip().lower()
+                                if _side_norm in self._force_requote:
+                                    self._force_requote[_side_norm] = True
+                            log_event(
+                                "info",
+                                "mempool_defensive_cancel_deferred_pending_cancel_settle",
+                                f"Defensive cancel deferred for {'+'.join(at_risk_sides)} - "
+                                f"{pending_total} wallet-active pending cancel(s) must "
+                                "settle before another shock cancel wave",
+                                data={
+                                    "direction": str(direction or ""),
+                                    "pct": pct,
+                                    "tiers": tuple(tiers),
+                                    "at_risk_sides": tuple(at_risk_sides),
+                                    "pending_cancel_counts": pending_counts,
+                                    "pending_cancel_total": pending_total,
+                                },
+                            )
+                            self._remember_tibet_shock(
+                                direction=direction,
+                                pct=pct,
+                                sides=at_risk_sides,
+                                tiers=tiers,
+                                reason=reason,
+                            )
+                            continue
+                        guarded_sides = []
+                        cancel_sides = []
+                        for _side in at_risk_sides:
+                            _guard = self._recent_shock_requote_guard(
+                                _side,
+                                direction,
+                                sig.get("new_price_xch"),
+                            )
+                            if _guard:
+                                guarded_sides.append((_side, _guard))
+                            else:
+                                cancel_sides.append(_side)
+                        if guarded_sides:
+                            try:
+                                guarded_details = [
+                                    {
+                                        "side": _side,
+                                        "age_secs": round(float(_guard.get("age_secs") or 0), 1),
+                                        "remaining_bps": str(_guard.get("remaining_bps") or "0"),
+                                        "allowed_bps": str(_guard.get("allowed_bps") or "0"),
+                                        "source": _guard.get("source", ""),
+                                    }
+                                    for _side, _guard in guarded_sides
+                                ]
+                            except Exception:
+                                guarded_details = []
+                            guarded_label = "+".join(_side for _side, _guard in guarded_sides)
+                            log_event(
+                                "info",
+                                "mempool_defensive_cancel_suppressed_recent_requote",
+                                f"Defensive cancel suppressed for {guarded_label}: "
+                                "recent shock requote already repriced the at-risk side "
+                                "and the confirmed residual move is still inside edge",
+                                data={
+                                    "direction": str(direction or ""),
+                                    "pct": pct,
+                                    "tiers": tuple(tiers),
+                                    "guarded": guarded_details,
+                                },
+                            )
+                            self._remember_tibet_shock(
+                                direction=direction,
+                                pct=pct,
+                                sides=at_risk_sides,
+                                tiers=tiers,
+                                reason=reason,
+                            )
+                        if not cancel_sides:
+                            continue
                         try:
                             n = self._defensive_cancel_tiers(
                                 tiers=tiers,
-                                sides=at_risk_sides,
-                                reason=f"mempool_price_move_{pct:.2f}pct_{direction}")
+                                sides=tuple(cancel_sides),
+                                reason=reason)
                             log_event("info", "mempool_defensive_cancel_done",
                                       f"price_move {pct:.2f}% {direction} — "
-                                      f"cancelled {n} {'+'.join(at_risk_sides)} offers "
+                                      f"cancelled {n} {'+'.join(cancel_sides)} offers "
                                       f"across {'+'.join(tiers)}")
                             # Record the cancel so the next cycle's requote
                             # knows the tier was just cleared and defers to
@@ -3799,17 +4065,17 @@ class BotLoop:
                                 now_ts = time.time()
                                 self._last_defensive_cancel = {
                                     "at": now_ts,
-                                    "tiers": {(t, s) for t in tiers for s in at_risk_sides},
-                                    "reason": f"mempool_price_move_{pct:.2f}pct_{direction}",
+                                    "tiers": {(t, s) for t in tiers for s in cancel_sides},
+                                    "reason": reason,
                                 }
-                                self._last_tibet_shock = {
-                                    "at": now_ts,
-                                    "direction": str(direction or ""),
-                                    "pct": pct,
-                                    "sides": tuple(at_risk_sides),
-                                    "tiers": tuple(tiers),
-                                    "reason": f"mempool_price_move_{pct:.2f}pct_{direction}",
-                                }
+                                self._remember_tibet_shock(
+                                    direction=direction,
+                                    pct=pct,
+                                    sides=at_risk_sides,
+                                    tiers=tiers,
+                                    reason=reason,
+                                    at=now_ts,
+                                )
                             except Exception:
                                 pass
                         except Exception as _dc_err:
@@ -5723,6 +5989,7 @@ class BotLoop:
             current_buy_ids=current_buy_ids,
             current_sell_ids=current_sell_ids,
         )
+        launch_reason = self._defer_probe_launch_for_pending_cancel(launch_reason)
 
         swap_recency_window = max(60, cfg.LOOP_SECONDS * 3)
         last_swap_ts = self._watcher_data.get("last_change_ts", 0)
@@ -6348,6 +6615,7 @@ class BotLoop:
                         price_cap=price_cap,
                         price_floor=price_floor,
                         live_offer_ids=_live_ids,
+                        force_cancel_storm=True,
                     )
                     # Note: do NOT add to _requoted_this_cycle until we
                     # know progress was made. Previously we stamped this
@@ -6438,6 +6706,14 @@ class BotLoop:
                     # caused the side to sit underfilled for a full cycle
                     # while the book was still exposed on a sharp move.
                     if any_progress:
+                        self._record_shock_requote(
+                            eq_side,
+                            requote_mid,
+                            source="emergency_requote",
+                            severity="emergency",
+                            new_count=len(new_offers),
+                            replaced_count=replaced if isinstance(requote_result, dict) else len(new_offers),
+                        )
                         self._requoted_this_cycle.add(eq_side)
                         self._force_requote[eq_side] = False
                         done_msg = (f"[OK] Emergency requote {eq_side}: "
@@ -7302,6 +7578,60 @@ class BotLoop:
             should_requote = severity != RequoteSeverity.NONE
 
             if should_requote:
+                _same_price_guard = self._recent_same_price_shock_requote_guard(
+                    side,
+                    compare_mid,
+                )
+                if _same_price_guard:
+                    self._last_quoted_price[side] = compare_mid
+                    self._last_quoted_plain_mid[side] = mid_price
+                    self._ladder_grid_mid[side] = compare_mid
+                    self._ladder_anchor_plain_mid[side] = mid_price
+                    self._force_requote[side] = False
+                    log_event(
+                        "info",
+                        "requote_deferred_recent_shock_requote",
+                        f"Requote {side} deferred - recent "
+                        f"{_same_price_guard.get('source', 'shock')} already "
+                        f"repriced this side at {compare_mid:.8f}; ladder-fill "
+                        "will restore any temporarily missing slots",
+                        data={
+                            "side": side,
+                            "age_secs": round(float(_same_price_guard.get("age_secs") or 0), 1),
+                            "drift_bps": str(_same_price_guard.get("drift_bps") or "0"),
+                            "allowed_bps": str(_same_price_guard.get("allowed_bps") or "0"),
+                            "source": _same_price_guard.get("source", ""),
+                            "severity": severity.value,
+                            "forced": bool(forced),
+                        },
+                    )
+                    continue
+
+                _all_pending_counts = self._pending_cancel_settle_counts()
+                _side_pending_count = int(_all_pending_counts.get(side, 0) or 0)
+                _other_pending_total = (
+                    sum(_all_pending_counts.values()) - _side_pending_count
+                )
+                if _other_pending_total > 0:
+                    self._force_requote[side] = True
+                    log_event(
+                        "info",
+                        "requote_deferred_global_pending_cancel_settle",
+                        f"Requote {side} deferred - "
+                        f"{_other_pending_total} wallet-active pending cancel(s) "
+                        "on the other side must settle before starting another "
+                        "side replacement wave",
+                        data={
+                            "side": side,
+                            "pending_cancel_counts": _all_pending_counts,
+                            "pending_cancel_total": sum(_all_pending_counts.values()),
+                            "other_pending_total": _other_pending_total,
+                            "severity": severity.value,
+                            "forced": bool(forced),
+                        },
+                    )
+                    continue
+
                 _shock_guard = self._recent_tibet_shock_guard(side)
                 if _shock_guard:
                     self._force_requote[side] = True
@@ -7430,6 +7760,10 @@ class BotLoop:
                     max_offers=_max_offers,
                     allowed_tiers=_allowed_tiers if severity not in (
                         RequoteSeverity.FULL, RequoteSeverity.EMERGENCY) else None,
+                    force_cancel_storm=severity in (
+                        RequoteSeverity.FULL,
+                        RequoteSeverity.EMERGENCY,
+                    ),
                 )
                 # Track whether the requote actually made progress so we can
                 # decide whether to advance baselines and clear the force
@@ -7539,6 +7873,15 @@ class BotLoop:
                 # the requote never touched.  Marking the side "requoted" on a
                 # zero-offer result would pin the ladder at its current depth
                 # until the next price move.
+                if made_progress and severity in (RequoteSeverity.FULL, RequoteSeverity.EMERGENCY):
+                    self._record_shock_requote(
+                        side,
+                        requote_mid,
+                        source="requote",
+                        severity=severity.value,
+                        new_count=len(new_offers),
+                        replaced_count=replaced_count,
+                    )
                 if new_offers:
                     self._requoted_this_cycle.add(side)
                 # Splash broadcast — requote_side queues to Dexie internally,
@@ -7569,6 +7912,51 @@ class BotLoop:
     # -------------------------------------------------------------------
     # Offer creation
     # -------------------------------------------------------------------
+
+    def _log_create_disabled_under_target(
+        self,
+        side: str,
+        current_count: int,
+        target_count: int,
+        effective_count: int,
+        recently_created: int,
+        skip_side: bool,
+        side_enabled: bool,
+        reasons: list,
+    ) -> None:
+        side_norm = str(side or "").strip().lower()
+        signature = "; ".join(reasons or ["unknown"])
+        try:
+            last = (getattr(self, "_last_create_disabled_log", {}) or {}).get(side_norm) or {}
+            cooldown = float(getattr(self, "_create_disabled_log_cooldown", 60.0) or 60.0)
+            now = time.time()
+            if (
+                str(last.get("signature") or "") == signature
+                and now - float(last.get("at") or 0) < cooldown
+            ):
+                return
+            self._last_create_disabled_log[side_norm] = {
+                "at": now,
+                "signature": signature,
+            }
+        except Exception:
+            pass
+
+        cap_side = "Buy" if side_norm == "buy" else "Sell"
+        log_event(
+            "info",
+            f"create_disabled_{side_norm}_under_target",
+            f"{cap_side} side under target ({current_count}/{target_count}) but "
+            f"creation disabled: {signature}",
+            data={
+                "current": current_count,
+                "effective": effective_count,
+                "target": int(target_count),
+                "recently_created": recently_created,
+                f"skip_{side_norm}": skip_side,
+                f"enable_{side_norm}": side_enabled,
+            },
+        )
 
     def _create_offers_if_needed(self, mid_price: Decimal,
                                   current_buy_count: int, current_sell_count: int,
@@ -7762,16 +8150,16 @@ class BotLoop:
                 )
             if not self.risk_manager.should_enable_side("buy", mid_price):
                 _reason.append("risk_manager disabled buy side")
-            log_event("info", "create_disabled_buy_under_target",
-                      f"Buy side under target "
-                      f"({current_buy_count}/{cfg.MAX_ACTIVE_BUY_OFFERS}) but "
-                      f"creation disabled: {'; '.join(_reason) or 'unknown'}",
-                      data={"current": current_buy_count,
-                            "effective": effective_buy_count,
-                            "target": int(cfg.MAX_ACTIVE_BUY_OFFERS),
-                            "recently_created": _rc_buy,
-                            "skip_buy": skip_buy,
-                            "enable_buy": cfg.ENABLE_BUY})
+            self._log_create_disabled_under_target(
+                "buy",
+                current_buy_count,
+                cfg.MAX_ACTIVE_BUY_OFFERS,
+                effective_buy_count,
+                _rc_buy,
+                skip_buy,
+                cfg.ENABLE_BUY,
+                _reason,
+            )
         if _sell_under and not sell_enabled:
             _rc_sell = self.offer_manager.get_recently_created_count("sell")
             _reason = []
@@ -7787,20 +8175,21 @@ class BotLoop:
                 )
             if not self.risk_manager.should_enable_side("sell", mid_price):
                 _reason.append("risk_manager disabled sell side")
-            log_event("info", "create_disabled_sell_under_target",
-                      f"Sell side under target "
-                      f"({current_sell_count}/{cfg.MAX_ACTIVE_SELL_OFFERS}) but "
-                      f"creation disabled: {'; '.join(_reason) or 'unknown'}",
-                      data={"current": current_sell_count,
-                            "effective": effective_sell_count,
-                            "target": int(cfg.MAX_ACTIVE_SELL_OFFERS),
-                            "recently_created": _rc_sell,
-                            "skip_sell": skip_sell,
-                            "enable_sell": cfg.ENABLE_SELL})
+            self._log_create_disabled_under_target(
+                "sell",
+                current_sell_count,
+                cfg.MAX_ACTIVE_SELL_OFFERS,
+                effective_sell_count,
+                _rc_sell,
+                skip_sell,
+                cfg.ENABLE_SELL,
+                _reason,
+            )
 
         # Results containers for parallel threads
         _parallel_results = {"buy": [], "sell": []}
         _parallel_mid = {"buy": mid_price, "sell": mid_price}
+        _recovery_anchor_drift_refill_sides = set()
 
         def _create_side(side, needed, spread):
             """Create a ladder for one side (runs in a thread)."""
@@ -7857,7 +8246,24 @@ class BotLoop:
                     drift_pct = abs(mid_price - _plain_anchor) / _plain_anchor * Decimal("100")
                 except Exception:
                     drift_pct = Decimal("0")
-                if drift_pct > self._ladder_anchor_drift_pct:
+                if drift_pct > self._ladder_anchor_drift_pct and recovery_active:
+                    log_event(
+                        "info",
+                        "recovery_ladder_anchor_drift_refill",
+                        f"{side} ladder anchor drift {drift_pct:.2f}% > "
+                        f"{self._ladder_anchor_drift_pct}% threshold during "
+                        f"recovery (plain anchor {_plain_anchor:.8f} vs current "
+                        f"plain {mid_price:.8f}) - filling missing slots now "
+                        f"and preserving a forced requote for post-recovery "
+                        f"realignment",
+                    )
+                    try:
+                        self._force_requote[side] = True
+                    except Exception:
+                        pass
+                    _recovery_anchor_drift_refill_sides.add(side)
+                    ladder_mid_price = probe_anchored_mid
+                elif drift_pct > self._ladder_anchor_drift_pct:
                     log_event("info", "ladder_anchor_drift",
                               f"{side} ladder anchor drift {drift_pct:.2f}% > "
                               f"{self._ladder_anchor_drift_pct}% threshold "
@@ -7903,6 +8309,7 @@ class BotLoop:
                 slot_sequence=slot_sequence or None,
                 price_cap=price_cap,
                 price_floor=price_floor,
+                interpolate_refill_prices=side not in _recovery_anchor_drift_refill_sides,
             )
             _parallel_results[side] = offers or []
 
@@ -8046,12 +8453,22 @@ class BotLoop:
             if new_offers:
                 created_any = True
                 _notify_amm_after_create = True
-                self._last_quoted_price[side] = _parallel_mid.get(side, mid_price)
-                # F67: remember the un-anchored mid that was current when this
-                # ladder was built. When the probe expires/clears, the baseline
-                # snaps to this value (in _clear_probe_side) to prevent the
-                # dead probe offset from triggering a spurious requote.
-                self._last_quoted_plain_mid[side] = mid_price
+                if side in _recovery_anchor_drift_refill_sides:
+                    log_event(
+                        "info",
+                        "recovery_requote_baseline_preserved",
+                        f"{side} recovery refill created {len(new_offers)} offer(s) "
+                        "without advancing the requote baseline; a forced "
+                        "requote remains queued for full-side realignment after "
+                        "recovery exits",
+                    )
+                else:
+                    self._last_quoted_price[side] = _parallel_mid.get(side, mid_price)
+                    # F67: remember the un-anchored mid that was current when this
+                    # ladder was built. When the probe expires/clears, the baseline
+                    # snaps to this value (in _clear_probe_side) to prevent the
+                    # dead probe offset from triggering a spurious requote.
+                    self._last_quoted_plain_mid[side] = mid_price
                 for offer in new_offers:
                     bech32 = offer.get("offer_bech32", "")
                     trade_id = offer.get("trade_id", "")
@@ -8100,8 +8517,13 @@ class BotLoop:
             return False
         try:
             from database import get_oversized_locked_offers
+            base_ratio = float(getattr(cfg, "COIN_MAX_SIZE_RATIO", 1.5) or 1.5)
+            fallback_ratio = float(
+                getattr(cfg, "COIN_OVERSIZE_FALLBACK_RATIO", 2.0)
+                or 2.0
+            )
             flagged = get_oversized_locked_offers(
-                max_ratio=float(getattr(cfg, "COIN_MAX_SIZE_RATIO", 1.5) or 1.5),
+                max_ratio=max(base_ratio, fallback_ratio),
                 cat_decimals=int(getattr(cfg, "CAT_DECIMALS", 3) or 3),
             )
         except Exception as e:
@@ -8120,7 +8542,6 @@ class BotLoop:
         for row in flagged[:5]:
             try:
                 amount = int(row.get("amount_mojos") or 0)
-                expected = int(row.get("expected_mojos") or 0)
                 if row.get("wallet_type") == "xch":
                     amount_str = f"{Decimal(amount) / Decimal('1000000000000'):.4f} XCH"
                 else:

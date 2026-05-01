@@ -1055,6 +1055,173 @@ class ProbeAnchorTests(unittest.TestCase):
 
         self.assertEqual(cancel_calls, [])
 
+    def test_mempool_defensive_cancel_skips_side_recently_repriced_within_edge(self):
+        loop = bot_loop.BotLoop()
+        loop._running = True
+        cancel_calls = []
+        events = []
+        loop._last_shock_requote = {
+            "buy": {
+                "at": 1000.0,
+                "mid_price": "0.00015782",
+                "source": "emergency_requote",
+                "severity": "emergency",
+            },
+            "sell": {},
+        }
+
+        class _PriceEngine:
+            def inject_tibet_reserves(self, **kwargs):
+                del kwargs
+                return True
+
+            def invalidate_tibet_cache(self):
+                raise AssertionError("cache should not invalidate on successful injection")
+
+        class _Watcher:
+            def get_pending_signals(self):
+                return [{
+                    "type": "price_move",
+                    "direction": "down",
+                    "magnitude_pct": 12.376,
+                    "timestamp": 123.0,
+                    "delta_xch": -42,
+                    "new_xch_reserve": 900,
+                    "new_tok_reserve": 5500,
+                    "new_price_xch": "0.0001542795119200447629053942877",
+                    "pair_id": "pair-2",
+                }]
+
+        def _cancel_tiers(*args, **kwargs):
+            cancel_calls.append((args, kwargs))
+            return 15
+
+        def _log_event(severity, event_type, message, data=None):
+            events.append((severity, event_type, message, data or {}))
+
+        fake_mempool = types.SimpleNamespace(_watcher_instance=_Watcher())
+        loop.price_engine = _PriceEngine()
+        loop._defensive_cancel_tiers = _cancel_tiers
+
+        with patch.object(bot_loop, "_mempool_watcher_mod", fake_mempool), \
+                patch.object(bot_loop.time, "time", return_value=1010.0), \
+                patch.object(bot_loop, "log_event", side_effect=_log_event):
+            loop._drain_mempool_signals(in_cycle=False)
+
+        self.assertEqual(cancel_calls, [])
+        self.assertTrue(any(
+            event_type == "mempool_defensive_cancel_suppressed_recent_requote"
+            for _, event_type, _, _ in events
+        ))
+        self.assertEqual(loop._last_tibet_shock["sides"], ("buy",))
+
+    def test_mempool_defensive_cancel_defers_while_pending_cancel_settles(self):
+        loop = bot_loop.BotLoop()
+        loop._running = True
+        loop._pending_cancel_wallet_ids_by_side = {
+            "buy": {"pending-buy"},
+            "sell": set(),
+        }
+        cancel_calls = []
+        events = []
+
+        class _PriceEngine:
+            def inject_tibet_reserves(self, **kwargs):
+                del kwargs
+                return True
+
+            def invalidate_tibet_cache(self):
+                raise AssertionError("cache should not invalidate on successful injection")
+
+        class _Watcher:
+            def get_pending_signals(self):
+                return [{
+                    "type": "price_move",
+                    "direction": "up",
+                    "magnitude_pct": 9.0,
+                    "timestamp": 123.0,
+                    "delta_xch": 42,
+                    "new_xch_reserve": 1100,
+                    "new_tok_reserve": 4500,
+                    "new_price_xch": "0.00018716",
+                    "pair_id": "pair-1",
+                }]
+
+        def _cancel_tiers(*args, **kwargs):
+            cancel_calls.append((args, kwargs))
+            return 12
+
+        def _log_event(severity, event_type, message, data=None):
+            events.append((severity, event_type, message, data or {}))
+
+        fake_mempool = types.SimpleNamespace(_watcher_instance=_Watcher())
+        loop.price_engine = _PriceEngine()
+        loop._defensive_cancel_tiers = _cancel_tiers
+
+        with patch.object(bot_loop, "_mempool_watcher_mod", fake_mempool), \
+                patch.object(bot_loop.time, "time", return_value=1010.0), \
+                patch.object(bot_loop, "log_event", side_effect=_log_event):
+            loop._drain_mempool_signals(in_cycle=False)
+
+        self.assertEqual(cancel_calls, [])
+        self.assertTrue(loop._force_requote["sell"])
+        self.assertTrue(any(
+            event_type == "mempool_defensive_cancel_deferred_pending_cancel_settle"
+            for _, event_type, _, _ in events
+        ))
+        self.assertEqual(loop._last_tibet_shock["sides"], ("sell",))
+
+    def test_probe_rearm_defers_while_pending_cancel_settles(self):
+        loop = bot_loop.BotLoop()
+        loop._pending_cancel_wallet_ids_by_side = {
+            "buy": {"pending-buy"},
+            "sell": {"pending-sell"},
+        }
+        events = []
+
+        def _log_event(severity, event_type, message, data=None):
+            events.append((severity, event_type, message, data or {}))
+
+        with patch.object(bot_loop, "log_event", side_effect=_log_event):
+            launch_reason = loop._defer_probe_launch_for_pending_cancel(
+                "price_move (9.0% >= 2.0%)"
+            )
+
+        self.assertIsNone(launch_reason)
+        self.assertTrue(any(
+            event_type == "probe_launch_deferred_pending_cancel_settle"
+            for _, event_type, _, _ in events
+        ))
+
+    def test_create_disabled_under_target_message_is_rate_limited(self):
+        loop = bot_loop.BotLoop()
+        events = []
+        loop._requote_failure_backoff_until["buy"] = 1060.0
+
+        def _log_event(severity, event_type, message, data=None):
+            events.append((severity, event_type, message, data or {}))
+
+        with patch.object(bot_loop.time, "time", return_value=1000.0), \
+                patch.object(bot_loop, "log_event", side_effect=_log_event), \
+                contextlib.redirect_stdout(io.StringIO()):
+            for _ in range(2):
+                loop._create_offers_if_needed(
+                    Decimal("1.00"),
+                    1,
+                    fake_config.cfg.MAX_ACTIVE_SELL_OFFERS,
+                    current_buy_ids={"buy-live"},
+                    current_sell_ids={
+                        f"sell-{idx}"
+                        for idx in range(fake_config.cfg.MAX_ACTIVE_SELL_OFFERS)
+                    },
+                )
+
+        disabled_events = [
+            event for event in events
+            if event[1] == "create_disabled_buy_under_target"
+        ]
+        self.assertEqual(len(disabled_events), 1)
+
     def test_pending_mempool_reprice_updates_cycle_mid(self):
         loop = bot_loop.BotLoop()
         loop._mempool_price_refresh_needed = True
@@ -1154,6 +1321,98 @@ class ProbeAnchorTests(unittest.TestCase):
             loop._last_quoted_price["buy"],
             Decimal("1.02") / Decimal("0.97"),
         )
+
+    def test_full_requote_allows_intentional_cancel_storm_guard_bypass(self):
+        loop = bot_loop.BotLoop()
+        loop._loop_count = 6
+        loop._last_quoted_price["buy"] = Decimal("1.30")
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            loop._handle_requoting(
+                Decimal("1.10"),
+                current_buy_ids={f"buy-{idx}" for idx in range(24)},
+                current_sell_ids={f"sell-{idx}" for idx in range(5)},
+            )
+
+        buy_call = next(call for call in loop.offer_manager.requote_calls if call[0] == "buy")
+        self.assertTrue(
+            buy_call[2].get("force_cancel_storm"),
+            "FULL/EMERGENCY requotes are deliberate side replacements and must not be blocked as accidental storms",
+        )
+
+    def test_recent_shock_requote_prevents_same_price_requote_loop(self):
+        loop = bot_loop.BotLoop()
+        loop._loop_count = 6
+        loop._last_quoted_price["buy"] = Decimal("1.30")
+        loop._last_quoted_plain_mid["buy"] = Decimal("1.30")
+        loop._last_shock_requote = {
+            "buy": {
+                "at": 1000.0,
+                "mid_price": "1.10",
+                "source": "emergency_requote",
+                "severity": "emergency",
+                "new_count": 16,
+                "replaced_count": 16,
+            },
+            "sell": {},
+        }
+        events = []
+
+        def _log_event(severity, event_type, message, data=None):
+            events.append((severity, event_type, message, data or {}))
+
+        with patch.object(bot_loop.time, "time", return_value=1010.0), \
+                patch.object(bot_loop, "log_event", side_effect=_log_event), \
+                contextlib.redirect_stdout(io.StringIO()):
+            loop._handle_requoting(
+                Decimal("1.10"),
+                current_buy_ids={f"buy-{idx}" for idx in range(16)},
+                current_sell_ids={f"sell-{idx}" for idx in range(24)},
+            )
+
+        self.assertEqual(
+            [call for call in loop.offer_manager.requote_calls if call[0] == "buy"],
+            [],
+            "same-side Step 9 requote should not cancel fresh shock-requoted buys",
+        )
+        self.assertEqual(loop._last_quoted_price["buy"], Decimal("1.10"))
+        self.assertFalse(loop._force_requote["buy"])
+        self.assertTrue(any(
+            event_type == "requote_deferred_recent_shock_requote"
+            for _, event_type, _, _ in events
+        ))
+
+    def test_step9_requote_waits_for_opposite_side_pending_cancel_settle(self):
+        loop = bot_loop.BotLoop()
+        loop._loop_count = 6
+        loop._last_quoted_price["sell"] = Decimal("1.30")
+        loop._pending_cancel_wallet_ids_by_side = {
+            "buy": {"pending-buy"},
+            "sell": set(),
+        }
+        events = []
+
+        def _log_event(severity, event_type, message, data=None):
+            events.append((severity, event_type, message, data or {}))
+
+        with patch.object(bot_loop, "log_event", side_effect=_log_event), \
+                contextlib.redirect_stdout(io.StringIO()):
+            loop._handle_requoting(
+                Decimal("1.10"),
+                current_buy_ids={"buy-live"},
+                current_sell_ids={f"sell-{idx}" for idx in range(24)},
+            )
+
+        self.assertEqual(
+            [call for call in loop.offer_manager.requote_calls if call[0] == "sell"],
+            [],
+            "Step 9 should not start a second side replacement while any side has pending cancels",
+        )
+        self.assertTrue(loop._force_requote["sell"])
+        self.assertTrue(any(
+            event_type == "requote_deferred_global_pending_cancel_settle"
+            for _, event_type, _, _ in events
+        ))
 
 
 if __name__ == "__main__":

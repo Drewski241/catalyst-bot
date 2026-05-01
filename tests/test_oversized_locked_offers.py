@@ -128,6 +128,21 @@ class OversizedLockedOffersTests(unittest.TestCase):
             skip_confirmation=True,
         )
 
+    def test_reclaim_scan_honors_same_tier_oversize_fallback_ratio(self):
+        loop = bot_loop.BotLoop.__new__(bot_loop.BotLoop)
+        loop.offer_manager = MagicMock()
+
+        with (
+            patch.object(bot_loop.cfg, "TIER_ENABLED", True),
+            patch.object(bot_loop.cfg, "COIN_MAX_SIZE_RATIO", 1.5),
+            patch.object(bot_loop.cfg, "COIN_OVERSIZE_FALLBACK_RATIO", 2.0, create=True),
+            patch.object(bot_loop.cfg, "CAT_DECIMALS", 3),
+            patch("database.get_oversized_locked_offers", return_value=[]) as mock_scan,
+        ):
+            self.assertFalse(loop._reclaim_oversized_locked_offers())
+
+        self.assertEqual(mock_scan.call_args.kwargs["max_ratio"], 2.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -389,6 +389,31 @@ class RecoveryModeTests(unittest.TestCase):
         self.assertTrue(loop._recovery_state["cycle_create_stalled"])
         self.assertEqual(len(loop.offer_manager.create_calls), 2)
 
+    def test_recovery_refill_does_not_wait_for_suppressed_anchor_requote(self):
+        loop = bot_loop.BotLoop()
+        loop._recovery_state["active"] = True
+        loop._wallet_sync_stale_cycle = False
+        loop._ladder_grid_mid["buy"] = Decimal("1.10")
+        loop._ladder_anchor_plain_mid["buy"] = Decimal("1.10")
+
+        loop._create_offers_if_needed(
+            Decimal("1.00"),
+            11,
+            40,
+            current_buy_ids={f"buy-{idx}" for idx in range(11)},
+            current_sell_ids={f"sell-{idx}" for idx in range(40)},
+            arb_gap=Decimal("0"),
+        )
+
+        buy_calls = [call for call in loop.offer_manager.create_calls if call[0] == "buy"]
+        self.assertEqual(len(buy_calls), 1)
+        self.assertEqual(buy_calls[0][1], Decimal("1.00"))
+        self.assertFalse(buy_calls[0][2]["interpolate_refill_prices"])
+        self.assertTrue(
+            loop._force_requote["buy"],
+            "recovery should refill holes now while preserving a forced requote for later realignment",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -6,7 +6,6 @@ EventCategory StrEnum, categorize_event, get_category_map, and
 NotificationManager rate limiting + category control.
 """
 
-import time
 import unittest
 from decimal import Decimal
 from types import SimpleNamespace
@@ -290,6 +289,17 @@ class TestNotificationManagerRateLimit(unittest.TestCase):
         mgr.notify("T", "M", category="fill")
         result = mgr.notify("T", "M", category="error")
         self.assertTrue(result)
+
+    def test_send_truncates_windows_balloon_text_limits(self):
+        with patch.object(_nm, "PLYER_AVAILABLE", True):
+            mgr = _nm.NotificationManager()
+
+        with patch.object(_nm.plyer_notification, "notify") as notify:
+            mgr._send("T" * 100, "M" * 300, timeout=10)
+
+        kwargs = notify.call_args.kwargs
+        self.assertLessEqual(len(kwargs["title"]), 64)
+        self.assertLessEqual(len(kwargs["message"]), 240)
 
 
 if __name__ == "__main__":

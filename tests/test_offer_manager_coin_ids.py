@@ -188,7 +188,9 @@ class OfferManagerCoinIdTests(unittest.TestCase):
             count = int(num_offers or 0)
             return [{"trade_id": f"new-{i}"} for i in range(count)]
 
-        def fake_cancel_offers(trade_ids, reason="requote", skip_confirmation=False):
+        def fake_cancel_offers(trade_ids, reason="requote", skip_confirmation=False,
+                               force_storm=False):
+            del reason, skip_confirmation, force_storm
             cancel_batches.append(list(trade_ids))
             return {tid: {"success": True} for tid in trade_ids}
 
@@ -223,6 +225,7 @@ class OfferManagerCoinIdTests(unittest.TestCase):
         """Larger partial requotes blend stale/far survivors into cancel targets."""
         manager = offer_manager.OfferManager()
         cancel_batches = []
+        force_flags = []
         open_offers = []
         for idx, price in enumerate([
             "0.1199", "0.1190", "0.1180", "0.1170",
@@ -253,8 +256,11 @@ class OfferManagerCoinIdTests(unittest.TestCase):
             count = int(num_offers or 0)
             return [{"trade_id": f"new-{i}"} for i in range(count)]
 
-        def fake_cancel_offers(trade_ids, reason="requote", skip_confirmation=False):
+        def fake_cancel_offers(trade_ids, reason="requote", skip_confirmation=False,
+                               force_storm=False):
+            del reason, skip_confirmation
             cancel_batches.append(list(trade_ids))
+            force_flags.append(force_storm)
             return {tid: {"success": True} for tid in trade_ids}
 
         _eight_spare_coins = [
@@ -278,6 +284,50 @@ class OfferManagerCoinIdTests(unittest.TestCase):
         ])
         self.assertIn("stale-old-far", cancel_batches[0][6:])
         self.assertNotIn("risk-7", cancel_batches[0])
+        self.assertEqual(force_flags, [False])
+
+    def test_requote_side_can_force_intentional_cancel_storm(self):
+        manager = offer_manager.OfferManager()
+        force_flags = []
+        open_offers = [
+            {
+                "trade_id": f"old-{idx}",
+                "tier": "inner",
+                "price_xch": "0.1200",
+                "created_at": f"2026-05-01T00:00:{idx:02d}+00:00",
+            }
+            for idx in range(1, 7)
+        ]
+
+        def fake_create_ladder(mid_price, side, num_offers=None, **kwargs):
+            del mid_price, side, kwargs
+            count = int(num_offers or 0)
+            return [{"trade_id": f"new-{i}"} for i in range(count)]
+
+        def fake_cancel_offers(trade_ids, reason="requote", skip_confirmation=False,
+                               force_storm=False):
+            del reason, skip_confirmation
+            force_flags.append(force_storm)
+            return {tid: {"success": True} for tid in trade_ids}
+
+        _six_spare_coins = [
+            {"designation": "tier_spare", "assigned_tier": "inner"}
+            for _ in range(6)
+        ]
+
+        with patch.object(offer_manager, "get_open_offers", return_value=open_offers), \
+                patch("database.get_free_coins", return_value=_six_spare_coins), \
+                patch.object(manager, "create_ladder", side_effect=fake_create_ladder), \
+                patch.object(manager, "cancel_offers", side_effect=fake_cancel_offers), \
+                patch.object(offer_manager, "log_event"):
+            result = manager.requote_side(
+                "buy",
+                Decimal("0.1200"),
+                force_cancel_storm=True,
+            )
+
+        self.assertEqual(result["replaced_count"], 6)
+        self.assertEqual(force_flags, [True])
 
     def test_requote_side_does_not_create_when_cancel_is_pending(self):
         manager = offer_manager.OfferManager()
@@ -293,7 +343,9 @@ class OfferManagerCoinIdTests(unittest.TestCase):
             calls.append("create")
             return [{"trade_id": "new-sell"}]
 
-        def fake_cancel_offers(trade_ids, reason="requote", skip_confirmation=False):
+        def fake_cancel_offers(trade_ids, reason="requote", skip_confirmation=False,
+                               force_storm=False):
+            del trade_ids, reason, skip_confirmation, force_storm
             calls.append("cancel")
             return {
                 "old-sell": {
@@ -513,6 +565,65 @@ class OfferManagerCoinIdTests(unittest.TestCase):
                 amount_mojos=2000,
                 preferred_tier="sniper",
                 strict_preferred_tier=True,
+            )
+
+        self.assertIsNone(coin_id)
+
+    def test_select_coin_for_offer_allows_moderate_same_tier_oversize(self):
+        manager = offer_manager.OfferManager()
+        records = [
+            {"coin_id": "0xextreme", "coin": {"amount": 1550}},
+        ]
+        db_free = [
+            {
+                "coin_id": "0xextreme",
+                "designation": "tier_spare",
+                "assigned_tier": "extreme",
+                "amount_mojos": 1550,
+            },
+        ]
+
+        with patch.object(offer_manager.cfg, "COIN_OVERSIZE_FALLBACK_RATIO", Decimal("2.0"), create=True), \
+                patch.object(offer_manager, "get_exact_spendable_coins_rpc",
+                             return_value={"success": True, "confirmed_records": records}), \
+                patch("database.get_free_coins", return_value=db_free), \
+                patch("database.get_reserve_coins", return_value=[]), \
+                patch.object(offer_manager, "log_event"):
+            coin_id = manager._select_coin_for_offer(
+                wallet_id=2,
+                amount_mojos=1000,
+                preferred_tier="extreme",
+                strict_preferred_tier=True,
+                max_amount_mojos=1500,
+            )
+
+        self.assertEqual(coin_id, "0xextreme")
+
+    def test_select_coin_for_offer_rejects_wild_same_tier_oversize(self):
+        manager = offer_manager.OfferManager()
+        records = [
+            {"coin_id": "0xextreme", "coin": {"amount": 5000}},
+        ]
+        db_free = [
+            {
+                "coin_id": "0xextreme",
+                "designation": "tier_spare",
+                "assigned_tier": "extreme",
+                "amount_mojos": 5000,
+            },
+        ]
+
+        with patch.object(offer_manager.cfg, "COIN_OVERSIZE_FALLBACK_RATIO", Decimal("2.0"), create=True), \
+                patch.object(offer_manager, "get_exact_spendable_coins_rpc",
+                             return_value={"success": True, "confirmed_records": records}), \
+                patch("database.get_free_coins", return_value=db_free), \
+                patch("database.get_reserve_coins", return_value=[]):
+            coin_id = manager._select_coin_for_offer(
+                wallet_id=2,
+                amount_mojos=1000,
+                preferred_tier="extreme",
+                strict_preferred_tier=True,
+                max_amount_mojos=1500,
             )
 
         self.assertIsNone(coin_id)
@@ -1050,6 +1161,141 @@ class OfferManagerCoinIdTests(unittest.TestCase):
         # Only extreme is short (22–49 with 25 existing → 3 slots needed);
         # fill from innermost extreme positions [22, 23, 24].
         self.assertEqual(slots, [22, 23, 24])
+
+    def test_create_ladder_can_bypass_stale_refill_interpolation(self):
+        manager = offer_manager.OfferManager()
+        selected = itertools.count(1)
+
+        class _FakeRiskManager:
+            @staticmethod
+            def get_tier_size(tier, side=None):
+                del tier, side
+                return Decimal("1.0")
+
+        def fake_create_offer_with_retry(self, offer_dict, max_retries=2,
+                                         expiry_offset=0, expiry_secs=None,
+                                         used_coins=None, coin_ids_enabled=False,
+                                         selected_coin_id=None, preferred_tier=None,
+                                         strict_preferred_tier=False):
+            del self, offer_dict, max_retries, expiry_offset, expiry_secs
+            del used_coins, coin_ids_enabled, preferred_tier, strict_preferred_tier
+            return {
+                "success": True,
+                "trade_id": f"trade-{selected_coin_id}",
+                "trade_record": {"trade_id": f"trade-{selected_coin_id}"},
+                "locked_coin_id": selected_coin_id,
+                "offer": f"offer-{selected_coin_id}",
+            }
+
+        stale_extreme_offers = [
+            {"tier": "extreme", "price_xch": "0.0002030566", "size_xch": "1.0"},
+            {"tier": "extreme", "price_xch": "0.0002039827", "size_xch": "1.0"},
+        ]
+
+        def fake_select(*args, **kwargs):
+            del args, kwargs
+            return f"0xcoin{next(selected)}"
+
+        with patch.object(offer_manager.cfg, "TIER_ENABLED", True), \
+                patch.object(offer_manager.cfg, "SELL_INNER_TIER_COUNT", 7, create=True), \
+                patch.object(offer_manager.cfg, "SELL_MID_TIER_COUNT", 7, create=True), \
+                patch.object(offer_manager.cfg, "SELL_OUTER_TIER_COUNT", 6, create=True), \
+                patch.object(offer_manager.cfg, "SELL_EXTREME_TIER_COUNT", 4, create=True), \
+                patch.object(offer_manager.cfg, "MAX_SPREAD_BPS", Decimal("1350"), create=True), \
+                patch.object(offer_manager.cfg, "COIN_PREP_HEADROOM_PCT", Decimal("10"), create=True), \
+                patch.object(offer_manager, "get_open_offers", return_value=stale_extreme_offers), \
+                patch.object(offer_manager.OfferManager, "_select_coin_for_offer",
+                             side_effect=fake_select), \
+                patch.object(offer_manager.OfferManager, "create_offer_with_retry",
+                             new=fake_create_offer_with_retry), \
+                patch.object(offer_manager, "get_exact_spendable_coins_rpc",
+                             return_value={"success": True, "confirmed_records": []}), \
+                patch.object(offer_manager, "add_offer"), \
+                patch.object(offer_manager, "log_event"), \
+                patch.object(offer_manager, "get_offer_bech32", return_value=""), \
+                patch("builtins.print"), \
+                patch("database.lock_coin"):
+            created = manager.create_ladder(
+                mid_price=Decimal("0.0001762177694059978342543424548"),
+                side="sell",
+                num_offers=2,
+                spread_fraction=Decimal("0.15"),
+                total_slots=24,
+                coin_ids_enabled=True,
+                risk_manager=_FakeRiskManager(),
+                slot_sequence=[22, 23],
+                interpolate_refill_prices=False,
+            )
+
+        self.assertEqual(len(created), 2)
+        self.assertEqual([offer["tier"] for offer in created], ["extreme", "extreme"])
+
+    def test_create_ladder_falls_back_when_refill_interpolation_rejects_slot(self):
+        manager = offer_manager.OfferManager()
+        selected = itertools.count(1)
+
+        class _FakeRiskManager:
+            @staticmethod
+            def get_tier_size(tier, side=None):
+                del tier, side
+                return Decimal("1.0")
+
+        def fake_create_offer_with_retry(self, offer_dict, max_retries=2,
+                                         expiry_offset=0, expiry_secs=None,
+                                         used_coins=None, coin_ids_enabled=False,
+                                         selected_coin_id=None, preferred_tier=None,
+                                         strict_preferred_tier=False):
+            del self, offer_dict, max_retries, expiry_offset, expiry_secs
+            del used_coins, coin_ids_enabled, preferred_tier, strict_preferred_tier
+            return {
+                "success": True,
+                "trade_id": f"trade-{selected_coin_id}",
+                "trade_record": {"trade_id": f"trade-{selected_coin_id}"},
+                "locked_coin_id": selected_coin_id,
+                "offer": f"offer-{selected_coin_id}",
+            }
+
+        stale_extreme_offers = [
+            {"tier": "extreme", "price_xch": "0.0002030566", "size_xch": "1.0"},
+            {"tier": "extreme", "price_xch": "0.0002039827", "size_xch": "1.0"},
+        ]
+
+        def fake_select(*args, **kwargs):
+            del args, kwargs
+            return f"0xcoin{next(selected)}"
+
+        with patch.object(offer_manager.cfg, "TIER_ENABLED", True), \
+                patch.object(offer_manager.cfg, "SELL_INNER_TIER_COUNT", 7, create=True), \
+                patch.object(offer_manager.cfg, "SELL_MID_TIER_COUNT", 7, create=True), \
+                patch.object(offer_manager.cfg, "SELL_OUTER_TIER_COUNT", 6, create=True), \
+                patch.object(offer_manager.cfg, "SELL_EXTREME_TIER_COUNT", 4, create=True), \
+                patch.object(offer_manager.cfg, "MAX_SPREAD_BPS", Decimal("1350"), create=True), \
+                patch.object(offer_manager.cfg, "COIN_PREP_HEADROOM_PCT", Decimal("10"), create=True), \
+                patch.object(offer_manager, "get_open_offers", return_value=stale_extreme_offers), \
+                patch.object(offer_manager.OfferManager, "_select_coin_for_offer",
+                             side_effect=fake_select), \
+                patch.object(offer_manager.OfferManager, "create_offer_with_retry",
+                             new=fake_create_offer_with_retry), \
+                patch.object(offer_manager, "get_exact_spendable_coins_rpc",
+                             return_value={"success": True, "confirmed_records": []}), \
+                patch.object(offer_manager, "add_offer"), \
+                patch.object(offer_manager, "log_event"), \
+                patch.object(offer_manager, "get_offer_bech32", return_value=""), \
+                patch("builtins.print"), \
+                patch("database.lock_coin"):
+            created = manager.create_ladder(
+                mid_price=Decimal("0.0001762177694059978342543424548"),
+                side="sell",
+                num_offers=2,
+                spread_fraction=Decimal("0.15"),
+                total_slots=24,
+                coin_ids_enabled=True,
+                risk_manager=_FakeRiskManager(),
+                slot_sequence=[22, 23],
+            )
+
+        self.assertEqual(len(created), 2)
+        self.assertEqual([offer["tier"] for offer in created], ["extreme", "extreme"])
 
     def test_slot_size_variation_supports_thousands_of_unique_steps(self):
         self.assertEqual(

@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch
 import sys
 import types
+from decimal import Decimal
 
 # Track which stub modules we installed so we can clean them up after the
 # test class runs.  Other test files (test_amm_monitor.py) import the real
@@ -249,6 +250,77 @@ class CoinManagerTopupFailClosedTests(unittest.TestCase):
             ["0xsource", "0xfee"],
         )
 
+    def test_create_transaction_rpc_signs_and_submits_coin_spends_without_txid(self):
+        import wallet_sage
+
+        with patch.object(wallet_sage, "_require_signing_capability", return_value=True), \
+                patch.object(wallet_sage, "rpc", return_value={
+                    "summary": {},
+                    "coin_spends": [{"coin": "spend"}],
+                }) as rpc_mock, \
+                patch.object(wallet_sage, "_sage_post", side_effect=[
+                    {"spend_bundle": {"aggregated_signature": "0xsig"}},
+                    {"success": True, "transaction_id": "0xtx"},
+                ]) as sage_post:
+            result = wallet_sage.create_transaction_rpc(
+                selected_coin_ids=["0xsource"],
+                actions=[{"type": "send", "amount": "1"}],
+                auto_submit=True,
+            )
+
+        rpc_mock.assert_called_once()
+        self.assertTrue(result["success"])
+        self.assertTrue(result["submitted"])
+        self.assertEqual(result["transaction_id"], "0xtx")
+        self.assertEqual(sage_post.call_args_list[0].args[0], "sign_coin_spends")
+        self.assertEqual(sage_post.call_args_list[1].args[0], "submit_transaction")
+
+    def test_combine_coins_signs_and_submits_coin_spends_without_txid(self):
+        import wallet_sage
+
+        with patch.object(wallet_sage, "_require_signing_capability", return_value=True), \
+                patch.object(wallet_sage, "rpc", return_value={
+                    "summary": {},
+                    "coin_spends": [{"coin": "a"}, {"coin": "b"}],
+                }) as rpc_mock, \
+                patch.object(wallet_sage, "_sage_post", side_effect=[
+                    {"spend_bundle": {"aggregated_signature": "0xsig"}},
+                    {"success": True, "transaction_id": "0xcombine"},
+                ]) as sage_post:
+            result = wallet_sage.combine_coins(
+                coin_ids=["0xa", "0xb"],
+                fee_mojos=1,
+            )
+
+        rpc_mock.assert_called_once()
+        self.assertTrue(result["success"])
+        self.assertTrue(result["submitted"])
+        self.assertEqual(result["transaction_id"], "0xcombine")
+        self.assertEqual(sage_post.call_args_list[0].args[0], "sign_coin_spends")
+        self.assertEqual(sage_post.call_args_list[1].args[0], "submit_transaction")
+
+    def test_create_transaction_rpc_rejects_submit_without_txid_or_pending(self):
+        import wallet_sage
+
+        with patch.object(wallet_sage, "_require_signing_capability", return_value=True), \
+                patch.object(wallet_sage, "rpc", return_value={
+                    "summary": {},
+                    "coin_spends": [{"coin": "spend"}],
+                }), \
+                patch.object(wallet_sage, "_sage_post", side_effect=[
+                    {"spend_bundle": {"aggregated_signature": "0xsig"}},
+                    {"success": True, "status": "success"},
+                ]), \
+                patch.object(wallet_sage, "get_pending_transactions", return_value=[]):
+            result = wallet_sage.create_transaction_rpc(
+                selected_coin_ids=["0xsource"],
+                actions=[{"type": "send", "amount": "1"}],
+                auto_submit=True,
+            )
+
+        self.assertFalse(result["success"])
+        self.assertIn("no transaction id", result["error"])
+
     def test_cat_one_step_topup_reserves_fee_pool_coin(self):
         manager = self._make_manager()
         manager.fee_pool.refresh([_record("0xfee", 1000)])
@@ -283,6 +355,155 @@ class CoinManagerTopupFailClosedTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(split_mock.call_args.kwargs["fee_coin_id"], "0xfee")
         self.assertEqual(manager.fee_pool.available_count, 0)
+
+    def test_one_step_split_debounces_duplicate_pending_source(self):
+        manager = self._make_manager()
+
+        with patch("wallet_sage.sage_topup_split",
+                   return_value={"transaction_id": "0xtx"}) as split_mock, \
+             patch.object(coin_manager, "get_next_address",
+                          return_value={"success": True, "address": "xch1test"}), \
+             patch.object(manager, "_tx_fee_mojos", return_value=0), \
+             patch.object(manager, "_fee_pool_enabled", return_value=False), \
+             patch.object(manager, "_get_owned_coin_amount_map", side_effect=[
+                 {},
+                 {"0xnew": 100},
+                 {},
+                 {"0xnew2": 50, "0xnew3": 50},
+             ]), \
+             patch.object(manager, "_get_strict_selectable_coin_id_set", side_effect=[
+                 {"0xnew"},
+                 {"0xnew2", "0xnew3"},
+             ]), \
+             patch.object(manager, "_get_transaction_confirmation_state",
+                          return_value={"confirmed": False, "height": None}), \
+             patch.object(manager, "_stamp_topup_output_designations"), \
+             patch.object(coin_manager, "log_event"), \
+             patch.object(coin_manager.time, "sleep", return_value=None):
+            first = manager._sage_one_step_split(
+                name="CAT-inner",
+                wallet_id=2,
+                source_coin_id="0xsource",
+                num_to_create=1,
+                trading_size_mojos=100,
+                is_cat=True,
+            )
+            second = manager._sage_one_step_split(
+                name="CAT-inner",
+                wallet_id=2,
+                source_coin_id="0xsource",
+                num_to_create=2,
+                trading_size_mojos=50,
+                is_cat=True,
+            )
+
+        self.assertTrue(first)
+        self.assertEqual(second, "pending")
+        split_mock.assert_called_once()
+
+    def test_one_step_split_without_txid_and_no_pending_does_not_debounce_source(self):
+        manager = self._make_manager()
+
+        times = iter([1000, 1001, 1002, 1123, 1124])
+
+        with patch("wallet_sage.sage_topup_split",
+                   return_value={"success": True}) as split_mock, \
+             patch("wallet_sage.get_pending_transactions", return_value=[]), \
+             patch.object(coin_manager, "get_next_address",
+                          return_value={"success": True, "address": "xch1test"}), \
+             patch.object(manager, "_tx_fee_mojos", return_value=0), \
+             patch.object(manager, "_fee_pool_enabled", return_value=False), \
+             patch.object(manager, "_get_owned_coin_amount_map", side_effect=[
+                 {"0xsource": 600},
+                 {"0xsource": 600},
+                 {"0xsource": 600},
+                 {"0xsource": 600},
+             ]), \
+             patch.object(manager, "_get_strict_selectable_coin_id_set",
+                          return_value={"0xsource"}), \
+             patch.object(manager, "_get_transaction_confirmation_state",
+                          return_value={"confirmed": False, "height": None}), \
+             patch.object(coin_manager, "log_event") as log_event, \
+             patch.object(coin_manager.time, "time", side_effect=lambda: next(times)), \
+             patch.object(coin_manager.time, "sleep", return_value=None):
+            first = manager._sage_one_step_split(
+                name="CAT-inner",
+                wallet_id=2,
+                source_coin_id="0xsource",
+                num_to_create=1,
+                trading_size_mojos=100,
+                is_cat=True,
+            )
+            second = manager._sage_one_step_split(
+                name="CAT-inner",
+                wallet_id=2,
+                source_coin_id="0xsource",
+                num_to_create=1,
+                trading_size_mojos=100,
+                is_cat=True,
+            )
+
+        self.assertFalse(first)
+        self.assertFalse(second)
+        self.assertEqual(split_mock.call_count, 2)
+        event_types = [call.args[1] for call in log_event.call_args_list]
+        self.assertIn("topup_cat-inner_osstep_not_submitted", event_types)
+        self.assertNotIn("topup_cat-inner_osstep_debounce", event_types)
+
+    def test_one_step_split_without_txid_clears_debounce_after_grace(self):
+        manager = self._make_manager()
+
+        clock = {"now": 1000}
+
+        def fake_time():
+            clock["now"] += 20
+            return clock["now"]
+
+        with patch("wallet_sage.sage_topup_split",
+                   return_value={"success": True}) as split_mock, \
+             patch("wallet_sage.get_pending_transactions", return_value=[]), \
+             patch.object(coin_manager, "get_next_address",
+                          return_value={"success": True, "address": "xch1test"}), \
+             patch.object(manager, "_tx_fee_mojos", return_value=0), \
+             patch.object(manager, "_fee_pool_enabled", return_value=False), \
+             patch.object(manager, "_get_owned_coin_amount_map", side_effect=[
+                 {"0xsource": 600},  # first pre-snapshot
+                 {"0xsource": 600},  # first grace poll
+                 {"0xsource": 600},  # second pre-snapshot
+             ]), \
+             patch.object(manager, "_get_strict_selectable_coin_id_set", side_effect=[
+                 set(),          # source briefly hidden just after submit
+                 {"0xsource"},   # source returned selectable during grace
+                 {"0xsource"},   # second attempt should not be debounced
+             ]), \
+             patch.object(manager, "_get_transaction_confirmation_state",
+                          return_value={"confirmed": False, "height": None}), \
+             patch.object(coin_manager, "log_event") as log_event, \
+             patch.object(coin_manager.time, "time", side_effect=fake_time), \
+             patch.object(coin_manager.time, "sleep", return_value=None):
+            first = manager._sage_one_step_split(
+                name="CAT-inner",
+                wallet_id=2,
+                source_coin_id="0xsource",
+                num_to_create=1,
+                trading_size_mojos=100,
+                is_cat=True,
+            )
+            second = manager._sage_one_step_split(
+                name="CAT-inner",
+                wallet_id=2,
+                source_coin_id="0xsource",
+                num_to_create=1,
+                trading_size_mojos=100,
+                is_cat=True,
+            )
+
+        self.assertFalse(first)
+        self.assertFalse(second)
+        self.assertEqual(split_mock.call_count, 2)
+        event_types = [call.args[1] for call in log_event.call_args_list]
+        self.assertIn("topup_cat-inner_osstep_not_submitted", event_types)
+        self.assertNotIn("topup_cat-inner_osstep_debounce", event_types)
 
     def test_sage_one_step_split_stamps_sniper_outputs(self):
         manager = self._make_manager()
@@ -323,6 +544,561 @@ class CoinManagerTopupFailClosedTests(unittest.TestCase):
         self.assertEqual(
             {call.args for call in set_designation.call_args_list},
             {("0xa", "tier_spare", "sniper"), ("0xb", "tier_spare", "sniper")},
+        )
+
+    def test_topup_prioritizes_missing_offers_over_xch_misfit_absorption(self):
+        manager = self._make_manager()
+        manager._topup_is_drip = True
+
+        tier_counts = {"inner": 7, "mid": 7, "outer": 6, "extreme": 4}
+        prepped_counts = {"inner": 17, "mid": 12, "outer": 9, "extreme": 6}
+        tier_sizes = {
+            "inner": 26_000_000,
+            "mid": 13_000_000,
+            "outer": 6_500_000,
+            "extreme": 3_250_000,
+        }
+
+        def _coins(n, prefix):
+            return [_record(f"0x{prefix}{i}", 1_000_000) for i in range(n)]
+
+        xch_inv = {
+            "reserve": [_record("0xxchreserve", 10_000_000_000_000)],
+            "small": [_record("0xxchmisfit", 500_000_000_000)],
+            "inner": _coins(20, "xi"),
+            "mid": _coins(20, "xm"),
+            "outer": _coins(20, "xo"),
+            "extreme": _coins(20, "xe"),
+            "sniper": [],
+            "fees": _coins(50, "xf"),
+        }
+        cat_inv = {
+            "reserve": [_record("0xcatreserve", 500_000_000)],
+            "small": [],
+            "inner": [],
+            "mid": _coins(14, "cm"),
+            "outer": _coins(4, "co"),
+            "extreme": _coins(1, "ce"),
+            "sniper": [],
+            "fees": [],
+        }
+
+        def classify(_records, wallet_type, _tier_sizes):
+            return xch_inv if wallet_type == "xch" else cat_inv
+
+        def open_offers(side=None, cat_asset_id=None, **_kwargs):
+            del cat_asset_id
+            if side == "buy":
+                return [
+                    {"side": "buy", "tier": tier}
+                    for tier, count in tier_counts.items()
+                    for _ in range(count)
+                ]
+            if side == "sell":
+                return [
+                    {"side": "sell", "tier": tier}
+                    for tier, count in {"mid": 7, "outer": 6, "extreme": 4}.items()
+                    for _ in range(count)
+                ]
+            return []
+
+        fake_wallet = types.ModuleType("wallet")
+        fake_wallet.get_wallet_sync_status = lambda: {"synced": True, "reachable": True}
+
+        absorb_calls = []
+
+        def absorb(name, *_args, **_kwargs):
+            absorb_calls.append(name)
+            return name == "XCH"
+
+        original_reversed = getattr(coin_manager.cfg, "BUY_LADDER_REVERSED", False)
+        self.addCleanup(setattr, coin_manager.cfg, "BUY_LADDER_REVERSED", original_reversed)
+        coin_manager.cfg.BUY_LADDER_REVERSED = False
+
+        with patch.dict(sys.modules, {"wallet": fake_wallet}), \
+                patch.object(coin_manager.cfg, "TIER_ENABLED", True), \
+                patch.object(coin_manager.cfg, "ENABLE_BUY", True), \
+                patch.object(coin_manager.cfg, "ENABLE_SELL", True), \
+                patch.object(coin_manager.cfg, "MAX_ACTIVE_BUY_OFFERS", 24), \
+                patch.object(coin_manager.cfg, "MAX_ACTIVE_SELL_OFFERS", 24), \
+                patch.object(coin_manager.cfg, "WALLET_ID_XCH", 1), \
+                patch.object(coin_manager.cfg, "CAT_WALLET_ID", 2), \
+                patch.object(coin_manager.cfg, "CAT_ASSET_ID", "a" * 64), \
+                patch.object(coin_manager.cfg, "CAT_DECIMALS", 3), \
+                patch.object(coin_manager.cfg, "COIN_PREP_MULTIPLIER", Decimal("1")), \
+                patch.object(coin_manager, "get_tier_distribution", return_value=tier_counts), \
+                patch.object(coin_manager, "get_weighted_tier_prep_counts", return_value=prepped_counts), \
+                patch.object(coin_manager, "_get_free_coins_rpc", return_value={
+                    "confirmed_records": [_record("0xwalletcoin", 1)]
+                }), \
+                patch.object(manager, "_classify_coins_by_designation", side_effect=classify), \
+                patch.object(manager, "_get_tier_sizes_mojos", return_value=tier_sizes), \
+                patch.object(manager, "_configured_tier_sizes_xch", return_value={
+                    "inner": Decimal("1"),
+                    "mid": Decimal("0.5"),
+                    "outer": Decimal("0.25"),
+                    "extreme": Decimal("0.125"),
+                }), \
+                patch.object(manager, "get_trading_pace", return_value="normal"), \
+                patch.object(manager, "_absorb_misfits_to_reserve", side_effect=absorb), \
+                patch.object(manager, "_smart_topup_wallet", return_value=True) as smart_topup, \
+                patch("database.get_open_offers", side_effect=open_offers):
+            manager._topup_worker(active_buy=24, active_sell=17)
+
+        self.assertNotIn("XCH", absorb_calls)
+        smart_topup.assert_called_once()
+        self.assertEqual(smart_topup.call_args.args[0], "CAT-inner")
+
+    def test_topup_prioritizes_floor_spares_over_xch_misfit_absorption(self):
+        manager = self._make_manager()
+        manager._topup_is_drip = True
+
+        tier_counts = {"inner": 7, "mid": 7, "outer": 6, "extreme": 4}
+        prepped_counts = {"inner": 17, "mid": 12, "outer": 9, "extreme": 6}
+        tier_sizes = {
+            "inner": 26_000_000,
+            "mid": 13_000_000,
+            "outer": 6_500_000,
+            "extreme": 3_250_000,
+        }
+
+        def _coins(n, prefix):
+            return [_record(f"0x{prefix}{i}", 1_000_000) for i in range(n)]
+
+        xch_inv = {
+            "reserve": [_record("0xxchreserve", 10_000_000_000_000)],
+            "small": [_record("0xxchmisfit", 500_000_000_000)],
+            "inner": _coins(20, "xi"),
+            "mid": _coins(20, "xm"),
+            "outer": _coins(20, "xo"),
+            "extreme": _coins(20, "xe"),
+            "sniper": [],
+            "fees": _coins(50, "xf"),
+        }
+        cat_inv = {
+            "reserve": [_record("0xcatreserve", 500_000_000)],
+            "small": [],
+            "inner": [],
+            "mid": _coins(14, "cm"),
+            "outer": _coins(4, "co"),
+            "extreme": _coins(1, "ce"),
+            "sniper": [],
+            "fees": [],
+        }
+
+        def classify(_records, wallet_type, _tier_sizes):
+            return xch_inv if wallet_type == "xch" else cat_inv
+
+        def open_offers(side=None, cat_asset_id=None, **_kwargs):
+            del cat_asset_id
+            if side in {"buy", "sell"}:
+                return [
+                    {"side": side, "tier": tier}
+                    for tier, count in tier_counts.items()
+                    for _ in range(count)
+                ]
+            return []
+
+        fake_wallet = types.ModuleType("wallet")
+        fake_wallet.get_wallet_sync_status = lambda: {"synced": True, "reachable": True}
+
+        absorb_calls = []
+
+        def absorb(name, *_args, **_kwargs):
+            absorb_calls.append(name)
+            return name == "XCH"
+
+        original_reversed = getattr(coin_manager.cfg, "BUY_LADDER_REVERSED", False)
+        self.addCleanup(setattr, coin_manager.cfg, "BUY_LADDER_REVERSED", original_reversed)
+        coin_manager.cfg.BUY_LADDER_REVERSED = False
+
+        with patch.dict(sys.modules, {"wallet": fake_wallet}), \
+                patch.object(coin_manager.cfg, "TIER_ENABLED", True), \
+                patch.object(coin_manager.cfg, "ENABLE_BUY", True), \
+                patch.object(coin_manager.cfg, "ENABLE_SELL", True), \
+                patch.object(coin_manager.cfg, "MAX_ACTIVE_BUY_OFFERS", 24), \
+                patch.object(coin_manager.cfg, "MAX_ACTIVE_SELL_OFFERS", 24), \
+                patch.object(coin_manager.cfg, "WALLET_ID_XCH", 1), \
+                patch.object(coin_manager.cfg, "CAT_WALLET_ID", 2), \
+                patch.object(coin_manager.cfg, "CAT_ASSET_ID", "a" * 64), \
+                patch.object(coin_manager.cfg, "CAT_DECIMALS", 3), \
+                patch.object(coin_manager.cfg, "COIN_PREP_MULTIPLIER", Decimal("1")), \
+                patch.object(coin_manager, "get_tier_distribution", return_value=tier_counts), \
+                patch.object(coin_manager, "get_weighted_tier_prep_counts", return_value=prepped_counts), \
+                patch.object(coin_manager, "_get_free_coins_rpc", return_value={
+                    "confirmed_records": [_record("0xwalletcoin", 1)]
+                }), \
+                patch.object(manager, "_classify_coins_by_designation", side_effect=classify), \
+                patch.object(manager, "_get_tier_sizes_mojos", return_value=tier_sizes), \
+                patch.object(manager, "_configured_tier_sizes_xch", return_value={
+                    "inner": Decimal("1"),
+                    "mid": Decimal("0.5"),
+                    "outer": Decimal("0.25"),
+                    "extreme": Decimal("0.125"),
+                }), \
+                patch.object(manager, "get_trading_pace", return_value="normal"), \
+                patch.object(manager, "_absorb_misfits_to_reserve", side_effect=absorb), \
+                patch.object(manager, "_smart_topup_wallet", return_value=True) as smart_topup, \
+                patch("database.get_open_offers", side_effect=open_offers):
+            manager._topup_worker(active_buy=24, active_sell=24)
+
+        self.assertNotIn("XCH", absorb_calls)
+        smart_topup.assert_called_once()
+        self.assertEqual(smart_topup.call_args.args[0], "CAT-inner")
+
+    def test_absorb_misfits_debounces_duplicate_pending_inputs(self):
+        manager = self._make_manager()
+        reserve = _record("0xreserve", 1_000_000_000)
+        small = _record("0xsmall", 200_000_000)
+        inventory = {
+            "reserve": [reserve],
+            "small": [small],
+            "inner": [],
+            "mid": [],
+            "outer": [],
+            "extreme": [],
+        }
+        tier_sizes = {
+            "inner": 500_000_000,
+            "mid": 250_000_000,
+            "outer": 125_000_000,
+            "extreme": 60_000_000,
+        }
+        free_result = {"confirmed_records": [reserve, small]}
+
+        with patch.object(coin_manager, "get_wallet_type", return_value="sage"), \
+                patch.object(coin_manager, "_get_free_coins_rpc", return_value=free_result), \
+                patch.object(manager, "_tx_fee_mojos", return_value=1), \
+                patch.object(manager, "_filter_out_protected_coin_ids", side_effect=lambda ids: ids), \
+                patch.object(manager, "_record_topup_pool_refund"), \
+                patch("database.set_setting", return_value=True), \
+                patch("wallet_sage.combine_coins", return_value={
+                    "success": True,
+                    "transaction_id": "0xabsorbtx",
+                    "coin_spends": [{}, {}],
+                }) as combine:
+            first = manager._absorb_misfits_to_reserve(
+                "XCH",
+                1,
+                inventory,
+                tier_sizes,
+                is_cat=False,
+            )
+            second = manager._absorb_misfits_to_reserve(
+                "XCH",
+                1,
+                inventory,
+                tier_sizes,
+                is_cat=False,
+            )
+
+        self.assertTrue(first)
+        self.assertEqual(second, "pending")
+        combine.assert_called_once()
+
+    def test_absorb_misfits_without_txid_and_no_pending_does_not_debounce_inputs(self):
+        manager = self._make_manager()
+        reserve = _record("0xreserve", 1_000_000_000)
+        small = _record("0xsmall", 200_000_000)
+        inventory = {
+            "reserve": [reserve],
+            "small": [small],
+            "inner": [],
+            "mid": [],
+            "outer": [],
+            "extreme": [],
+        }
+        tier_sizes = {
+            "inner": 500_000_000,
+            "mid": 250_000_000,
+            "outer": 125_000_000,
+            "extreme": 60_000_000,
+        }
+        free_result = {"confirmed_records": [reserve, small]}
+
+        with patch.object(coin_manager, "get_wallet_type", return_value="sage"), \
+                patch.object(coin_manager, "_get_free_coins_rpc", return_value=free_result), \
+                patch.object(manager, "_tx_fee_mojos", return_value=1), \
+                patch.object(manager, "_filter_out_protected_coin_ids", side_effect=lambda ids: ids), \
+                patch.object(manager, "_get_strict_selectable_coin_id_set",
+                             return_value={"0xreserve", "0xsmall"}), \
+                patch.object(manager, "_record_topup_pool_refund") as refund, \
+                patch("wallet_sage.get_pending_transactions", return_value=[]), \
+                patch("wallet_sage.combine_coins", return_value={
+                    "summary": {},
+                    "coin_spends": [{}, {}],
+                }) as combine, \
+                patch.object(coin_manager, "log_event") as log_event:
+            first = manager._absorb_misfits_to_reserve(
+                "XCH",
+                1,
+                inventory,
+                tier_sizes,
+                is_cat=False,
+            )
+            second = manager._absorb_misfits_to_reserve(
+                "XCH",
+                1,
+                inventory,
+                tier_sizes,
+                is_cat=False,
+            )
+
+        self.assertFalse(first)
+        self.assertFalse(second)
+        self.assertEqual(combine.call_count, 2)
+        refund.assert_not_called()
+        event_types = [call.args[1] for call in log_event.call_args_list]
+        self.assertIn("topup_xch_absorb_not_submitted", event_types)
+        self.assertNotIn("topup_xch_absorb_debounce", event_types)
+
+    def test_pool_rebuild_waits_quietly_when_consolidation_is_pending(self):
+        manager = self._make_manager()
+        reserve = _record("0xreserve", 150)
+        keep_mid = _record("0xmidkeep", 400)
+        excess_a = _record("0xmida", 400)
+        excess_b = _record("0xmidb", 400)
+        inventory = {
+            "reserve": [reserve],
+            "small": [],
+            "inner": [],
+            "mid": [excess_a, excess_b, keep_mid],
+            "outer": [],
+            "extreme": [],
+        }
+        fresh_result = {"confirmed_records": [reserve, excess_a, excess_b, keep_mid]}
+
+        class _Conn:
+            def execute(self, *args, **kwargs):
+                return self
+
+            def fetchall(self):
+                return []
+
+        with patch.object(coin_manager, "_get_free_coins_rpc", return_value=fresh_result), \
+                patch.object(manager, "_configured_tier_sizes_xch", return_value={}), \
+                patch.object(coin_manager, "get_weighted_tier_prep_counts",
+                             return_value={"mid": 1}), \
+                patch("database.get_connection", return_value=_Conn()), \
+                patch.object(manager, "_consolidate_coins",
+                             return_value="pending") as consolidate, \
+                patch.object(manager, "_record_topup_pool_refund") as refund, \
+                patch.object(coin_manager, "log_event") as log_event:
+            result = manager._smart_topup_wallet(
+                "CAT-inner",
+                2,
+                inventory,
+                trading_size_mojos=450,
+                needed=2,
+                is_cat=True,
+                tier_is_empty=True,
+            )
+
+        self.assertFalse(result)
+        consolidate.assert_called_once()
+        refund.assert_not_called()
+        event_types = [call.args[1] for call in log_event.call_args_list]
+        self.assertIn("topup_cat-inner_pool_rebuild_wait", event_types)
+        self.assertNotIn("topup_cat-inner_pool_rebuild_ok", event_types)
+        self.assertNotIn("topup_cat-inner_pool_rebuild_fail", event_types)
+
+    def test_consolidate_coins_debounces_duplicate_pending_inputs(self):
+        manager = self._make_manager()
+        source_ids = ["0xa", "0xb", "0xc"]
+
+        with patch.object(coin_manager, "get_wallet_type", return_value="sage"), \
+                patch.object(manager, "_tx_fee_mojos", return_value=1), \
+                patch.object(manager, "_filter_out_protected_coin_ids",
+                             side_effect=lambda ids: ids), \
+                patch("wallet_sage.combine_coins", return_value={
+                    "success": True,
+                    "transaction_id": "0xcombinetx",
+                    "coin_spends": [{}, {}, {}],
+                }) as combine:
+            first = manager._consolidate_coins(
+                "CAT-inner",
+                2,
+                119_442_000,
+                True,
+                source_coin_ids=source_ids,
+            )
+            second = manager._consolidate_coins(
+                "CAT-inner",
+                2,
+                119_442_000,
+                True,
+                source_coin_ids=source_ids,
+            )
+
+        self.assertTrue(first)
+        self.assertEqual(second, "pending")
+        combine.assert_called_once()
+
+    def test_consolidate_coins_without_txid_and_no_pending_does_not_debounce_inputs(self):
+        manager = self._make_manager()
+        source_ids = ["0xa", "0xb", "0xc"]
+
+        with patch.object(coin_manager, "get_wallet_type", return_value="sage"), \
+                patch.object(manager, "_tx_fee_mojos", return_value=1), \
+                patch.object(manager, "_filter_out_protected_coin_ids",
+                             side_effect=lambda ids: ids), \
+                patch.object(manager, "_get_strict_selectable_coin_id_set",
+                             return_value={"0xa", "0xb", "0xc"}), \
+                patch("wallet_sage.get_pending_transactions", return_value=[]), \
+                patch("wallet_sage.combine_coins", return_value={
+                    "summary": {},
+                    "coin_spends": [{}, {}, {}],
+                }) as combine, \
+                patch.object(coin_manager, "log_event") as log_event:
+            first = manager._consolidate_coins(
+                "CAT-inner",
+                2,
+                119_442_000,
+                True,
+                source_coin_ids=source_ids,
+            )
+            second = manager._consolidate_coins(
+                "CAT-inner",
+                2,
+                119_442_000,
+                True,
+                source_coin_ids=source_ids,
+            )
+
+        self.assertFalse(first)
+        self.assertFalse(second)
+        self.assertEqual(combine.call_count, 2)
+        event_types = [call.args[1] for call in log_event.call_args_list]
+        self.assertIn("consolidate_cat-inner_combine_not_submitted", event_types)
+        self.assertNotIn("consolidate_cat-inner_debounce", event_types)
+
+    def test_consolidate_coins_without_txid_keeps_hidden_inputs_pending(self):
+        manager = self._make_manager()
+        source_ids = ["0xa", "0xb", "0xc"]
+
+        with patch.object(coin_manager, "get_wallet_type", return_value="sage"), \
+                patch.object(manager, "_tx_fee_mojos", return_value=1), \
+                patch.object(manager, "_filter_out_protected_coin_ids",
+                             side_effect=lambda ids: ids), \
+                patch.object(manager, "_get_strict_selectable_coin_id_set",
+                             return_value=set()), \
+                patch("wallet_sage.get_pending_transactions", return_value=[]), \
+                patch("wallet_sage.combine_coins", return_value={
+                    "summary": {},
+                    "coin_spends": [{}, {}, {}],
+                }) as combine, \
+                patch.object(coin_manager.cfg, "TOPUP_COMBINE_NO_TXID_GRACE_SECS",
+                             0, create=True), \
+                patch.object(coin_manager, "log_event") as log_event:
+            result = manager._consolidate_coins(
+                "CAT-inner",
+                2,
+                119_442_000,
+                True,
+                source_coin_ids=source_ids,
+            )
+
+        self.assertEqual(result, "pending")
+        combine.assert_called_once()
+        event_types = [call.args[1] for call in log_event.call_args_list]
+        self.assertIn("consolidate_cat-inner_combine_unverified", event_types)
+        self.assertNotIn("consolidate_cat-inner_combine_ok", event_types)
+
+    def test_pool_rebuild_combines_undersized_reserve_with_excess_spares(self):
+        manager = self._make_manager()
+        reserve = _record("0xreserve", 150)
+        keep_mid = _record("0xmidkeep", 400)
+        excess_a = _record("0xmida", 400)
+        excess_b = _record("0xmidb", 400)
+        inventory = {
+            "reserve": [reserve],
+            "small": [],
+            "inner": [],
+            "mid": [excess_a, excess_b, keep_mid],
+            "outer": [],
+            "extreme": [],
+        }
+        fresh_result = {"confirmed_records": [reserve, excess_a, excess_b, keep_mid]}
+
+        class _Conn:
+            def execute(self, *args, **kwargs):
+                return self
+
+            def fetchall(self):
+                return []
+
+        with patch.object(coin_manager, "_get_free_coins_rpc", return_value=fresh_result), \
+                patch.object(manager, "_configured_tier_sizes_xch", return_value={}), \
+                patch.object(coin_manager, "get_weighted_tier_prep_counts",
+                             return_value={"mid": 1}), \
+                patch("database.get_connection", return_value=_Conn()), \
+                patch.object(manager, "_consolidate_coins", return_value=True) as consolidate:
+            result = manager._smart_topup_wallet(
+                "CAT-inner",
+                2,
+                inventory,
+                trading_size_mojos=450,
+                needed=2,
+                is_cat=True,
+                tier_is_empty=True,
+            )
+
+        self.assertEqual(result, "rebuild")
+        consolidate.assert_called_once()
+        call = consolidate.call_args
+        self.assertEqual(call.args[:4], ("CAT-inner", 2, 950, True))
+        self.assertEqual(
+            set(call.kwargs["source_coin_ids"]),
+            {"0xreserve", "0xmida", "0xmidb"},
+        )
+
+    def test_floor_priority_pool_rebuild_borrows_from_farther_spares(self):
+        manager = self._make_manager()
+        reserve = _record("0xreserve", 150)
+        keep_mid = _record("0xmidkeep", 400)
+        borrow_a = _record("0xmida", 400)
+        borrow_b = _record("0xmidb", 400)
+        inventory = {
+            "reserve": [reserve],
+            "small": [],
+            "inner": [],
+            "mid": [borrow_a, borrow_b, keep_mid],
+            "outer": [],
+            "extreme": [],
+        }
+        fresh_result = {"confirmed_records": [reserve, borrow_a, borrow_b, keep_mid]}
+
+        class _Conn:
+            def execute(self, *args, **kwargs):
+                return self
+
+            def fetchall(self):
+                return []
+
+        with patch.object(coin_manager, "_get_free_coins_rpc", return_value=fresh_result), \
+                patch.object(manager, "_configured_tier_sizes_xch", return_value={}), \
+                patch.object(coin_manager, "get_weighted_tier_prep_counts",
+                             return_value={"mid": 3}), \
+                patch("database.get_connection", return_value=_Conn()), \
+                patch.object(manager, "_consolidate_coins", return_value=True) as consolidate:
+            result = manager._smart_topup_wallet(
+                "CAT-inner",
+                2,
+                inventory,
+                trading_size_mojos=450,
+                needed=2,
+                is_cat=True,
+                tier_is_empty=True,
+                soft_budget_bypass_reason="floor-nearest sell slot",
+            )
+
+        self.assertEqual(result, "rebuild")
+        consolidate.assert_called_once()
+        call = consolidate.call_args
+        self.assertEqual(call.args[:4], ("CAT-inner", 2, 950, True))
+        self.assertEqual(
+            set(call.kwargs["source_coin_ids"]),
+            {"0xreserve", "0xmida", "0xmidb"},
         )
 
 

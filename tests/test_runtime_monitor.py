@@ -94,7 +94,7 @@ class _FakeDexieManager:
 class _FakeBot:
     def __init__(self, *, wallet_buys=30, wallet_sells=30, fresh=True,
                  market_snapshot=None, coin_status=None, free_counts=None,
-                 queue_size=0):
+                 queue_size=0, sweep_protection=None):
         self._startup_complete = _FakeEvent()
         self._running = True
         self._bot_state = {"open_buys": wallet_buys, "open_sells": wallet_sells}
@@ -105,6 +105,7 @@ class _FakeBot:
         self._current_cycle_step = "idle"
         self._pending_cancel_wallet_ids_by_side = {"buy": set(), "sell": set()}
         self._last_bulk_create_time = 0.0
+        self._sweep_protection = sweep_protection or {}
         self.offer_manager = _FakeOfferManager(fresh=fresh)
         self.market_intel = _FakeMarketIntel(snapshot=market_snapshot)
         self.coin_manager = _FakeCoinManager(status=coin_status, free_counts=free_counts)
@@ -230,6 +231,79 @@ class RuntimeMonitorTests(unittest.TestCase):
         self.assertIn("db_wallet_divergence", active_codes)
         self.assertTrue(any(
             call.args[1] == "bot_health_db_wallet_gap"
+            for call in log_event_mock.call_args_list
+        ))
+
+    def test_flags_book_under_target_when_all_live_views_agree_below_target(self):
+        bot = _FakeBot(
+            wallet_buys=11,
+            wallet_sells=19,
+            market_snapshot={
+                "buy_count": 50,
+                "sell_count": 50,
+                "our_buy_count": 11,
+                "our_sell_count": 19,
+                "our_best_bid": "0.00011990",
+                "our_best_ask": "0.00012110",
+            },
+        )
+        monitor = RuntimeMonitor(bot)
+        monitor.reset_session()
+        monitor._last_post_activity_at = time.time() - 600
+
+        with patch("runtime_monitor.get_events_since", return_value=[]), \
+             patch("runtime_monitor.get_open_offers", return_value=_open_offer_rows(11, 19)), \
+             patch("runtime_monitor.log_event") as log_event_mock, \
+             patch.object(monitor, "_resolve_superlog_path", return_value=""), \
+             patch("runtime_monitor.cfg.ENABLE_BUY", True), \
+             patch("runtime_monitor.cfg.ENABLE_SELL", True), \
+             patch("runtime_monitor.cfg.MAX_ACTIVE_BUY_OFFERS", 24), \
+             patch("runtime_monitor.cfg.MAX_ACTIVE_SELL_OFFERS", 24):
+            monitor._run_once()
+            monitor._run_once()
+
+        state = monitor.get_state()
+        active_codes = {item["code"] for item in state["active_conditions"]}
+        self.assertIn("book_under_target", active_codes)
+        self.assertEqual(state["status"], "warning")
+        self.assertTrue(any(
+            call.args[1] == "bot_health_book_under_target"
+            for call in log_event_mock.call_args_list
+        ))
+
+    def test_suppresses_book_under_target_during_sweep_protection(self):
+        bot = _FakeBot(
+            wallet_buys=21,
+            wallet_sells=24,
+            market_snapshot={
+                "buy_count": 50,
+                "sell_count": 50,
+                "our_buy_count": 21,
+                "our_sell_count": 24,
+                "our_best_bid": "0.00011990",
+                "our_best_ask": "0.00012110",
+            },
+            sweep_protection={"buy": time.time() + 60},
+        )
+        monitor = RuntimeMonitor(bot)
+        monitor.reset_session()
+        monitor._last_post_activity_at = time.time() - 600
+
+        with patch("runtime_monitor.get_events_since", return_value=[]), \
+             patch("runtime_monitor.get_open_offers", return_value=_open_offer_rows(21, 24)), \
+             patch("runtime_monitor.log_event") as log_event_mock, \
+             patch.object(monitor, "_resolve_superlog_path", return_value=""), \
+             patch("runtime_monitor.cfg.ENABLE_BUY", True), \
+             patch("runtime_monitor.cfg.ENABLE_SELL", True), \
+             patch("runtime_monitor.cfg.MAX_ACTIVE_BUY_OFFERS", 24), \
+             patch("runtime_monitor.cfg.MAX_ACTIVE_SELL_OFFERS", 24):
+            monitor._run_once()
+            monitor._run_once()
+
+        active_codes = {item["code"] for item in monitor.get_state()["active_conditions"]}
+        self.assertNotIn("book_under_target", active_codes)
+        self.assertFalse(any(
+            call.args[1] == "bot_health_book_under_target"
             for call in log_event_mock.call_args_list
         ))
 

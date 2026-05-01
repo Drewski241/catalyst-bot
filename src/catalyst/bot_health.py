@@ -257,9 +257,11 @@ def check_pending_cancels(auto_repair: bool = True) -> HealthCheck:
                  f"Cannot import cancel_offer for retry: {imp_err}",
                  level="warn")
             cancel_offer = None
-            get_effective_transaction_fee_mojos = lambda: 0
 
-        for off, dexie_off in truly_zombie:
+            def get_effective_transaction_fee_mojos():
+                return 0
+
+        for off, _dexie_off in truly_zombie:
             tid = off.get("trade_id")
             last_attempt = off.get("cancel_last_attempt_at")
             age = _seconds_since(last_attempt, now)
@@ -323,7 +325,7 @@ def check_pending_cancels(auto_repair: bool = True) -> HealthCheck:
         except Exception:
             _get_locked = None
         our_address = str(getattr(cfg, "WALLET_ADDRESS", "") or "")
-        for off, dexie_off in suspected_fills:
+        for off, _dexie_off in suspected_fills:
             tid = off.get("trade_id")
             coin_id = off.get("coin_id")
             candidate_coins = []
@@ -378,7 +380,7 @@ def check_pending_cancels(auto_repair: bool = True) -> HealthCheck:
                            "spacescan_verdict": verdict_str},
                      level="warn")
     else:
-        for off, dexie_off in suspected_fills:
+        for off, _dexie_off in suspected_fills:
             tid = off.get("trade_id")
             slog("BOT_HEALTH",
                  f"Offer tid={tid[:16]}... pending-cancel but Dexie reports "
@@ -919,6 +921,96 @@ _FUNDS_ADVISORY_FEE_HEADROOM_XCH_MOJOS = int(
 _FUNDS_ADVISORY_SUGGEST_MULTIPLIER = 5
 
 
+def _format_cat_advisory_amount(mojos: int, scale: Decimal) -> str:
+    try:
+        return f"{Decimal(max(0, int(mojos))) / scale:,.4f}"
+    except Exception:
+        return "0.0000"
+
+
+def _cat_tier_reserve_shortage() -> Optional[dict]:
+    """Return the highest-priority CAT tier whose spare refill is underfunded."""
+    if not bool(getattr(cfg, "TIER_ENABLED", False)):
+        return None
+    if not bool(getattr(cfg, "ENABLE_SELL", False)):
+        return None
+
+    try:
+        from database import get_free_coins, get_tier_spare_counts
+        from config import get_sell_tier_size_xch
+        from coin_manager import (
+            get_tier_distribution,
+            get_tier_sizes_mojos_from_cfg,
+            get_weighted_tier_prep_counts,
+        )
+
+        max_per_side = max(
+            int(getattr(cfg, "MAX_ACTIVE_BUY_OFFERS", 25) or 25),
+            int(getattr(cfg, "MAX_ACTIVE_SELL_OFFERS", 25) or 25),
+        )
+        cat_slots = get_tier_distribution(max_per_side, side="cat")
+        sell_tier_sizes_xch = {
+            tier: Decimal(str(get_sell_tier_size_xch(tier) or 0))
+            for tier in ("inner", "mid", "outer", "extreme")
+        }
+        prepared_cat = get_weighted_tier_prep_counts(
+            max_per_side,
+            getattr(cfg, "COIN_PREP_MULTIPLIER", Decimal("1.0")),
+            tier_sizes_xch=sell_tier_sizes_xch,
+            side="cat",
+        )
+        tier_size_mojos = get_tier_sizes_mojos_from_cfg(is_cat=True)
+        spare_counts = get_tier_spare_counts("cat")
+        reserve_coins = [
+            c for c in get_free_coins("cat")
+            if str(c.get("designation") or "").lower() == "reserve"
+        ]
+        reserve_mojos = sum(int(c.get("amount_mojos") or 0) for c in reserve_coins)
+    except Exception as e:
+        slog("BOT_HEALTH", f"CAT tier funds advisory inventory error: {e}", level="debug")
+        return None
+
+    for tier in ("inner", "mid", "outer", "extreme"):
+        slots = int(cat_slots.get(tier, 0) or 0)
+        if slots <= 0:
+            continue
+        prepared = int(prepared_cat.get(tier, 0) or 0)
+        spare_target = max(0, prepared - slots)
+        if spare_target <= 0:
+            continue
+        have = int(spare_counts.get(tier, 0) or 0)
+        spare_deficit = max(0, spare_target - have)
+        if spare_deficit <= 0:
+            continue
+        size_mojos = int(tier_size_mojos.get(tier, 0) or 0)
+        if size_mojos <= 0:
+            continue
+
+        # Match topup's small execution buffer so the recommendation funds
+        # the split the worker will actually try next, not just the bare
+        # target count.
+        buf_base = max(1, spare_target)
+        execution_buffer = max(1, min(2, int(buf_base * 0.25)))
+        topup_target = spare_deficit + execution_buffer
+        required_mojos = topup_target * size_mojos
+        if reserve_mojos >= required_mojos:
+            continue
+
+        return {
+            "tier": tier,
+            "have": have,
+            "spare_target": spare_target,
+            "topup_target": topup_target,
+            "tier_size_mojos": size_mojos,
+            "reserve_mojos": reserve_mojos,
+            "reserve_count": len(reserve_coins),
+            "fundable_splits": reserve_mojos // size_mojos,
+            "shortfall_mojos": required_mojos - reserve_mojos,
+        }
+
+    return None
+
+
 def check_funds_advisory(auto_repair: bool = True) -> HealthCheck:
     """Detect when the wallet is genuinely out of capital for tier refills.
 
@@ -1057,6 +1149,45 @@ def check_funds_advisory(auto_repair: bool = True) -> HealthCheck:
         if spendable_mojos is not None:
             cat_decimals = int(getattr(cfg, "CAT_DECIMALS", 3))
             scale = Decimal(10) ** Decimal(cat_decimals)
+            ticker = str(getattr(cfg, "CAT_NAME", "") or "CAT")
+            address = str(getattr(cfg, "WALLET_ADDRESS", "") or "")
+            cat_alert_active = False
+            tier_shortage = _cat_tier_reserve_shortage()
+            if tier_shortage:
+                tier = str(tier_shortage["tier"])
+                reserve_mojos = int(tier_shortage["reserve_mojos"])
+                tier_size_mojos = int(tier_shortage["tier_size_mojos"])
+                shortfall_mojos = int(tier_shortage["shortfall_mojos"])
+                reserve_cat = _format_cat_advisory_amount(reserve_mojos, scale)
+                tier_size_cat = _format_cat_advisory_amount(tier_size_mojos, scale)
+                shortfall_cat = _format_cat_advisory_amount(shortfall_mojos, scale)
+                msg_lines = [
+                    f"CAT-{tier} spare buffer is underfunded "
+                    f"({int(tier_shortage['have'])}/{int(tier_shortage['spare_target'])} "
+                    f"free spares).",
+                    f"The topup pool has {reserve_cat} {ticker}, enough for about "
+                    f"{int(tier_shortage['fundable_splits'])}/"
+                    f"{int(tier_shortage['topup_target'])} next split(s) at "
+                    f"{tier_size_cat} {ticker} each.",
+                    f"Send or allocate at least {shortfall_cat} {ticker} "
+                    f"to restore this refill buffer.",
+                ]
+                if address:
+                    msg_lines.append(f"Address: {address}")
+                _emit_alert(
+                    alert_id="funds_advisory_cat",
+                    title=f"{ticker} topup pool underfunded",
+                    message=" ".join(msg_lines),
+                    severity="warning",
+                )
+                findings.append(
+                    f"{ticker} {tier} topup-pool shortfall {shortfall_cat} "
+                    f"(free_spares={int(tier_shortage['have'])}/"
+                    f"{int(tier_shortage['spare_target'])}, "
+                    f"reserve={reserve_cat})"
+                )
+                cat_alert_active = True
+
             hard_reserve_mojos = int(
                 Decimal(str(getattr(cfg, "CAT_RESERVE", 0) or 0)) * scale
             )
@@ -1095,15 +1226,13 @@ def check_funds_advisory(auto_repair: bool = True) -> HealthCheck:
                 min_operating_mojos = _FUNDS_ADVISORY_TIER_BUFFER * inner_size_mojos
                 available_mojos = spendable_mojos - hard_reserve_mojos
 
-                if available_mojos < min_operating_mojos:
+                if not cat_alert_active and available_mojos < min_operating_mojos:
                     target_mojos = (
                         hard_reserve_mojos
                         + _FUNDS_ADVISORY_SUGGEST_MULTIPLIER * inner_size_mojos
                     )
                     shortfall_mojos = max(0, target_mojos - spendable_mojos)
                     shortfall_cat = Decimal(shortfall_mojos) / scale
-                    address = str(getattr(cfg, "WALLET_ADDRESS", "") or "")
-                    ticker = str(getattr(cfg, "CAT_NAME", "") or "CAT")
                     msg_lines = [
                         f"{ticker} spendable ({spendable_mojos / float(scale):,.4f}) "
                         f"is below the operating floor."
@@ -1125,7 +1254,7 @@ def check_funds_advisory(auto_repair: bool = True) -> HealthCheck:
                         f"{ticker} shortfall {shortfall_cat:,.4f} "
                         f"(spendable={spendable_mojos / float(scale):,.4f})"
                     )
-                else:
+                elif not cat_alert_active:
                     _clear_alert("funds_advisory_cat")
     except Exception as e:
         slog("BOT_HEALTH", f"CAT funds advisory check error: {e}", level="warn")
