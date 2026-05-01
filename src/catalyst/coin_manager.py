@@ -3659,7 +3659,7 @@ class CoinManager:
         Returns a dict with:
           - per-tier status (available, needed, active_slots, spare, status)
           - overall_ready: True if all tiers have enough coins for active offers
-          - overall_status: "READY", "LOW_SPARES", or "CRITICAL"
+          - overall_status: "READY", "SPARE_BUFFER_LOW", or "CRITICAL"
         """
         report = {"tiers": {}, "overall_ready": True, "overall_status": "READY"}
 
@@ -3915,8 +3915,11 @@ class CoinManager:
             report["overall_ready"] = False
             report["overall_status"] = "CRITICAL"
         elif any_low:
-            report["overall_ready"] = False
-            report["overall_status"] = "LOW_SPARES"
+            # Low free spares means the buffer is thin, not that active offer
+            # slots are unusable. Topup/drip can replenish this in-session, so
+            # keep startup readiness true and report it as buffer state.
+            report["overall_ready"] = True
+            report["overall_status"] = "SPARE_BUFFER_LOW"
 
         # Summary line
         total_xch = sum(t["xch_available"] for t in report["tiers"].values())

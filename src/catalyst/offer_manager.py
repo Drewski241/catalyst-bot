@@ -889,6 +889,42 @@ class OfferManager:
 
         return sorted(list(offers or []), key=_key)
 
+    def _select_requote_cancel_targets(self, offers: List[Dict], count: int,
+                                       mid_price: Decimal = None) -> List[Dict]:
+        """Choose cancel targets for a partial requote.
+
+        Closest-to-mid offers remain the priority. When a larger partial pass
+        cannot process the whole side, reserve a small slice for old/far offers
+        that would otherwise survive every capped pass.
+        """
+        ordered = list(offers or [])
+        if count <= 0:
+            return []
+        if len(ordered) <= count:
+            return ordered[:count]
+        if count <= 3:
+            return ordered[:count]
+
+        deferred = ordered[count:]
+        if not deferred:
+            return ordered[:count]
+
+        stale_slots = min(2, max(1, count // 4), len(deferred), count - 1)
+        risk_slots = count - stale_slots
+        risk_targets = ordered[:risk_slots]
+
+        def _stale_key(offer: Dict):
+            created_at = str(offer.get("created_at") or "9999")
+            try:
+                price = Decimal(str(offer.get("price_xch") or "0"))
+            except Exception:
+                price = Decimal("0")
+            distance = abs(price - mid_price) if mid_price and mid_price > 0 else Decimal("0")
+            return (created_at, -distance, str(offer.get("trade_id") or ""))
+
+        stale_targets = sorted(deferred, key=_stale_key)[:stale_slots]
+        return risk_targets + stale_targets
+
     def _get_sage_locked_coin_ids_for_trade(self, wallet_id: int, trade_id: str) -> Optional[List[str]]:
         """Ask Sage which owned coins are locked by a specific offer_id/trade_id."""
         if get_wallet_type() != "sage" or wallet_id is None or not trade_id:
@@ -2713,7 +2749,15 @@ class OfferManager:
                   f"Requote {side}: cancelling {create_count} old offers "
                   f"({spare_count} spares, target {target_count})")
 
-        cancel_ids = [o["trade_id"] for o in open_offers[:create_count]
+        cancel_targets = self._select_requote_cancel_targets(
+            open_offers, create_count, mid_price=current_price)
+        if cancel_targets != open_offers[:create_count]:
+            log_event("info", "requote_stale_survivor_targets",
+                      f"Requote {side}: included "
+                      f"{len([o for o in cancel_targets if o not in open_offers[:create_count]])} "
+                      "old/far survivor offer(s) in this partial pass")
+
+        cancel_ids = [o["trade_id"] for o in cancel_targets
                       if o.get("trade_id")]
         if not cancel_ids:
             log_event("info", "requote_no_cancel_ids",

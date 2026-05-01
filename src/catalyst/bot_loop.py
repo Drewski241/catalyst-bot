@@ -4372,12 +4372,12 @@ class BotLoop:
                         if _xch_status in ("LOW", "EMPTY"):
                             _parts.append(
                                 f"XCH {_xch_rem} spare "
-                                f"({'EMPTY' if _xch_status == 'EMPTY' else 'LOW'})"
+                                f"({'EMPTY' if _xch_status == 'EMPTY' else 'BUFFER LOW'})"
                             )
                         if _cat_status in ("LOW", "EMPTY"):
                             _parts.append(
                                 f"CAT {_cat_rem} spare "
-                                f"({'EMPTY' if _cat_status == 'EMPTY' else 'LOW'})"
+                                f"({'EMPTY' if _cat_status == 'EMPTY' else 'BUFFER LOW'})"
                             )
                         _tier_low_msgs.append(f"{_tn}: {', '.join(_parts)}")
                 if _tier_low_msgs:
@@ -4385,11 +4385,11 @@ class BotLoop:
                     log_event(
                         "info",
                         "startup_spare_deficit",
-                        f"Startup spare deficit ({_context}) — tiers below their "
+                        f"Startup spare buffer below target ({_context}) — tiers below their "
                         "spare target: "
                         + "; ".join(_tier_low_msgs)
-                        + ". Proactive drip will replenish toward the buffer; "
-                        "run coin prep manually if you want full allocation now."
+                        + ". Proactive drip/topup will replenish toward the "
+                        "buffer while active offer slots stay usable."
                     )
             except Exception as _spare_check_err:
                 log_event("debug", "startup_spare_check_failed",

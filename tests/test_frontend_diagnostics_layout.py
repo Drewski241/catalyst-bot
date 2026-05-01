@@ -80,6 +80,14 @@ def test_recovery_guidance_collapses_expected_ladder_noise():
     assert "if (isRecoveryExpectedOfferCountDiagnostic(a)) return false;" in html
 
 
+def test_splash_incoming_hint_explains_sparse_relevant_gossip():
+    html = GUI.read_text(encoding="utf-8", errors="replace")
+
+    assert "gossip sparse" in html
+    assert "no relevant offers seen" in html
+    assert "Connected" in html
+
+
 def test_market_health_copy_distinguishes_recovery_from_market_health():
     html = GUI.read_text(encoding="utf-8", errors="replace")
 

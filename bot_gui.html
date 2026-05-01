@@ -23370,7 +23370,20 @@
                 }
                 if (el('splashIncomingHint')) {
                     const pairLabel = receive.pair_label || 'CAT/XCH';
-                    el('splashIncomingHint').textContent = 'Relevant = inbound peer offers that match ' + pairLabel + '.';
+                    const receivedCount = Number(receive.total || 0);
+                    const relevantCount = Number(receive.relevant || 0);
+                    if (receive.enabled && receivedCount > 0 && relevantCount === 0) {
+                        el('splashIncomingHint').textContent =
+                            'Connected; gossip sparse, no relevant offers seen for '
+                            + pairLabel + ' yet.';
+                    } else if (receive.enabled && receivedCount === 0) {
+                        el('splashIncomingHint').textContent =
+                            'Connected; waiting for peer offers. Splash gossip can be sparse. Relevant = inbound offers matching '
+                            + pairLabel + '.';
+                    } else {
+                        el('splashIncomingHint').textContent =
+                            'Relevant = inbound peer offers that match ' + pairLabel + '.';
+                    }
                 }
 
                 // Daemon-side metrics from splash.exe's --listen-metrics

@@ -219,6 +219,66 @@ class OfferManagerCoinIdTests(unittest.TestCase):
         # Most-at-risk first: inner (closest to mid), then mid
         self.assertEqual(cancel_batches[0], ["inner-trade", "mid-trade"])
 
+    def test_requote_side_large_partial_retires_stale_survivor(self):
+        """Larger partial requotes blend stale/far survivors into cancel targets."""
+        manager = offer_manager.OfferManager()
+        cancel_batches = []
+        open_offers = []
+        for idx, price in enumerate([
+            "0.1199", "0.1190", "0.1180", "0.1170",
+            "0.1160", "0.1150", "0.1140", "0.1130",
+        ], start=1):
+            open_offers.append({
+                "trade_id": f"risk-{idx}",
+                "tier": "inner" if idx <= 2 else "mid",
+                "price_xch": price,
+                "created_at": f"2026-05-01T00:00:{idx:02d}+00:00",
+            })
+        open_offers.extend([
+            {
+                "trade_id": "stale-old-far",
+                "tier": "extreme",
+                "price_xch": "0.1000",
+                "created_at": "2026-04-30T22:01:23+00:00",
+            },
+            {
+                "trade_id": "stale-new-far",
+                "tier": "extreme",
+                "price_xch": "0.0990",
+                "created_at": "2026-05-01T00:05:00+00:00",
+            },
+        ])
+
+        def fake_create_ladder(mid_price, side, num_offers=None, **kwargs):
+            count = int(num_offers or 0)
+            return [{"trade_id": f"new-{i}"} for i in range(count)]
+
+        def fake_cancel_offers(trade_ids, reason="requote", skip_confirmation=False):
+            cancel_batches.append(list(trade_ids))
+            return {tid: {"success": True} for tid in trade_ids}
+
+        _eight_spare_coins = [
+            {"designation": "tier_spare", "assigned_tier": "inner"}
+            for _ in range(8)
+        ]
+
+        with patch.object(offer_manager, "get_open_offers", return_value=open_offers), \
+                patch("database.get_free_coins", return_value=_eight_spare_coins), \
+                patch.object(manager, "create_ladder", side_effect=fake_create_ladder), \
+                patch.object(manager, "cancel_offers", side_effect=fake_cancel_offers), \
+                patch.object(offer_manager, "log_event"):
+            result = manager.requote_side("buy", Decimal("0.1200"))
+
+        self.assertEqual(result["replaced_count"], 8)
+        self.assertEqual(result["target_count"], 10)
+        self.assertFalse(result["fully_replaced"])
+        self.assertEqual(len(cancel_batches), 1)
+        self.assertEqual(cancel_batches[0][:6], [
+            "risk-1", "risk-2", "risk-3", "risk-4", "risk-5", "risk-6",
+        ])
+        self.assertIn("stale-old-far", cancel_batches[0][6:])
+        self.assertNotIn("risk-7", cancel_batches[0])
+
     def test_requote_side_does_not_create_when_cancel_is_pending(self):
         manager = offer_manager.OfferManager()
         open_offers = [{
