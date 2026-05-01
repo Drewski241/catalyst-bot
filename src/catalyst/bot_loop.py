@@ -799,7 +799,9 @@ class BotLoop:
         known = False
         try:
             all_spares = getattr(self.coin_manager, "_tier_spares", None)
-            if isinstance(all_spares, dict) and wallet_type in all_spares:
+            if isinstance(all_spares, dict):
+                if wallet_type not in all_spares:
+                    return None
                 spares = dict((all_spares.get(wallet_type, {}) or {}))
                 known = True
         except Exception:
