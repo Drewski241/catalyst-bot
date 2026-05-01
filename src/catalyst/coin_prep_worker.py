@@ -1442,6 +1442,22 @@ class CoinPrepWorker:
 
         self._enqueue_api_log(severity, "coin_prep", message)
 
+    def _log_confirmation_order_lag(self, symbol: str, tier: str,
+                                    expected_count: int, split_state: dict):
+        if split_state["pool_still_visible"] and split_state["pool_still_selectable"]:
+            pool_state = "source coin still selectable"
+        elif split_state["pool_still_visible"]:
+            pool_state = "source coin visible but not selectable"
+        else:
+            pool_state = "source coin already consumed"
+        self.log(
+            f"      {symbol} {tier} confirmation lag - later {symbol} tiers already confirmed "
+            f"while this tier is still pending ({pool_state}; "
+            f"{split_state['owned_output_count']}/{expected_count} exact outputs owned; "
+            f"{split_state['selectable_output_count']}/{expected_count} selectable)",
+            severity="info",
+        )
+
     def _enqueue_api_log(self, severity: str, event_type: str, message: str):
         """Queue API log delivery so coin prep never blocks on GUI logging."""
         # Skip entirely when not running as the real subprocess — no consumer
@@ -3839,18 +3855,7 @@ class CoinPrepWorker:
                         continue
 
                     if later_same_batch_confirmed and idx not in anomaly_reported:
-                        if split_state["pool_still_visible"] and split_state["pool_still_selectable"]:
-                            pool_state = "source coin still selectable"
-                        elif split_state["pool_still_visible"]:
-                            pool_state = "source coin visible but not selectable"
-                        else:
-                            pool_state = "source coin already consumed"
-                        self.log(
-                            f"      ⚠️ {sl} {tn} confirmation order anomaly — later {sl} tiers already confirmed "
-                            f"while this tier is still pending ({pool_state}; "
-                            f"{split_state['owned_output_count']}/{cnt} exact outputs owned; "
-                            f"{split_state['selectable_output_count']}/{cnt} selectable)"
-                        )
+                        self._log_confirmation_order_lag(sl, tn, cnt, split_state)
                         anomaly_reported.add(idx)
 
                     force_retry_now = (

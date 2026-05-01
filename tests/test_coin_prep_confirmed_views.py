@@ -134,6 +134,28 @@ class CoinPrepConfirmedViewTests(unittest.TestCase):
         self.assertEqual(default_coins[0]["amount"], 123)
         self.assertTrue(default_coins[0]["coin_id"].startswith("0x22"))
 
+    def test_confirmation_order_lag_is_logged_as_info(self):
+        logged = []
+        self.worker.log = lambda message, severity=None: logged.append((message, severity))
+
+        self.worker._log_confirmation_order_lag(
+            "XCH",
+            "fees",
+            50,
+            {
+                "pool_still_visible": False,
+                "pool_still_selectable": False,
+                "owned_output_count": 50,
+                "selectable_output_count": 46,
+            },
+        )
+
+        self.assertEqual(len(logged), 1)
+        message, severity = logged[0]
+        self.assertEqual(severity, "info")
+        self.assertIn("confirmation lag", message)
+        self.assertNotIn("confirmation order anomaly", message)
+
     def test_strict_selectable_helper_uses_selectable_view_not_merged_view(self):
         selectable_id = "0x" + "22" * 32
         merged_only_id = "0x" + "11" * 32
