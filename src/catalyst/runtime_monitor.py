@@ -800,11 +800,15 @@ class RuntimeMonitor:
         buy_deficit = max(0, buy_target - buy_visible)
         sell_deficit = max(0, sell_target - sell_visible)
         under_target_total = buy_deficit + sell_deficit
+        coin_recovery_active = bool(coins.get("prep_running")) or bool(
+            coins.get("topup_running")
+        )
         book_under_target = (
             (not startup_grace)
             and wallet_fresh
             and not gap_closer_active
             and not offer_churn_active
+            and not coin_recovery_active
             and (
                 buy_deficit >= 2
                 or sell_deficit >= 2
