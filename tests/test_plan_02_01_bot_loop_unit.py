@@ -301,6 +301,192 @@ class TestTierSizeDriftTopup(_PatchedCfg):
 
         self.assertEqual(calls, [(1, 2, True)])
 
+    def test_tier_size_drift_waits_when_only_side_has_no_split_source(self):
+        loop = _make_loop()
+        calls = []
+
+        class DriftCoinManager:
+            def check_tier_size_drift(self):
+                return [{
+                    "side": "cat",
+                    "tier": "inner",
+                    "ratio": 0.89,
+                    "coin_count": 8,
+                    "live_size_mojos": 1000,
+                }]
+
+            def _optional_topup_source_available(self, wallet_type, target_size_mojos=0):
+                return False
+
+            def start_topup(self, active_buy, active_sell, is_drip=None):
+                calls.append((active_buy, active_sell, is_drip))
+                return True
+
+        fake_coin_manager = types.ModuleType("coin_manager")
+        fake_coin_manager.reclassify_tier_spare_coins = lambda: None
+        fake_database = types.ModuleType("database")
+        fake_database.get_open_offers = lambda cat_asset_id=None: [
+            {"side": "buy"},
+            {"side": "sell"},
+        ]
+
+        loop.coin_manager = DriftCoinManager()
+        loop._emit_alert = lambda *a, **kw: None
+        loop._clear_alert = lambda *a, **kw: None
+
+        with patch.dict(sys.modules, {
+            "coin_manager": fake_coin_manager,
+            "database": fake_database,
+        }), patch.object(bot_loop, "log_event") as log_event:
+            loop._check_tier_size_drift()
+
+        events = [call.args[1] for call in log_event.call_args_list]
+        self.assertEqual(calls, [])
+        self.assertIn("tier_size_drift_waiting_for_source", events)
+        self.assertNotIn("tier_size_drift_topup_started", events)
+
+
+class TestCoinTopupPriority(_PatchedCfg):
+    def test_proactive_topup_waits_when_missing_offers_have_spares(self):
+        loop = _make_loop()
+        loop._loop_count = 11
+        loop._current_mid_price = Decimal("1")
+        loop._startup_coin_recheck_done = True
+        calls = []
+
+        class DripCoinManager:
+            _topup_is_drip = True
+            _reconcile_counter = 0
+
+            def is_busy(self):
+                return False
+
+            def check_coin_prep_status(self):
+                return {}
+
+            def update_coin_counts(self):
+                return None
+
+            def needs_coin_prep(self, active_buy, active_sell):
+                return False
+
+            def needs_topup(self, active_buy, active_sell):
+                self._topup_is_drip = True
+                return True
+
+            def start_topup(self, active_buy, active_sell, is_drip=None):
+                calls.append((active_buy, active_sell, is_drip))
+
+            def check_runtime_health(self, active_buy, active_sell):
+                return False
+
+        loop.coin_manager = DripCoinManager()
+        loop._reclaim_oversized_locked_offers = lambda: False
+        loop._get_expected_offer_targets = lambda mid_price: {"buy": 4, "sell": 4}
+        loop._available_tier_spares_for_side = lambda side: 5
+
+        with patch.object(bot_loop, "log_event") as log_event:
+            loop._handle_coins(active_buy_count=4, active_sell_count=2)
+
+        events = [call.args[1] for call in log_event.call_args_list]
+        self.assertEqual(calls, [])
+        self.assertIn("topup_deferred_offer_rebuild_priority", events)
+
+    def test_spare_topup_waits_when_book_full_and_no_source(self):
+        loop = _make_loop()
+        loop._loop_count = 11
+        loop._current_mid_price = Decimal("1")
+        loop._startup_coin_recheck_done = True
+        calls = []
+
+        class SpareOnlyCoinManager:
+            _topup_is_drip = False
+            _topup_needed_wallet_types = {"cat"}
+            _reconcile_counter = 0
+
+            def is_busy(self):
+                return False
+
+            def check_coin_prep_status(self):
+                return {}
+
+            def update_coin_counts(self):
+                return None
+
+            def needs_coin_prep(self, active_buy, active_sell):
+                return False
+
+            def needs_topup(self, active_buy, active_sell):
+                self._topup_is_drip = False
+                return True
+
+            def start_topup(self, active_buy, active_sell, is_drip=None):
+                calls.append((active_buy, active_sell, is_drip))
+
+            def check_runtime_health(self, active_buy, active_sell):
+                return False
+
+            def _optional_topup_source_available(self, wallet_type, target_size_mojos=0):
+                return False
+
+        loop.coin_manager = SpareOnlyCoinManager()
+        loop._reclaim_oversized_locked_offers = lambda: False
+        loop._get_expected_offer_targets = lambda mid_price: {"buy": 4, "sell": 4}
+
+        with patch.object(bot_loop, "log_event") as log_event:
+            loop._handle_coins(active_buy_count=4, active_sell_count=4)
+
+        events = [call.args[1] for call in log_event.call_args_list]
+        self.assertEqual(calls, [])
+        self.assertIn("topup_waiting_for_source", events)
+
+    def test_spare_topup_runs_when_missing_offers_need_help(self):
+        loop = _make_loop()
+        loop._loop_count = 11
+        loop._current_mid_price = Decimal("1")
+        loop._startup_coin_recheck_done = True
+        calls = []
+
+        class CriticalCoinManager:
+            _topup_is_drip = False
+            _topup_needed_wallet_types = {"cat"}
+            _reconcile_counter = 0
+
+            def is_busy(self):
+                return False
+
+            def check_coin_prep_status(self):
+                return {}
+
+            def update_coin_counts(self):
+                return None
+
+            def needs_coin_prep(self, active_buy, active_sell):
+                return False
+
+            def needs_topup(self, active_buy, active_sell):
+                self._topup_is_drip = False
+                return True
+
+            def start_topup(self, active_buy, active_sell, is_drip=None):
+                calls.append((active_buy, active_sell, is_drip))
+
+            def check_runtime_health(self, active_buy, active_sell):
+                return False
+
+            def _optional_topup_source_available(self, wallet_type, target_size_mojos=0):
+                return False
+
+        loop.coin_manager = CriticalCoinManager()
+        loop._reclaim_oversized_locked_offers = lambda: False
+        loop._get_expected_offer_targets = lambda mid_price: {"buy": 4, "sell": 4}
+        loop._available_tier_spares_for_side = lambda side: 0
+
+        with patch.object(bot_loop, "log_event"):
+            loop._handle_coins(active_buy_count=4, active_sell_count=3)
+
+        self.assertEqual(calls, [(4, 3, None)])
+
 
 class TestGetLiveOfferEdges(_PatchedCfg):
     """BotLoop._get_live_offer_edges — static method, extracts best bid/ask."""

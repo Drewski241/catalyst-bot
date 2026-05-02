@@ -291,6 +291,7 @@ class BotLoop:
         # same persistent alert if it somehow reappears mid-flow.
         self._watchdog_auto_healed: set = set()
         self._last_tier_drift_topup_time: float = 0.0
+        self._last_topup_source_wait_log: Dict[str, Dict] = {}
 
         # ---- Ladder anchor state ----
         # Replacement offers must price against the same grid the original
@@ -819,6 +820,138 @@ class BotLoop:
         if not known:
             return None
         return sum(max(0, int(spares.get(tier, 0) or 0)) for tier in tier_names)
+
+    def _offer_rebuild_deficits(
+        self,
+        active_buy_count: int,
+        active_sell_count: int,
+    ) -> Dict[str, Dict[str, int]]:
+        try:
+            mid_price = Decimal(str(self._current_mid_price or "0"))
+        except Exception:
+            mid_price = Decimal("0")
+        try:
+            targets = self._get_expected_offer_targets(mid_price)
+        except Exception:
+            targets = {
+                "buy": int(getattr(cfg, "MAX_ACTIVE_BUY_OFFERS", 0) or 0),
+                "sell": int(getattr(cfg, "MAX_ACTIVE_SELL_OFFERS", 0) or 0),
+            }
+
+        deficits: Dict[str, Dict[str, int]] = {}
+        for side, active_count in (
+            ("buy", active_buy_count),
+            ("sell", active_sell_count),
+        ):
+            target = max(0, int(targets.get(side, 0) or 0))
+            active = max(0, int(active_count or 0))
+            deficit = max(0, target - active)
+            if deficit > 0:
+                deficits[side] = {
+                    "active": active,
+                    "target": target,
+                    "deficit": deficit,
+                }
+        return deficits
+
+    def _defer_drip_topup_for_offer_rebuild(
+        self,
+        active_buy_count: int,
+        active_sell_count: int,
+    ) -> bool:
+        """Let missing offer creation run before non-critical spare refills."""
+        deficits = self._offer_rebuild_deficits(active_buy_count, active_sell_count)
+        for side, info in deficits.items():
+            deficit = int(info.get("deficit", 0) or 0)
+            spare_count = self._available_tier_spares_for_side(side)
+            if spare_count is None or int(spare_count) < deficit:
+                return False
+            info["spares"] = int(spare_count)
+
+        if not deficits:
+            return False
+
+        summary = ", ".join(
+            f"{side} {info['active']}/{info['target']} "
+            f"with {info['spares']} spare"
+            for side, info in deficits.items()
+        )
+        log_event(
+            "info",
+            "topup_deferred_offer_rebuild_priority",
+            f"Deferring proactive spare top-up; missing offers can be rebuilt "
+            f"from existing tier spares ({summary}).",
+            data={"deficits": deficits},
+        )
+        return True
+
+    def _defer_spare_topup_until_source_available(
+        self,
+        active_buy_count: int,
+        active_sell_count: int,
+    ) -> bool:
+        """Suppress spare-only topup when there is nothing useful to split."""
+        if self._offer_rebuild_deficits(active_buy_count, active_sell_count):
+            return False
+
+        raw_wallet_types = getattr(self.coin_manager, "_topup_needed_wallet_types", None)
+        if not raw_wallet_types:
+            return False
+        wallet_types = {
+            str(wallet_type or "").lower()
+            for wallet_type in raw_wallet_types
+            if str(wallet_type or "").lower() in {"xch", "cat"}
+        }
+        if not wallet_types:
+            return False
+
+        source_available = getattr(
+            self.coin_manager,
+            "_optional_topup_source_available",
+            None,
+        )
+        if not callable(source_available):
+            return False
+
+        waiting = []
+        for wallet_type in sorted(wallet_types):
+            try:
+                if source_available(wallet_type):
+                    continue
+            except Exception:
+                return False
+            waiting.append(wallet_type)
+        if len(waiting) != len(wallet_types):
+            return False
+
+        signature = ",".join(waiting)
+        try:
+            now = time.time()
+            last = self._last_topup_source_wait_log.get(signature, {})
+            cooldown = float(
+                getattr(cfg, "TOPUP_SOURCE_WAIT_LOG_COOLDOWN_SECS", 300) or 300
+            )
+            if (
+                str(last.get("signature") or "") == signature
+                and now - float(last.get("at", 0.0) or 0.0) < cooldown
+            ):
+                return True
+            self._last_topup_source_wait_log[signature] = {
+                "at": now,
+                "signature": signature,
+            }
+        except Exception:
+            pass
+        sides = "/".join(waiting).upper()
+        log_event(
+            "info",
+            "topup_waiting_for_source",
+            f"Spare coin top-up waiting: {sides} buffer is low, but the live "
+            "book is full and there is no reserve, top-up pool, or useful "
+            "small coin source to split yet.",
+            data={"wallet_types": waiting},
+        )
+        return True
 
     def _log_adaptive_target_reduction(
         self,
@@ -2650,6 +2783,67 @@ class BotLoop:
                       f"(cycle={self._loop_count}, "
                       f"buys={len(offers_buy)}, sells={len(offers_sell)})")
 
+    def _tier_size_drift_waiting_sides(self, findings: list[dict]) -> set[str]:
+        """Return drift sides that cannot be reshaped by a drip topup now."""
+        source_available = getattr(
+            self.coin_manager,
+            "_optional_topup_source_available",
+            None,
+        )
+        if not callable(source_available):
+            return set()
+
+        targets: dict[str, int] = {}
+        for finding in findings:
+            side = str(finding.get("side") or "").lower()
+            if side not in {"xch", "cat"}:
+                continue
+            try:
+                target = int(finding.get("live_size_mojos") or 0)
+            except Exception:
+                target = 0
+            targets[side] = max(targets.get(side, 0), target)
+
+        waiting: set[str] = set()
+        for side, target in targets.items():
+            try:
+                if not source_available(side, target):
+                    waiting.add(side)
+            except Exception as err:
+                log_event(
+                    "debug",
+                    "tier_size_drift_source_check_failed",
+                    f"Tier-size drift source check failed for {side}: {err}",
+                )
+        return waiting
+
+    def _log_tier_size_drift_waiting_for_source(
+        self,
+        summary: str,
+        waiting_sides: set[str],
+        findings: list[dict],
+    ) -> None:
+        """Rate-limit no-source drift notices so the dashboard stays calm."""
+        now = time.time()
+        sides_key = ",".join(sorted(waiting_sides))
+        last_logs = getattr(self, "_last_tier_drift_source_wait_log", None)
+        if not isinstance(last_logs, dict):
+            last_logs = {}
+            self._last_tier_drift_source_wait_log = last_logs
+        if now - float(last_logs.get(sides_key, 0.0) or 0.0) < 1800:
+            return
+        last_logs[sides_key] = now
+
+        side_label = "/".join(side.upper() for side in sorted(waiting_sides))
+        log_event(
+            "info",
+            "tier_size_drift_waiting_for_source",
+            f"Prepared {side_label} tier coins need reshaping: {summary}. "
+            f"Waiting for {side_label} reserve, top-up pool, or useful small "
+            f"coins before live topup can rebuild those spares.",
+            data={"waiting_sides": sorted(waiting_sides), "findings": findings[:8]},
+        )
+
     def _check_tier_size_drift(self) -> None:
         """Periodic check: do prepared coin sizes still fit live tier targets?
 
@@ -2705,13 +2899,31 @@ class BotLoop:
             parts.append(f"{side}/{tier}={ratio:.2f}× (n={n})")
         summary = ", ".join(parts)
 
-        log_event(
-            "info", "tier_size_drift",
-            f"Prepared coin sizes need live reshaping: {summary}. "
-            f"The bot will use live topup/rebuild before asking for Coin Prep."
-        )
-
         topup_note = "Live topup will retry on the next eligible cycle."
+        waiting_sides = self._tier_size_drift_waiting_sides(findings)
+        actionable_findings = [
+            f for f in findings
+            if str(f.get("side") or "").lower() not in waiting_sides
+        ]
+        waiting_for_source_only = bool(waiting_sides) and not actionable_findings
+        if waiting_for_source_only:
+            waiting_label = "/".join(side.upper() for side in sorted(waiting_sides))
+            topup_note = (
+                f"Waiting for {waiting_label} source coins before live topup "
+                f"can reshape those spares."
+            )
+            self._log_tier_size_drift_waiting_for_source(
+                summary,
+                waiting_sides,
+                findings,
+            )
+        else:
+            log_event(
+                "info", "tier_size_drift",
+                f"Prepared coin sizes need live reshaping: {summary}. "
+                f"The bot will use live topup/rebuild before asking for Coin Prep."
+            )
+
         try:
             _now = time.time()
             _cooldown = max(
@@ -2721,7 +2933,9 @@ class BotLoop:
             _last_topup = float(
                 getattr(self, "_last_tier_drift_topup_time", 0.0) or 0.0
             )
-            if _now - _last_topup >= _cooldown:
+            if waiting_for_source_only:
+                pass
+            elif _now - _last_topup >= _cooldown:
                 from database import get_open_offers
 
                 _open = get_open_offers(cat_asset_id=cfg.CAT_ASSET_ID)
@@ -9380,6 +9594,19 @@ class BotLoop:
         # path, True for drip path); start_topup with no is_drip arg preserves
         # that, so the worker uses the matching action threshold.
         if self.coin_manager.needs_topup(active_buy_count, active_sell_count):
+            if (
+                bool(getattr(self.coin_manager, "_topup_is_drip", False))
+                and self._defer_drip_topup_for_offer_rebuild(
+                    active_buy_count,
+                    active_sell_count,
+                )
+            ):
+                return
+            if self._defer_spare_topup_until_source_available(
+                active_buy_count,
+                active_sell_count,
+            ):
+                return
             log_event("info", "topup_trigger",
                       "Starting coin top-up to replenish free coins (existing offers stay active)...")
             self.coin_manager.start_topup(active_buy_count, active_sell_count)

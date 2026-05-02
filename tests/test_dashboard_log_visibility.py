@@ -90,9 +90,11 @@ def test_coin_topup_events_are_visible_in_system_logs():
         "topup_trigger",
         "topup_tiers_adequate",
         "topup_inventory",
+        "topup_deferred_offer_rebuild_priority",
         "tier_size_drift",
         "tier_size_drift_topup_started",
         "tier_size_drift_topup_deferred",
+        "tier_size_drift_waiting_for_source",
     ]
 
     for event_type in required_events:

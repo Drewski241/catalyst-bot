@@ -538,6 +538,8 @@ _EVENT_CATEGORY_MAP = {
     "topup_coins_locked": EventCategory.COIN,      # kept for backward compat
     "topup_split_blocked": EventCategory.COIN,     # tier low but reserve guard refused
     "topup_tiers_adequate": EventCategory.COIN,    # all tiers above threshold (normal)
+    "topup_deferred_offer_rebuild_priority": EventCategory.COIN,
+    "topup_waiting_for_source": EventCategory.COIN,
     "topup_backoff_reset": EventCategory.COIN,
     "topup_wait_sync": EventCategory.COIN,
     "topup_waiting": EventCategory.COIN,
@@ -545,6 +547,10 @@ _EVENT_CATEGORY_MAP = {
     "topup_zero_transient": EventCategory.COIN,
     "topup_xch_sniper": EventCategory.COIN,
     "topup_cat_sniper": EventCategory.COIN,
+    "tier_size_drift": EventCategory.COIN,
+    "tier_size_drift_topup_started": EventCategory.COIN,
+    "tier_size_drift_topup_deferred": EventCategory.COIN,
+    "tier_size_drift_waiting_for_source": EventCategory.COIN,
     "health_topup_trigger": EventCategory.COIN,
     "reconcile_done": EventCategory.COIN,
     "reconcile_error": EventCategory.COIN,
@@ -609,4 +615,3 @@ def categorize_event(event_type: str) -> EventCategory:
 def get_category_map() -> dict:
     """Return the full event-to-category mapping (for diagnostics/API)."""
     return dict(_EVENT_CATEGORY_MAP)
-

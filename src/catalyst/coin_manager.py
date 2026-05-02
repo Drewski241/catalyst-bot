@@ -4269,6 +4269,8 @@ class CoinManager:
         V3 ADAPTIVE: Uses trading pace to adjust the trigger threshold.
         Busy market → trigger earlier (50% spares). Slow → later (20%).
         """
+        self._topup_needed_wallet_types = set()
+
         # F9 fix (2026-04-08): topup worker heartbeat watchdog. If the
         # worker thread crashed mid-run (uncaught exception OUTSIDE the
         # outer try/except), `_topup_running` would stay True forever and
@@ -4381,6 +4383,7 @@ class CoinManager:
         if cfg.TIER_ENABLED:
             # V4: Check per-tier spare counts using per-tier percentages.
             needs_any = False
+            trigger_wallet_types: set[str] = set()
             trigger_log: list = []
             max_per_side = max(
                 getattr(cfg, "MAX_ACTIVE_BUY_OFFERS", 25),
@@ -4420,6 +4423,10 @@ class CoinManager:
 
                 if xch_trip or cat_trip:
                     needs_any = True
+                    if xch_trip:
+                        trigger_wallet_types.add("xch")
+                    if cat_trip:
+                        trigger_wallet_types.add("cat")
                     trigger_log.append(
                         f"{tier_name} "
                         f"xch@{int(xch_pct*100)}%={xch_spares_now}/{xch_spare_target}(<{xch_threshold}) "
@@ -4440,6 +4447,10 @@ class CoinManager:
                     (cfg.ENABLE_SELL and sniper_cat_now < sniper_threshold)
                 ):
                     needs_any = True
+                    if cfg.ENABLE_BUY and sniper_xch_now < sniper_threshold:
+                        trigger_wallet_types.add("xch")
+                    if cfg.ENABLE_SELL and sniper_cat_now < sniper_threshold:
+                        trigger_wallet_types.add("cat")
                     trigger_log.append(
                         f"sniper@{int(sniper_pct*100)}% "
                         f"xch={sniper_xch_now}/{sniper_target}(<{sniper_threshold}) "
@@ -4454,6 +4465,7 @@ class CoinManager:
                 fee_xch_now = self._tier_spares.get("xch", {}).get("fees", 0)
                 if fee_threshold > 0 and fee_xch_now < fee_threshold:
                     needs_any = True
+                    trigger_wallet_types.add("xch")
                     trigger_log.append(
                         f"fees@{int(fee_pct*100)}% "
                         f"xch={fee_xch_now}/{fee_target}(<{fee_threshold})"
@@ -4464,6 +4476,7 @@ class CoinManager:
                           f"Per-tier trigger fired (pace={pace}, scale={pace_scale:.2f}x). "
                           f"Trips: {'; '.join(trigger_log) if trigger_log else 'n/a'}")
                 self._topup_is_drip = False
+                self._topup_needed_wallet_types = set(trigger_wallet_types)
                 return True
 
             # Drip check — proactively replenish tiers trending toward emergency.
@@ -4483,10 +4496,19 @@ class CoinManager:
                     _cat_sp = self._tier_spares.get("cat", {}).get(tier_name, 0)
                     _xch_drip = int(round(_xch_sp_tgt * drip_pct)) if _xch_sp_tgt > 0 else 0
                     _cat_drip = int(round(_cat_sp_tgt * drip_pct)) if _cat_sp_tgt > 0 else 0
-                    if ((_xch_drip > 0 and _xch_sp < _xch_drip and cfg.ENABLE_BUY) or
-                            (_cat_drip > 0 and _cat_sp < _cat_drip and cfg.ENABLE_SELL)):
+                    _xch_low = _xch_drip > 0 and _xch_sp < _xch_drip and cfg.ENABLE_BUY
+                    _cat_low = _cat_drip > 0 and _cat_sp < _cat_drip and cfg.ENABLE_SELL
+                    if _xch_low or _cat_low:
                         self._last_drip_time = time.time()
                         self._topup_is_drip = True
+                        self._topup_needed_wallet_types = {
+                            wallet_type
+                            for wallet_type, low in (
+                                ("xch", _xch_low),
+                                ("cat", _cat_low),
+                            )
+                            if low
+                        }
                         log_event("info", "drip_trigger",
                                   f"Proactive drip: {tier_name} "
                                   f"xch={_xch_sp}/{_xch_drip} (tgt {_xch_sp_tgt}) "
@@ -4537,6 +4559,14 @@ class CoinManager:
                         if _sniper_xch_low or _sniper_cat_low:
                             self._last_drip_time = time.time()
                             self._topup_is_drip = True
+                            self._topup_needed_wallet_types = {
+                                wallet_type
+                                for wallet_type, low in (
+                                    ("xch", _sniper_xch_low),
+                                    ("cat", _sniper_cat_low),
+                                )
+                                if low
+                            }
                             log_event("info", "drip_trigger",
                                       f"Proactive drip: sniper "
                                       f"xch={_sniper_xch_sp}/{_sniper_drip_tgt} "
@@ -4552,6 +4582,7 @@ class CoinManager:
                         if _fee_drip_tgt > 0 and _fee_sp < _fee_drip_tgt:
                             self._last_drip_time = time.time()
                             self._topup_is_drip = True
+                            self._topup_needed_wallet_types = {"xch"}
                             log_event("info", "drip_trigger",
                                       f"Proactive drip: fees "
                                       f"xch={_fee_sp}/{_fee_drip_tgt} (tgt {_fee_target})")
@@ -4603,6 +4634,10 @@ class CoinManager:
                     if _orphan_wallets:
                         self._last_drip_time = time.time()
                         self._topup_is_drip = True
+                        self._topup_needed_wallet_types = {
+                            "xch" if entry.startswith("xch ") else "cat"
+                            for entry in _orphan_wallets
+                        }
                         log_event(
                             "info", "drip_trigger",
                             "Proactive drip: orphan reclaim — " +
@@ -4631,6 +4666,14 @@ class CoinManager:
             needs_cat = free_cat < target_free_cat and cfg.ENABLE_SELL
 
             if needs_xch or needs_cat:
+                self._topup_needed_wallet_types = {
+                    wallet_type
+                    for wallet_type, low in (
+                        ("xch", needs_xch),
+                        ("cat", needs_cat),
+                    )
+                    if low
+                }
                 log_event("warning", "low_coins_free",
                           f"Low FREE coins! XCH: {free_xch} free (threshold {target_free_xch}), "
                           f"CAT: {free_cat} free (threshold {target_free_cat}) "
