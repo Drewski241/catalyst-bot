@@ -33,6 +33,23 @@ def test_market_price_history_has_range_controls_without_adding_new_main_tab():
     assert 'id="v4View-analysis"' not in html
 
 
+def test_market_price_history_treats_sql_timestamps_as_utc():
+    html = GUI.read_text(encoding="utf-8", errors="replace")
+
+    assert "function _v4ParsePriceHistoryTimestamp" in html
+    assert "normalized + 'Z'" in html
+    assert "const t = _v4ParsePriceHistoryTimestamp(point.timestamp);" in html
+
+
+def test_dry_run_is_not_user_facing_setting():
+    html = GUI.read_text(encoding="utf-8", errors="replace")
+
+    assert 'id="configDryRun"' not in html
+    assert 'id="ccDryRun"' not in html
+    assert "Dry Run Mode" not in html
+    assert "dry_run:" not in html
+
+
 def test_market_diagnostics_uses_live_amm_and_summary_sources():
     html = GUI.read_text(encoding="utf-8", errors="replace")
 
@@ -59,6 +76,7 @@ def test_min_spread_clamp_copy_is_diagnostic_not_directive():
     assert "configured minimum clamp" in text
     assert "normalizeMarketConditionText" in html
     assert "raise MIN_SPREAD_BPS" not in html
+
 
 def test_max_spread_clamp_recommendation_opens_running_settings():
     html = GUI.read_text(encoding="utf-8", errors="replace")

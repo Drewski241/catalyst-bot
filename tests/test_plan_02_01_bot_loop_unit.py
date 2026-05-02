@@ -247,6 +247,35 @@ class TestBpsToPct(_PatchedCfg):
         self.assertIsInstance(result, str)
 
 
+class TestPositionSanityDepositDetection(_PatchedCfg):
+    def test_delta_matching_recent_unknown_cat_deposit_is_recognized(self):
+        class _Conn:
+            def execute(self, *_args, **_kwargs):
+                return self
+
+            def fetchall(self):
+                return [{
+                    "coin_id": "0x65119c25b5bc049c2496a5791349c552269ff51483ada6bcb2bc68ae51ed08be",
+                    "amount_mojos": 193_886_291,
+                    "designation": "unknown",
+                    "first_seen": "2026-05-02 14:40:07",
+                }]
+
+        fake_db = types.ModuleType("database")
+        fake_db.get_connection = lambda: _Conn()
+        fake_db.get_setting = lambda *_args, **_kwargs: ""
+
+        with patch.dict(sys.modules, {"database": fake_db}):
+            match = bot_loop._find_cat_deposit_for_position_delta(
+                Decimal("193886.291"),
+                Decimal("1000"),
+                0,
+            )
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match["amount_mojos"], 193_886_291)
+
+
 class TestBotLoopWiring(_PatchedCfg):
     """BotLoop wiring used by dashboard market health."""
 
@@ -270,6 +299,7 @@ class TestTierSizeDriftTopup(_PatchedCfg):
     def test_tier_size_drift_uses_proactive_topup_threshold(self):
         loop = _make_loop()
         calls = []
+        alerts = []
 
         class DriftCoinManager:
             def check_tier_size_drift(self):
@@ -290,7 +320,7 @@ class TestTierSizeDriftTopup(_PatchedCfg):
 
         loop.coin_manager = DriftCoinManager()
         loop._last_tier_drift_topup_time = 0
-        loop._emit_alert = lambda *a, **kw: None
+        loop._emit_alert = lambda *a, **kw: alerts.append(a)
         loop._clear_alert = lambda *a, **kw: None
 
         with patch.dict(sys.modules, {
@@ -300,6 +330,9 @@ class TestTierSizeDriftTopup(_PatchedCfg):
             loop._check_tier_size_drift()
 
         self.assertEqual(calls, [(1, 2, True)])
+        self.assertTrue(alerts)
+        self.assertIn("Live topup has been queued", alerts[-1][3])
+        self.assertNotIn("Live topup has started to reshape", alerts[-1][3])
 
     def test_tier_size_drift_waits_when_only_side_has_no_split_source(self):
         loop = _make_loop()
@@ -344,6 +377,18 @@ class TestTierSizeDriftTopup(_PatchedCfg):
         self.assertEqual(calls, [])
         self.assertIn("tier_size_drift_waiting_for_source", events)
         self.assertNotIn("tier_size_drift_topup_started", events)
+
+    def test_sage_cleanup_skip_summary_is_user_friendly(self):
+        msg = bot_loop._format_sage_cleanup_skip_summary(
+            total=655,
+            new=655,
+            repeated=0,
+        )
+
+        self.assertIn("historical Sage offer records", msg)
+        self.assertIn("left them visible in Sage", msg)
+        self.assertNotIn("anomal", msg.lower())
+        self.assertNotIn("review", msg.lower())
 
 
 class TestCoinTopupPriority(_PatchedCfg):

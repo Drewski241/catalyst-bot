@@ -210,6 +210,19 @@ class TestAnalyseOrderbook(_MI):
         self._mi._analyse_orderbook(buys, sells)
         self.assertEqual(self._mi._competitors["thin_side"], "buy")
 
+    def test_depth_ignores_far_out_junk_offers(self):
+        buys = [self._make_offer("0.000114", "10", side="buy")]
+        sells = [
+            self._make_offer("0.000123", "7", side="sell"),
+            self._make_offer("0.0022", "10000", side="sell"),
+        ]
+
+        self._mi._analyse_orderbook(buys, sells)
+
+        self.assertEqual(self._mi._competitors["buy_depth_xch"], Decimal("10"))
+        self.assertEqual(self._mi._competitors["sell_depth_xch"], Decimal("7"))
+        self.assertEqual(self._mi._competitors["thin_side"], "")
+
     def test_whale_orders_captured(self):
         buys = [self._make_offer(0.010, 2.0, side="buy")]   # xch_amount >= 1 → whale
         sells = [self._make_offer(0.011, 0.5, side="sell")]  # not whale

@@ -135,6 +135,36 @@ class CoinManagerTopupFailClosedTests(unittest.TestCase):
         })
         self.assertEqual(tx_ids, ["0xabc123", "0xdef456"])
 
+    def test_unadvised_unknown_deposit_is_not_a_topup_source(self):
+        coin_id = "0x65119c25b5bc049c2496a5791349c552269ff51483ada6bcb2bc68ae51ed08be"
+        records = [_record(coin_id, 193_886_291)]
+
+        safe, blocked = coin_manager._filter_unallocated_deposit_sources(
+            records,
+            wallet_type="cat",
+            db_designations={coin_id: "unknown"},
+            advised_coin_ids=set(),
+            threshold_mojos=60_320_000,
+        )
+
+        self.assertEqual(safe, [])
+        self.assertEqual(blocked, 1)
+
+    def test_advised_unknown_deposit_can_be_used_as_topup_source(self):
+        coin_id = "0x65119c25b5bc049c2496a5791349c552269ff51483ada6bcb2bc68ae51ed08be"
+        records = [_record(coin_id, 193_886_291)]
+
+        safe, blocked = coin_manager._filter_unallocated_deposit_sources(
+            records,
+            wallet_type="cat",
+            db_designations={coin_id: "unknown"},
+            advised_coin_ids={coin_id},
+            threshold_mojos=60_320_000,
+        )
+
+        self.assertEqual(safe, records)
+        self.assertEqual(blocked, 0)
+
     def test_owned_coin_map_falls_back_to_selectable_lower_bound(self):
         manager = self._make_manager()
 

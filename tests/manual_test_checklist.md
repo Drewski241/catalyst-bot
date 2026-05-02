@@ -5,6 +5,11 @@ user-facing flow against the running bot. Designed to be re-used after any
 significant change — see the **"Feature-specific smoke tests"** section at the
 bottom for the subset that matches a recent commit.
 
+For full start-to-finish QA planning, use this checklist together with
+`docs/testing/full_app_scenario_matrix.md`. The matrix defines scenario IDs,
+expected backend/frontend evidence, guidance expectations, and which scenarios
+should be unit-tested, integration-tested, UI-tested, replayed, or live-tested.
+
 > **Setup preamble** (30 seconds)
 > * Make sure Sage wallet is open with RPC enabled (`Settings → Advanced → Start RPC Client`)
 > * Launch: `python desktop_app.py --flask` (or the desktop shortcut)
@@ -147,11 +152,10 @@ cd src/catalyst && python -c "from config import cfg; print({k:getattr(cfg,k,Non
 | 2.5 | Base Trade Size propagates to tier sizes via `updateTierSizesFromBase` | inner = 2×, outer = 0.5×, extreme = 0.2× |
 | 2.6 | Enable Tiered Sizing toggle → shows/hides tier size grid, count section, spare section | 3 sections appear/disappear together |
 | 2.7 | Reverse Buy Ladder toggle swaps buy-inner ↔ buy-extreme field values | on toggle, XCH row flips orientation |
-| 2.8 | Dry Run Mode checkbox + hint | when on, offers are logged but not sent |
-| 2.9 | Save button writes to `.env` + shows toast | ~200 ms round trip |
-| 2.10 | Export .env dumps a timestamped file | downloads as attachment |
-| 2.11 | Pending-changes banner appears when any field is dirty | clears after Save |
-| 2.12 | **CAT_WALLET_ID is NOT writable** via bulk-config-update (blocked) | stale values from earlier sessions can't be re-introduced |
+| 2.8 | Save button writes to `.env` + shows toast | ~200 ms round trip |
+| 2.9 | Export .env dumps a timestamped file | downloads as attachment |
+| 2.10 | Pending-changes banner appears when any field is dirty | clears after Save |
+| 2.11 | **CAT_WALLET_ID is NOT writable** via bulk-config-update (blocked) | stale values from earlier sessions can't be re-introduced |
 
 <a id="liquidity-mode"></a>
 ## 3. Liquidity Mode feature *(shipped 2026-04-19, commits `1192045` + `0dbbcf3`)*
@@ -255,7 +259,6 @@ While the bot is running, these should take effect without restart:
 | 9.2 | Requote Threshold (bps) | next requote decision |
 | 9.3 | Inventory skew intensity | only in two-sided |
 | 9.4 | Max active buy / sell | clamps ladder next cycle |
-| 9.5 | Dry Run toggle | flips without requiring stop |
 
 Anything that's *capital allocation* (trade size, tier sizes, Liquidity Mode)
 requires **stop first**.

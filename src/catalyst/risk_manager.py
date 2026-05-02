@@ -1176,6 +1176,7 @@ class RiskManager:
         try:
             if cfg.DYNAMIC_SPREAD_ENABLED:
                 min_bps = cfg.MIN_SPREAD_BPS
+                max_bps = cfg.MAX_SPREAD_BPS
                 buy_bps = buy_spread * Decimal("10000")
                 sell_bps = sell_spread * Decimal("10000")
                 if buy_bps <= min_bps or sell_bps <= min_bps:
@@ -1230,4 +1231,3 @@ class RiskManager:
             "conditions": [{"level": lvl, "text": txt} for lvl, txt in conditions],
             "metrics": metrics,
         }
-

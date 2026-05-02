@@ -323,6 +323,83 @@ def _classify_coins(records: list, trading_size_mojos: int) -> Dict[str, list]:
     return {"reserve": reserve, "trading": trading, "small": small}
 
 
+def _load_advised_deposit_coin_ids() -> set:
+    """Load deposit-advisory coin IDs that the user has already allocated."""
+    try:
+        from database import get_setting
+        raw = get_setting("deposit_advisory_advised_coins", "") or ""
+    except Exception:
+        return set()
+    return {
+        str(part).strip().lower()
+        for part in str(raw).split(",")
+        if str(part).strip()
+    }
+
+
+def _filter_unallocated_deposit_sources(
+    records: list,
+    wallet_type: str,
+    db_designations: dict,
+    advised_coin_ids: set,
+    threshold_mojos: int,
+) -> tuple[list, int]:
+    """Keep top-up from spending large external deposits before allocation."""
+    if not records or int(threshold_mojos or 0) <= 0:
+        return list(records or []), 0
+
+    safe: list = []
+    blocked = 0
+    advised = {str(cid).lower() for cid in (advised_coin_ids or set())}
+    designations = {
+        str(cid).lower(): str(designation or "").lower()
+        for cid, designation in (db_designations or {}).items()
+    }
+
+    for record in records:
+        coin_id = str(_coin_id_from_record(record) or "").lower()
+        designation = designations.get(coin_id, "")
+        amount = int(_coin_amount(record) or 0)
+        if (
+            designation == "unknown"
+            and coin_id not in advised
+            and amount >= int(threshold_mojos)
+        ):
+            blocked += 1
+            continue
+        safe.append(record)
+
+    return safe, blocked
+
+
+def _deposit_advisory_source_threshold_mojos(
+    is_cat: bool,
+    fallback_tier_mojos: int = 0,
+) -> int:
+    """Threshold for deposit-sized unknown coins in top-up source selection."""
+    smallest = 0
+    try:
+        sizes = get_tier_sizes_mojos_from_cfg(is_cat=is_cat)
+        normal_sizes = [
+            int(v)
+            for tier, v in (sizes or {}).items()
+            if tier in ("inner", "mid", "outer", "extreme") and int(v or 0) > 0
+        ]
+        if normal_sizes:
+            smallest = min(normal_sizes)
+    except Exception:
+        smallest = 0
+
+    if smallest <= 0:
+        try:
+            smallest = int(fallback_tier_mojos or 0)
+        except Exception:
+            smallest = 0
+    if smallest <= 0:
+        return 0
+    return int(smallest * 10)
+
+
 def _classify_coins_tiered(records: list, tier_sizes_mojos: Dict[str, int]) -> Dict[str, list]:
     """Classify coins into tier-specific buckets when TIER_ENABLED.
 
@@ -711,6 +788,13 @@ def get_tier_sizes_mojos_from_cfg(is_cat: bool = False) -> Dict[str, int]:
                     pass
         except Exception:
             pass
+        if price is None or price <= 0:
+            try:
+                p = Decimal(str(getattr(cfg, "LAST_QUOTED_MID", 0) or 0))
+                if p > 0:
+                    price = p
+            except Exception:
+                pass
         if price is None or price <= 0:
             try:
                 import api_server as _api
@@ -5800,6 +5884,13 @@ class CoinManager:
                     "WHERE wallet_type=? AND status IN ('free', 'locked')",
                     (_wallet_type_str,),
                 ).fetchall()
+                _db_designations = {
+                    str(_r["coin_id"]).lower(): str(
+                        _r["designation"] or "unknown"
+                    ).lower()
+                    for _r in _rows_fresh
+                    if _r["coin_id"]
+                }
                 _reserved_for_tiers = {
                     str(_r["coin_id"]).lower()
                     for _r in _rows_fresh
@@ -5821,6 +5912,27 @@ class CoinManager:
                             f"to avoid poaching another tier's stock",
                         )
                     fresh_inv["reserve"] = _safe_reserve
+
+                _deposit_threshold_mojos = _deposit_advisory_source_threshold_mojos(
+                    is_cat=is_cat,
+                    fallback_tier_mojos=trading_size_mojos,
+                )
+                _safe_reserve, _blocked_deposits = _filter_unallocated_deposit_sources(
+                    fresh_inv["reserve"],
+                    wallet_type=_wallet_type_str,
+                    db_designations=_db_designations,
+                    advised_coin_ids=_load_advised_deposit_coin_ids(),
+                    threshold_mojos=_deposit_threshold_mojos,
+                )
+                if _blocked_deposits:
+                    log_event(
+                        "info",
+                        f"topup_{name.lower()}_unallocated_deposit_wait",
+                        f"{name} topup found {_blocked_deposits} "
+                        f"unallocated deposit-sized coin(s); waiting for "
+                        f"the deposit allocation prompt before using them.",
+                    )
+                fresh_inv["reserve"] = _safe_reserve
             except Exception:
                 # Fail open: if DB is unreachable, fall back to local sizing.
                 # The worst-case is the legacy poaching behaviour, which is

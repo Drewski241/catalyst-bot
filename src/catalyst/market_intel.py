@@ -313,6 +313,15 @@ class MarketIntel:
             _sell_ceiling = _raw_best_buy * Decimal("2")
             competitor_sells = [o for o in competitor_sells if o["price"] <= _sell_ceiling]
 
+        def _is_sane_depth_buy(offer: Dict) -> bool:
+            return _raw_best_sell <= 0 or offer["price"] >= _raw_best_sell * Decimal("0.5")
+
+        def _is_sane_depth_sell(offer: Dict) -> bool:
+            return _raw_best_buy <= 0 or offer["price"] <= _raw_best_buy * Decimal("2")
+
+        depth_buys = [o for o in buy_offers if _is_sane_depth_buy(o)]
+        depth_sells = [o for o in sell_offers if _is_sane_depth_sell(o)]
+
         # Best bid/ask from competitors (post-junk-filter)
         best_bid = competitor_buys[0]["price"] if competitor_buys else Decimal("0")
         best_ask = competitor_sells[0]["price"] if competitor_sells else Decimal("0")
@@ -329,14 +338,16 @@ class MarketIntel:
             best_bid = Decimal("0")
             best_ask = Decimal("0")
 
-        # Total depth
-        buy_depth = sum(o["xch_amount"] for o in buy_offers)
-        sell_depth = sum(o["xch_amount"] for o in sell_offers)
+        # Actionable depth near the live market. Far-out dust/junk offers can
+        # dwarf the display totals while having no practical bearing on where
+        # the ladder should compete.
+        buy_depth = sum(o["xch_amount"] for o in depth_buys)
+        sell_depth = sum(o["xch_amount"] for o in depth_sells)
 
         # Whale detection (orders > 1 XCH)
         whale_threshold = Decimal("1.0")
         whales = []
-        for o in buy_offers + sell_offers:
+        for o in depth_buys + depth_sells:
             if o["xch_amount"] >= whale_threshold:
                 whales.append({
                     "side": o["side"],

@@ -83,6 +83,71 @@ def _bps_to_pct(val):
         return str(val)
 
 
+def _format_sage_cleanup_skip_summary(total: int, new: int, repeated: int) -> str:
+    """Format the user-facing summary for Sage cleanup skips."""
+    return (
+        f"Skipped {total} historical Sage offer records during safe cleanup "
+        f"({new} first seen this session, {repeated} already known). "
+        "They were not DB-verified as cancelled/expired, so CATalyst left "
+        "them visible in Sage instead of deleting them."
+    )
+
+
+def _find_cat_deposit_for_position_delta(delta_cat, scale, baseline_at=0):
+    """Return a recent external CAT deposit coin matching a positive delta."""
+    try:
+        delta = Decimal(str(delta_cat or 0))
+        unit_scale = Decimal(str(scale or 0))
+    except Exception:
+        return None
+    if delta <= 0 or unit_scale <= 0:
+        return None
+
+    target_mojos = int((delta * unit_scale).copy_abs())
+    if target_mojos <= 0:
+        return None
+    tolerance_mojos = max(
+        int(unit_scale * Decimal("100")),
+        int(Decimal(target_mojos) * Decimal("0.02")),
+    )
+    lower = max(1, target_mojos - tolerance_mojos)
+    upper = target_mojos + tolerance_mojos
+
+    try:
+        from database import get_connection
+        conn = get_connection()
+        rows = conn.execute(
+            "SELECT coin_id, amount_mojos, designation, first_seen "
+            "FROM coins "
+            "WHERE wallet_type='cat' "
+            "  AND status IN ('free', 'gone') "
+            "  AND COALESCE(designation, 'unknown') IN ('unknown', 'reserve') "
+            "  AND amount_mojos BETWEEN ? AND ? "
+            "ORDER BY first_seen DESC",
+            (int(lower), int(upper)),
+        ).fetchall()
+    except Exception:
+        return None
+
+    for row in rows or []:
+        try:
+            coin_id = row["coin_id"]
+            amount = int(row["amount_mojos"] or 0)
+            designation = row["designation"]
+            first_seen = row["first_seen"]
+        except Exception:
+            continue
+        if not coin_id or amount <= 0:
+            continue
+        return {
+            "coin_id": coin_id,
+            "amount_mojos": amount,
+            "designation": designation or "unknown",
+            "first_seen": first_seen,
+        }
+    return None
+
+
 def map_sage_terminal_offer_status(status_val, sage_offer=None, local_offer=None, now_ts=None):
     """Map Sage terminal offer states onto the local offer status enum.
 
@@ -2945,11 +3010,13 @@ class BotLoop:
                     _active_buy, _active_sell, is_drip=True
                 ):
                     self._last_tier_drift_topup_time = _now
-                    topup_note = "Live topup has started to reshape the coin pools."
+                    topup_note = (
+                        "Live topup has been queued to reshape the coin pools."
+                    )
                     log_event(
                         "info",
                         "tier_size_drift_topup_started",
-                        f"Started live topup for tier-size drift: {summary}",
+                        f"Queued live topup for tier-size drift: {summary}",
                         data={
                             "active_buy_count": _active_buy,
                             "active_sell_count": _active_sell,
@@ -9457,8 +9524,10 @@ class BotLoop:
             pass
         if (fast_reconcile_requested
                 or self.coin_manager._reconcile_counter >= reconcile_every):
-            self.coin_manager.reconcile_with_wallet()
-            self.coin_manager._reconcile_counter = 0
+            reconcile = getattr(self.coin_manager, "reconcile_with_wallet", None)
+            if callable(reconcile):
+                reconcile()
+                self.coin_manager._reconcile_counter = 0
             if fast_reconcile_requested:
                 log_event("info", "fast_reconcile_applied",
                           "Reconcile fast-path triggered by a recent cancel")
@@ -10123,10 +10192,11 @@ class BotLoop:
                             log_event(
                                 "info",
                                 "sage_cleanup_anomalies_summary",
-                                f"Skipped {anomalies} Sage cleanup candidates "
-                                f"({new_anomalies} new, {repeated} already seen) "
-                                f"due to DB mismatch or missing records — "
-                                f"review sage_cleanup_anomaly events above.",
+                                _format_sage_cleanup_skip_summary(
+                                    anomalies,
+                                    new_anomalies,
+                                    repeated,
+                                ),
                             )
                         # else: all anomalies already seen — no summary spam
 
@@ -10819,6 +10889,37 @@ class BotLoop:
             tolerance = Decimal("100")
 
         if abs(delta) > tolerance:
+            deposit_match = _find_cat_deposit_for_position_delta(
+                delta,
+                _scale,
+                getattr(self, "_position_baseline_at", 0) or 0,
+            )
+            if deposit_match is not None:
+                try:
+                    amount_cat = (
+                        Decimal(str(deposit_match["amount_mojos"])) / _scale
+                    )
+                except Exception:
+                    amount_cat = delta
+                coin_id = str(deposit_match.get("coin_id") or "")
+                short_id = coin_id[:12] + "..." if coin_id else "unknown coin"
+                self._position_baseline_cat = _current_cat
+                self._position_baseline_net_cat = Decimal(str(net_position_cat or 0))
+                self._position_baseline_at = time.time()
+                log_event(
+                    "info",
+                    "position_sanity_external_deposit",
+                    f"Wallet CAT balance changed by {delta:+.2f} CAT, "
+                    f"matching external deposit {short_id} "
+                    f"({amount_cat:.3f} CAT). Re-snapped position sanity "
+                    f"baseline instead of treating it as missing PnL.",
+                )
+                try:
+                    self._clear_alert("position_sanity")
+                except Exception:
+                    pass
+                return
+
             log_event(
                 "info",
                 "position_sanity_drift",

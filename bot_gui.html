@@ -8993,10 +8993,6 @@
                 <div class="cc-group">
                     <div class="cc-group-label">Trading</div>
                     <div class="cc-row">
-                        <span class="cc-label">Mode <span class="cc-help">?<span class="cc-tooltip">Dry Run logs actions without placing real offers. Live mode trades for real.</span></span></span>
-                        <span class="cc-val" id="ccDryRun"><span class="cc-badge cc-badge-off">PENDING</span></span>
-                    </div>
-                    <div class="cc-row">
                         <span class="cc-label">Buy / Sell <span class="cc-help">?<span class="cc-tooltip">Enable or disable buy/sell sides independently. Useful for one-directional markets.</span></span></span>
                         <span class="cc-val" id="ccBuySell">Choose pair</span>
                     </div>
@@ -10431,16 +10427,9 @@
                     <!-- ══ SECTION: Safety & Limits ══ -->
                     <div id="settings-section-safety" class="v4-settings-section v4-settings-blue">
                         <div class="v4-settings-section-title" style="color: var(--status-info);">Safety & Limits <span class="cc-help">?<span class="cc-tooltip">Emergency protection settings. These circuit breakers halt trading if something unexpected happens — price crashes, spikes, or moves outside your comfort zone.</span></span></div>
-                        <!-- F76 (2026-04-17): expose DRY_RUN / ENABLE_BUY / ENABLE_SELL. These
-                             config flags were already consumed by bot_loop and boost_manager
-                             but had no UI — users had to edit .env by hand. -->
-                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 10px;">
-                            <div class="form-group" style="margin-bottom: 0;">
-                                <label style="display: flex; align-items: center; gap: 8px; font-size: 0.85em;">
-                                    <input type="checkbox" id="configDryRun" style="width: auto; margin: 0;">
-                                    <span>Dry Run Mode <span class="cc-help">?<span class="cc-tooltip">When on, the bot runs all logic but does NOT create real offers. Useful for dev/testing and for running through a live cycle without committing capital. OFF for normal trading.</span></span></span>
-                                </label>
-                            </div>
+                        <!-- Buy/sell side controls remain user-facing.
+                             Developer-only dry run stays hidden in .env. -->
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
                             <div class="form-group" style="margin-bottom: 0;">
                                 <label style="display: flex; align-items: center; gap: 8px; font-size: 0.85em;">
                                     <input type="checkbox" id="configEnableBuy" style="width: auto; margin: 0;" checked>
@@ -12892,15 +12881,7 @@
 
                         // AUTO_REQUOTE toggle is a user preference — always load
                         const ar = g('AUTO_REQUOTE'); if (ar !== null) document.getElementById('configAutoRequote').checked = ar !== false && ar !== 'false' && ar !== '0';
-                        // F76 (2026-04-17): load the three trading-control
-                        // toggles (DRY_RUN / ENABLE_BUY / ENABLE_SELL). All
-                        // user preferences — always load, never gated by
-                        // blankFreshTemplates.
-                        const _dr = g('DRY_RUN');
-                        if (_dr !== null) {
-                            const _el = document.getElementById('configDryRun');
-                            if (_el) _el.checked = _dr === true || _dr === 'true' || _dr === '1' || _dr === 'True';
-                        }
+                        // Load the user-facing buy/sell controls.
                         const _eb = g('ENABLE_BUY');
                         if (_eb !== null) {
                             const _el = document.getElementById('configEnableBuy');
@@ -13211,7 +13192,6 @@
             const s = function(id, val) { var e = document.getElementById(id); if (e) e.textContent = val; };
 
             // Trading
-            s('v4sCfgMode', g('ccDryRun').replace(/[\n\r]/g, '').trim());
             s('v4sCfgBuySell', g('ccBuySell').replace(/[\n\r]/g, '').trim());
             s('v4sCfgLoop', g('ccLoopSecs'));
             s('v4sCfgMaxOffers', g('ccMaxOffers'));
@@ -13871,6 +13851,19 @@
             title.textContent = 'Mid Price - ' + _v4PriceRangeLabel(_v4PriceHistoryRangeHours)
                 + (extraText ? ' · ' + extraText : '');
         }
+        function _v4ParsePriceHistoryTimestamp(value) {
+            const raw = String(value || '').trim();
+            if (!raw) return Date.now();
+            if (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(raw)) {
+                const parsed = Date.parse(raw);
+                return Number.isFinite(parsed) ? parsed : Date.now();
+            }
+            const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+            const parsedUtc = Date.parse(normalized + 'Z');
+            if (Number.isFinite(parsedUtc)) return parsedUtc;
+            const parsedLocal = Date.parse(raw);
+            return Number.isFinite(parsedLocal) ? parsedLocal : Date.now();
+        }
         async function v4LoadPriceHistory(force = false) {
             if (_v4PriceHistoryLoading && !force) return;
             if (!currentCAT || !currentCAT.asset_id) {
@@ -13888,7 +13881,7 @@
                     _v4PriceHistory.length = 0;
                     data.points.forEach(point => {
                         const y = parseFloat(point.mid || point.combined_price || 0);
-                        const t = Date.parse(point.timestamp || '') || Date.now();
+                        const t = _v4ParsePriceHistoryTimestamp(point.timestamp);
                         if (y > 0 && Number.isFinite(y)) {
                             _v4PriceHistory.push({ t, y });
                         }
@@ -17649,7 +17642,6 @@
             const _dummy = { textContent: '', innerHTML: '', style: {}, classList: { add(){}, remove(){} } };
             const el = id => document.getElementById(id) || _dummy;
 
-            el('ccDryRun').innerHTML = '<span class="cc-badge cc-badge-off">PENDING</span>';
             el('ccBuySell').textContent = pendingText;
             el('ccLoopSecs').textContent = '—';
             el('ccMaxOffers').textContent = '—';
@@ -24219,9 +24211,6 @@
                 // Trading
                 if (s.trading) {
                     const t = s.trading;
-                    el('ccDryRun').innerHTML = t.dry_run
-                        ? '<span class="cc-badge cc-badge-off">DRY RUN</span>'
-                        : '<span class="cc-badge cc-badge-on">LIVE</span>';
                     const buyBadge = t.enable_buy
                         ? '<span class="cc-badge cc-badge-on">ON</span>'
                         : '<span class="cc-badge cc-badge-off">OFF</span>';
@@ -30410,8 +30399,8 @@
             'configLoopSeconds','configSpreadBps','configTradeXch',
             'configMaxBuy','configMaxSell',
             'configXchReserve','configCatReserve',
-            // F76 (2026-04-17): trading-control toggles
-            'configDryRun','configEnableBuy','configEnableSell',
+            // User-facing trading-control toggles
+            'configEnableBuy','configEnableSell',
             'configAutoRequote','configRequoteBps','configRequoteCooldown','configRequoteBatchSize',
             'configMaxMidMove','configTibetShockCancelPct','configArbThreshold','configDynamicLimitPct','configMaxStepChange',
             'configMinMid','configMaxMid',
@@ -31040,9 +31029,7 @@
                 max_active_buy: effectiveOffers.maxBuy,
                 max_active_sell: effectiveOffers.maxSell,
 
-                // F76 (2026-04-17): surface three previously .env-only flags
-                // that are consumed by bot_loop/boost_manager.
-                dry_run: !!document.getElementById('configDryRun')?.checked,
+                // User-facing trading side controls.
                 enable_buy: !!document.getElementById('configEnableBuy')?.checked,
                 enable_sell: !!document.getElementById('configEnableSell')?.checked,
 

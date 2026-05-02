@@ -98,14 +98,42 @@ class _FakeConn:
                 self._last_wallet_type = str(params[0]).lower()
             except Exception:
                 self._last_wallet_type = None
+            self._last_params = params
+            self._last_sql = sql
         return self
 
     def fetchall(self):
         if self._last_wallet_type is None:
-            return list(self._rows)
-        return [r for r in self._rows
-                if str(r.get("wallet_type", "cat")).lower()
-                == self._last_wallet_type]
+            rows = list(self._rows)
+        else:
+            rows = [r for r in self._rows
+                    if str(r.get("wallet_type", "cat")).lower()
+                    == self._last_wallet_type]
+        sql = getattr(self, "_last_sql", "") or ""
+        params = getattr(self, "_last_params", ()) or ()
+        if "amount_mojos" not in sql:
+            return rows
+        if "designation='unknown'" in sql and len(params) >= 3:
+            unknown_threshold = int(params[1])
+            reserve_threshold = int(params[2])
+            return [
+                r for r in rows
+                if (
+                    str(r.get("designation", "reserve")).lower() == "unknown"
+                    and int(r.get("amount_mojos", 0)) >= unknown_threshold
+                ) or (
+                    str(r.get("designation", "reserve")).lower() == "reserve"
+                    and int(r.get("amount_mojos", 0)) >= reserve_threshold
+                )
+            ]
+        if "designation='reserve'" in sql and len(params) >= 2:
+            threshold = int(params[1])
+            return [
+                r for r in rows
+                if str(r.get("designation", "reserve")).lower() == "reserve"
+                and int(r.get("amount_mojos", 0)) >= threshold
+            ]
+        return rows
 
 
 class _FakeEventBus:
@@ -145,9 +173,12 @@ class UnclaimedDepositsTests(unittest.TestCase):
         sys.modules.pop("api_server", None)
 
     def _install(self, *, rows=None, advised="", last_absorb_ts=0,
-                 cat_reserve="50"):
+                 cat_reserve="50", settings=None, tier_sizes=None,
+                 last_quoted_mid=Decimal("0")):
         """Wire up fake DB, event bus, cfg. Returns (bus, cleanup)."""
         rows = rows or []
+        settings = settings or {}
+        tier_sizes = tier_sizes or {}
         bus = _FakeEventBus()
         fake_api = types.ModuleType("api_server")
         fake_api.events = bus
@@ -159,6 +190,8 @@ class UnclaimedDepositsTests(unittest.TestCase):
                 return advised
             if "_absorb_" in key:
                 return str(last_absorb_ts)
+            if key in settings:
+                return settings[key]
             return default
 
         cfg = bot_health.cfg
@@ -170,12 +203,19 @@ class UnclaimedDepositsTests(unittest.TestCase):
             patch.object(cfg, "CAT_DECIMALS", 3),
             patch.object(cfg, "CAT_NAME", "MZ"),
             patch.object(cfg, "CAT_RESERVE", Decimal(str(cat_reserve))),
-            patch.object(cfg, "BUY_INNER_SIZE_XCH", Decimal("0.6023")),
-            patch.object(cfg, "SELL_INNER_SIZE_XCH", Decimal("0.6023")),
-            patch.object(cfg, "INNER_SIZE_XCH", Decimal("0.6023")),
+            patch.object(cfg, "BUY_INNER_SIZE_XCH", Decimal(str(tier_sizes.get("buy_inner", "0.6023")))),
+            patch.object(cfg, "SELL_INNER_SIZE_XCH", Decimal(str(tier_sizes.get("sell_inner", "0.6023")))),
+            patch.object(cfg, "SELL_MID_SIZE_XCH", Decimal(str(tier_sizes.get("sell_mid", "0.6023"))), create=True),
+            patch.object(cfg, "SELL_OUTER_SIZE_XCH", Decimal(str(tier_sizes.get("sell_outer", "0.6023"))), create=True),
+            patch.object(cfg, "SELL_EXTREME_SIZE_XCH", Decimal(str(tier_sizes.get("sell_extreme", "0.6023"))), create=True),
+            patch.object(cfg, "INNER_SIZE_XCH", Decimal(str(tier_sizes.get("inner", "0.6023")))),
+            patch.object(cfg, "MID_SIZE_XCH", Decimal(str(tier_sizes.get("mid", "0.6023"))), create=True),
+            patch.object(cfg, "OUTER_SIZE_XCH", Decimal(str(tier_sizes.get("outer", "0.6023"))), create=True),
+            patch.object(cfg, "EXTREME_SIZE_XCH", Decimal(str(tier_sizes.get("extreme", "0.6023"))), create=True),
             patch.object(cfg, "TOPUP_POOL_XCH", Decimal("60")),
             patch.object(cfg, "TOPUP_POOL_CAT", Decimal("140")),
             patch.object(cfg, "XCH_RESERVE", Decimal("10")),
+            patch.object(cfg, "LAST_QUOTED_MID", Decimal(str(last_quoted_mid)), create=True),
         ]
         for p in patchers:
             p.start()
@@ -220,6 +260,37 @@ class UnclaimedDepositsTests(unittest.TestCase):
         self.assertEqual(int(parts[2]), 750_000_000)
         self.assertEqual(parts[4], "TOPUP_POOL_CAT")
         self.assertEqual(parts[5], "CAT_RESERVE")
+
+    def test_large_unknown_cat_deposit_raises_alert_before_topup_spends_it(self):
+        row = _FakeRow({
+            "coin_id": "0x65119c25b5bc049c2496a5791349c552269ff51483ada6bcb2bc68ae51ed08be",
+            "amount_mojos": 193_886_291,
+            "first_seen": "2026-05-02 14:40:07",
+            "wallet_type": "cat",
+            "designation": "unknown",
+        })
+        bus, cleanup = self._install(
+            rows=[row],
+            cat_reserve="0",
+            settings={"last_prep_reserve_total_mojos_cat": "241308616"},
+            tier_sizes={
+                "sell_inner": "4.8667",
+                "sell_mid": "2.7037",
+                "sell_outer": "1.4871",
+                "sell_extreme": "0.6759",
+            },
+            last_quoted_mid=Decimal("0.00011989501389640754"),
+        )
+        try:
+            check = bot_health.check_unclaimed_deposits(auto_repair=True)
+        finally:
+            cleanup()
+
+        self.assertEqual(check.status, "warn")
+        self.assertEqual(check.anomaly_count, 1)
+        alert_id = "deposit_advisory_0x65119c25b5bc049c2496a5791349c552269ff51483ada6bcb2bc68ae51ed08be"
+        self.assertIn(alert_id, bus.alerts)
+        self.assertEqual(bus.alerts[alert_id]["action"], "allocate_deposit")
 
     # ------------------------------------------------------------------
     # Already-advised coin: no re-prompt

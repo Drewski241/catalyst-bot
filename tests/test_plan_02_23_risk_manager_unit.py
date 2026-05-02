@@ -473,7 +473,6 @@ class TestMarketHealthInnerSpread(unittest.TestCase):
             Decimal("1400.00"),
         )
 
-
     def test_max_spread_clamp_is_advisory_not_unhealthy(self):
         rm = _make_rm()
         max_spread = _fake_cfg.MAX_SPREAD_BPS / Decimal("10000")

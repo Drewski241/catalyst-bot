@@ -42,6 +42,7 @@ def test_standalone_drift_flags_under_floor_coins(monkeypatch):
     assert findings[0]["tier"] == "inner"
     assert findings[0]["ratio"] == 0.97
 
+
 def test_standalone_drift_ignores_locked_offer_coins(monkeypatch):
     monkeypatch.setattr(cfg, "TIER_ENABLED", True, raising=False)
     monkeypatch.setattr(cfg, "COIN_MAX_SIZE_RATIO", 1.5, raising=False)

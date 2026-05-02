@@ -1636,6 +1636,109 @@ def _recent_absorb(key: str, now_ts: float) -> bool:
     return (now_ts - ts) < _DEPOSIT_ADVISORY_ABSORB_COOLDOWN_SECS
 
 
+def _configured_smallest_tier_size_xch(is_cat: bool) -> Decimal:
+    """Return the smallest configured normal ladder tier in XCH terms."""
+    tiers = ("inner", "mid", "outer", "extreme")
+    sizes: list[Decimal] = []
+    try:
+        from config import get_buy_tier_size_xch, get_sell_tier_size_xch
+        get_size = get_sell_tier_size_xch if is_cat else get_buy_tier_size_xch
+        for tier in tiers:
+            try:
+                size = Decimal(str(get_size(tier) or 0))
+            except Exception:
+                size = Decimal("0")
+            if size > 0:
+                sizes.append(size)
+    except Exception:
+        prefix = "SELL" if is_cat else "BUY"
+        for tier in tiers:
+            try:
+                size = Decimal(str(
+                    getattr(cfg, f"{prefix}_{tier.upper()}_SIZE_XCH", 0)
+                    or getattr(cfg, f"{tier.upper()}_SIZE_XCH", 0)
+                    or 0
+                ))
+            except Exception:
+                size = Decimal("0")
+            if size > 0:
+                sizes.append(size)
+    return min(sizes) if sizes else Decimal("0")
+
+
+def _deposit_advisory_thresholds(wallet_type: str, is_cat: bool) -> tuple[int, int, int, Decimal]:
+    """Return deposit/reserve thresholds for the advisory query."""
+    if is_cat:
+        scale = Decimal(10) ** Decimal(str(getattr(cfg, "CAT_DECIMALS", 3)))
+    else:
+        scale = Decimal("1000000000000")
+
+    tier_xch = _configured_smallest_tier_size_xch(is_cat)
+    if is_cat:
+        try:
+            price = Decimal(str(getattr(cfg, "LAST_QUOTED_MID", 0) or 0))
+        except Exception:
+            price = Decimal("0")
+        if price > 0 and tier_xch > 0:
+            tier_asset = tier_xch / price
+        else:
+            tier_asset = Decimal(str(
+                getattr(cfg, "CAT_RESERVE", 0) or 0
+            )) * Decimal("0.1")
+        smallest_mojos = int(tier_asset * scale)
+    else:
+        smallest_mojos = int(tier_xch * scale)
+
+    if smallest_mojos <= 0:
+        return 0, 0, 0, scale
+
+    deposit_threshold_mojos = (
+        smallest_mojos * _DEPOSIT_ADVISORY_TIER_MULTIPLE
+    )
+    reserve_threshold_mojos = deposit_threshold_mojos
+
+    reserve_cfg = "CAT_RESERVE" if is_cat else "XCH_RESERVE"
+    try:
+        configured_reserve = Decimal(str(getattr(cfg, reserve_cfg, 0) or 0))
+    except Exception:
+        configured_reserve = Decimal("0")
+    topup_budget_cfg = "TOPUP_POOL_CAT" if is_cat else "TOPUP_POOL_XCH"
+    try:
+        topup_pool = Decimal(str(getattr(cfg, topup_budget_cfg, 0) or 0))
+    except Exception:
+        topup_pool = Decimal("0")
+
+    reserve_mojos = int(configured_reserve * scale)
+    topup_mojos = int(topup_pool * scale)
+    if reserve_mojos > 0:
+        reserve_threshold_mojos = reserve_mojos + max(
+            deposit_threshold_mojos, topup_mojos
+        )
+
+    try:
+        from database import get_setting
+        raw = get_setting(
+            f"last_prep_reserve_total_mojos_{wallet_type}", ""
+        ) or ""
+        post_prep_total = int(raw) if str(raw).strip().isdigit() else 0
+    except Exception:
+        post_prep_total = 0
+    if post_prep_total > 0:
+        reserve_threshold_mojos = max(
+            reserve_threshold_mojos,
+            post_prep_total + max(
+                deposit_threshold_mojos, topup_mojos, smallest_mojos
+            ),
+        )
+
+    return (
+        int(deposit_threshold_mojos),
+        int(reserve_threshold_mojos),
+        int(smallest_mojos),
+        scale,
+    )
+
+
 def check_unclaimed_deposits(auto_repair: bool = True) -> HealthCheck:
     """Prompt the user to allocate newly-arrived funds.
 
@@ -1909,15 +2012,33 @@ def check_unclaimed_deposits(auto_repair: bool = True) -> HealthCheck:
             continue
 
         try:
+            (
+                deposit_threshold_mojos,
+                reserve_threshold_mojos,
+                _smallest_mojos,
+                scale,
+            ) = _deposit_advisory_thresholds(wallet_type, is_cat)
+            if deposit_threshold_mojos <= 0 or reserve_threshold_mojos <= 0:
+                continue
+        except Exception:
+            continue
+
+        try:
             conn = get_connection()
             rows = conn.execute(
-                "SELECT coin_id, amount_mojos, first_seen "
+                "SELECT coin_id, amount_mojos, first_seen, designation "
                 "FROM coins "
                 "WHERE wallet_type=? AND status='free' "
-                "  AND designation='reserve' "
-                "  AND amount_mojos >= ? "
+                "  AND ("
+                "    (designation='unknown' AND amount_mojos >= ?) "
+                "    OR (designation='reserve' AND amount_mojos >= ?)"
+                "  ) "
                 "ORDER BY amount_mojos DESC",
-                (wallet_type, int(threshold_mojos)),
+                (
+                    wallet_type,
+                    int(deposit_threshold_mojos),
+                    int(reserve_threshold_mojos),
+                ),
             ).fetchall()
         except Exception as e:
             slog("BOT_HEALTH",
@@ -1942,6 +2063,10 @@ def check_unclaimed_deposits(auto_repair: bool = True) -> HealthCheck:
             display_amount = Decimal(amount_mojos) / scale
             unit = (str(getattr(cfg, "CAT_NAME", "") or "CAT") if is_cat
                     else "XCH")
+            try:
+                designation = str(row["designation"] or "reserve").lower()
+            except Exception:
+                designation = "reserve"
 
             alert_id = f"deposit_advisory_{coin_id}"
             live_alert_ids.add(alert_id)
@@ -1953,21 +2078,29 @@ def check_unclaimed_deposits(auto_repair: bool = True) -> HealthCheck:
             reserve_current = Decimal(str(
                 getattr(cfg, reserve_cfg, 0) or 0
             ))
-            # Wording note: this coin lives in the "reserve" DB designation
-            # (the bot's hard-reserve slot). The previous copy described it
-            # as "sitting in the topup pool", which conflated reserve with
-            # the separate topup_pool bucket and was self-contradictory.
-            # The numbers in parentheses are the user's CURRENT settings
-            # so they have context for the action choice.
-            message = (
-                f"Detected {display_amount:,.4f} {unit} in reserve coin "
-                f"{short_id}. This coin is in your hard-reserve slot but "
-                f"exceeds your configured hard reserve "
-                f"({reserve_current:,} {unit}) and your topup-pool budget "
-                f"({pool_current:,} {unit}), so the bot can't reach it for "
-                f"trading. Choose: add the excess to the trading pool, "
-                f"raise the hard reserve to keep it parked, or split it."
-            )
+            if designation == "unknown":
+                message = (
+                    f"Detected {display_amount:,.4f} {unit} in a new "
+                    f"unallocated wallet coin {short_id}. Choose whether "
+                    f"this should be added to the trading top-up pool, kept "
+                    f"as hard reserve, or split between both."
+                )
+            else:
+                # Wording note: this coin lives in the "reserve" DB designation
+                # (the bot's hard-reserve slot). The previous copy described it
+                # as "sitting in the topup pool", which conflated reserve with
+                # the separate topup_pool bucket and was self-contradictory.
+                # The numbers in parentheses are the user's CURRENT settings
+                # so they have context for the action choice.
+                message = (
+                    f"Detected {display_amount:,.4f} {unit} in reserve coin "
+                    f"{short_id}. This coin is in your hard-reserve slot but "
+                    f"exceeds your configured hard reserve "
+                    f"({reserve_current:,} {unit}) and your topup-pool budget "
+                    f"({pool_current:,} {unit}), so the bot can't reach it for "
+                    f"trading. Choose: add the excess to the trading pool, "
+                    f"raise the hard reserve to keep it parked, or split it."
+                )
             # action_value carries enough for the GUI to open the modal
             # without another API round-trip.
             action_value = (f"{wallet_type}|{coin_id}|{amount_mojos}|"
