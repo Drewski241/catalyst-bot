@@ -5,10 +5,8 @@ user-facing flow against the running bot. Designed to be re-used after any
 significant change — see the **"Feature-specific smoke tests"** section at the
 bottom for the subset that matches a recent commit.
 
-For full start-to-finish QA planning, use this checklist together with
-`docs/testing/full_app_scenario_matrix.md`. The matrix defines scenario IDs,
-expected backend/frontend evidence, guidance expectations, and which scenarios
-should be unit-tested, integration-tested, UI-tested, replayed, or live-tested.
+For full start-to-finish QA, use this checklist as the public test script. Keep
+run notes and internal planning outside the public repository.
 
 > **Setup preamble** (30 seconds)
 > * Make sure Sage wallet is open with RPC enabled (`Settings → Advanced → Start RPC Client`)
