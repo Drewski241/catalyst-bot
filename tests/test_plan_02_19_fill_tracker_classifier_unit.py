@@ -300,6 +300,20 @@ class TestFillTrackerStateHelpers(unittest.TestCase):
         self.assertLess(elapsed, 10)
         self.assertGreater(elapsed, 0)
 
+    def test_offer_filled_log_message_is_ascii_console_safe(self):
+        msg = FillTracker._format_offer_filled_log_message(
+            side="sell",
+            coin_id="0xabcdef1234567890",
+            price=1.25,
+            size_xch="2.5",
+            size_cat=1000,
+            tier="mid",
+            mempool_warned=False,
+        )
+
+        msg.encode("ascii")
+        self.assertIn("SELL offer filled", msg)
+
     @patch("fill_tracker.log_event")
     def test_get_fill_history_empty(self, _mock_log):
         ft = self._make_ft()

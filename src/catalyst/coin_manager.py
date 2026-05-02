@@ -1463,8 +1463,12 @@ class CoinManager:
         normal emergency topup paths.
         """
         inventory = self._cat_inventory if wallet_type == "cat" else self._xch_inventory
-        if inventory.get("reserve"):
-            return True
+        reserve = inventory.get("reserve") or []
+        if reserve:
+            if target_size_mojos <= 0:
+                return True
+            if any(_coin_amount(record) >= target_size_mojos for record in reserve):
+                return True
         small = inventory.get("small") or []
         if len(small) < 2:
             return False
@@ -4585,6 +4589,32 @@ class CoinManager:
                     _xch_low = _xch_drip > 0 and _xch_sp < _xch_drip and cfg.ENABLE_BUY
                     _cat_low = _cat_drip > 0 and _cat_sp < _cat_drip and cfg.ENABLE_SELL
                     if _xch_low or _cat_low:
+                        if _xch_low:
+                            try:
+                                _xch_mojos = self._get_tier_sizes_mojos(is_cat=False).get(tier_name, 0)
+                            except Exception:
+                                _xch_mojos = 0
+                            if not self._optional_topup_source_available("xch", _xch_mojos):
+                                _xch_low = False
+                                self._log_drip_source_unavailable(
+                                    f"xch:{tier_name}",
+                                    f"XCH {tier_name} drip waiting: {_xch_sp}/{_xch_drip} threshold "
+                                    "but no XCH reserve or useful small coins are available to split",
+                                )
+                        if _cat_low:
+                            try:
+                                _cat_mojos = self._get_tier_sizes_mojos(is_cat=True).get(tier_name, 0)
+                            except Exception:
+                                _cat_mojos = 0
+                            if not self._optional_topup_source_available("cat", _cat_mojos):
+                                _cat_low = False
+                                self._log_drip_source_unavailable(
+                                    f"cat:{tier_name}",
+                                    f"CAT {tier_name} drip waiting: {_cat_sp}/{_cat_drip} threshold "
+                                    "but no CAT reserve or useful small coins are available to split",
+                                )
+                        if not (_xch_low or _cat_low):
+                            continue
                         self._last_drip_time = time.time()
                         self._topup_is_drip = True
                         self._topup_needed_wallet_types = {

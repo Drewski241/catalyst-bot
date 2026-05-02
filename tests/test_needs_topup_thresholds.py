@@ -249,6 +249,10 @@ class NeedsTopupThresholdTests(unittest.TestCase):
         mgr = self._manager(xch_overrides={busy_coin_tier: 9})
         mgr._last_topup_time = time.time()  # emergency is on cooldown
         mgr._last_drip_time = 0             # proactive refill is allowed
+        mgr._xch_inventory = {
+            "reserve": [{"amount": 10_000_000_000_000}],
+            "small": [],
+        }
 
         self.assertTrue(mgr.needs_topup())
         self.assertTrue(mgr._topup_is_drip)

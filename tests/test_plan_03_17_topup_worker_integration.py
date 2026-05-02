@@ -232,6 +232,52 @@ class TestNeedsTopupThreshold(_TempDB):
         self.assertTrue(high_result)   # 5 < 10 → topup needed
 
 
+@unittest.skipIf(_SKIP is not None, f"coin_manager unavailable: {_SKIP}")
+class TestTieredDripTopupSources(_TempDB):
+
+    def test_optional_source_ignores_reserve_smaller_than_requested_tier(self):
+        with patch.object(_cm_mod, "cfg", _fake_cfg()):
+            cm = CoinManager()
+            cm._cat_inventory = {
+                "reserve": [{"amount": 23_950}],
+                "small": [],
+            }
+
+            self.assertFalse(cm._optional_topup_source_available("cat", 24_129_000))
+
+    def test_trading_tier_drip_waits_when_low_tier_has_no_split_source(self):
+        cfg = _fake_cfg()
+        cfg.TIER_ENABLED = True
+        cfg.TIER_DRIP_PCT = 100
+
+        dist = {"inner": 0, "mid": 5, "outer": 0, "extreme": 0}
+        prepared = {"inner": 0, "mid": 10, "outer": 0, "extreme": 0}
+
+        with patch.object(_cm_mod, "cfg", cfg), \
+                patch.object(_cm_mod, "get_tier_distribution", return_value=dist), \
+                patch.object(_cm_mod, "get_weighted_tier_prep_counts", return_value=prepared), \
+                patch.object(_cm_mod, "log_event") as log_event_mock:
+            cm = CoinManager()
+            cm._last_topup_time = time.time()
+            cm._last_drip_time = 0
+            cm._tier_spares = {
+                "xch": {"inner": 0, "mid": 10, "outer": 0, "extreme": 0},
+                "cat": {"inner": 0, "mid": 1, "outer": 0, "extreme": 0},
+            }
+            with patch.object(cm, "_get_tier_sizes_mojos",
+                              return_value={"mid": 24_129_000}), \
+                    patch.object(cm, "_optional_topup_source_available",
+                                 return_value=False) as source_mock:
+                result = cm.needs_topup(active_buy_count=4, active_sell_count=4)
+
+        self.assertFalse(result)
+        source_mock.assert_called_once_with("cat", 24_129_000)
+        self.assertTrue(
+            any(call.args[1] == "drip_source_unavailable"
+                for call in log_event_mock.call_args_list)
+        )
+
+
 # ---------------------------------------------------------------------------
 # 3. _record_topup_pool_spend() — DB persistence
 # ---------------------------------------------------------------------------

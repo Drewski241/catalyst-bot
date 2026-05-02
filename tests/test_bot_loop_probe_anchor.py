@@ -473,6 +473,28 @@ class ProbeAnchorTests(unittest.TestCase):
 
         self.assertEqual(targets["sell"], 4)
 
+    def test_confirmed_fills_clear_db_only_backoff_before_rebuild_targeting(self):
+        loop = bot_loop.BotLoop()
+        loop._adaptive_target_backoff_until["sell"] = 1300.0
+        loop.coin_manager._tier_spares = {
+            "xch": {"inner": 0, "mid": 0, "outer": 0, "extreme": 0},
+            "cat": {"inner": 2, "mid": 0, "outer": 0, "extreme": 0},
+        }
+
+        with patch.object(bot_loop.time, "time", return_value=1000.0):
+            loop._clear_adaptive_target_backoff_for_confirmed_fills(
+                buy_fills=[],
+                sell_fills=[{"trade_id": "filled-sell"}],
+            )
+            targets = loop._get_adaptive_offer_targets(
+                Decimal("1.10"),
+                current_buy_count=4,
+                current_sell_count=2,
+            )
+
+        self.assertEqual(loop._adaptive_target_backoff_until["sell"], 0.0)
+        self.assertEqual(targets["sell"], 4)
+
     def test_wallet_missing_db_offers_are_retired_after_confirmation_grace(self):
         loop = bot_loop.BotLoop()
         now_ts = 1000.0

@@ -43,6 +43,26 @@ class FillTracker:
     offers filled at once).
     """
 
+    @staticmethod
+    def _format_offer_filled_log_message(
+        side,
+        coin_id,
+        price,
+        size_xch,
+        size_cat,
+        tier,
+        mempool_warned,
+    ) -> str:
+        coin_str = f" coin={str(coin_id)[:16]}..." if coin_id != "unknown" else ""
+        warned_tag = "" if mempool_warned else " (mempool-miss)"
+        price_display = f"{Decimal(str(price or 0)):.8f}"
+        size_cat_display = f"{Decimal(str(size_cat or 0)):.2f}"
+        return (
+            f"{str(side).upper()} offer filled!{coin_str} "
+            f"Price: {price_display} XCH, Size: {size_xch} XCH / "
+            f"{size_cat_display} CAT [tier={tier}]{warned_tag}"
+        )
+
     def __init__(self, offer_manager=None):
         # Reference to offer_manager for bot-cancelled checking
         self._offer_manager = offer_manager
@@ -1529,12 +1549,16 @@ class FillTracker:
         except Exception:
             pass
 
-        coin_str = f" coin={coin_id[:16]}..." if coin_id != "unknown" else ""
-        warned_tag = "" if mempool_warned else " (mempool-miss)"
         log_event("info", "offer_filled",
-                  f"🎉 {side.upper()} offer filled!{coin_str} "
-                  f"Price: {price:.8f} XCH, Size: {size_xch} XCH / {size_cat:.2f} CAT "
-                  f"[tier={tier}]{warned_tag}",
+                  self._format_offer_filled_log_message(
+                      side=side,
+                      coin_id=coin_id,
+                      price=price,
+                      size_xch=size_xch,
+                      size_cat=size_cat,
+                      tier=tier,
+                      mempool_warned=mempool_warned,
+                  ),
                   data={"fill_id": fill_id, "trade_id": trade_id,
                         "coin_id": coin_id, "side": side,
                         "price": float(price) if price else None,
@@ -1886,4 +1910,3 @@ class FillTracker:
                   f"{len(sell_ids)} sells — offline fills will be detected on first loop")
 
     # prune_known_ids REMOVED — _known_ids was dead state (write-only, never read)
-

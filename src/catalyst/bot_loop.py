@@ -1881,6 +1881,41 @@ class BotLoop:
 
         return protected
 
+    def _clear_adaptive_target_backoff_for_confirmed_fills(self, buy_fills, sell_fills) -> None:
+        """Let verified fills rebuild after sweep protection instead of DB-only retry backoff."""
+        cleared = []
+        now_ts = time.time()
+        for side, fills in (("buy", buy_fills or []), ("sell", sell_fills or [])):
+            if not fills:
+                continue
+            backoff_until = float(self._adaptive_target_backoff_until.get(side, 0.0) or 0.0)
+            if backoff_until <= 0:
+                continue
+            self._adaptive_target_backoff_until[side] = 0.0
+            cleared.append((side, max(0.0, backoff_until - now_ts), len(fills)))
+
+        if cleared:
+            summary = ", ".join(
+                f"{side} ({count} fill{'s' if count != 1 else ''}, "
+                f"{remaining:.0f}s backoff cleared)"
+                for side, remaining, count in cleared
+            )
+            log_event(
+                "info",
+                "adaptive_target_backoff_cleared_for_fill",
+                f"Confirmed fill cleared DB-only retry backoff for {summary}",
+                data={
+                    "cleared": [
+                        {
+                            "side": side,
+                            "fill_count": count,
+                            "remaining_secs": round(float(remaining), 1),
+                        }
+                        for side, remaining, count in cleared
+                    ]
+                },
+            )
+
     def _probe_has_matured(self, probe: Optional[Dict] = None,
                            now_ts: Optional[float] = None) -> bool:
         """True once a probe pair has survived for the minimum hold time."""
@@ -6599,6 +6634,7 @@ class BotLoop:
             # Without this, recorded fills change net_position but the
             # stale baseline drifts, spamming position_sanity_drift warnings.
             self._position_baseline_cat = None
+            self._clear_adaptive_target_backoff_for_confirmed_fills(buy_fills, sell_fills)
             self._apply_immediate_sweep_protection(buy_fills, sell_fills)
 
         if not buy_fills and not sell_fills:
