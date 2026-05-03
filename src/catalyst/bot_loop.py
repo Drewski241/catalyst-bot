@@ -38,6 +38,12 @@ from database import (
     backfill_verified_fills_from_offers,
 )
 try:
+    from database import get_offers_by_trade_ids
+except ImportError:
+    def get_offers_by_trade_ids(trade_ids):
+        del trade_ids
+        return []
+try:
     from super_log import slog, log_thread_start
 except ImportError:
     def slog(cat, msg, data=None): pass
@@ -541,6 +547,7 @@ class BotLoop:
         self._coin_watcher_lock = threading.Lock()
         self._coin_watcher_interval: int = 30  # seconds between polls (reduced from 12s — read-only thread)
         self._coin_snapshot: Dict[str, Dict] = {}  # {coin_id: {amount, status, wallet_type}}
+        self._coin_watcher_stale_log_last: float = 0
 
         # ---- Splash incoming watcher state ----
         self._splash_receive_thread: Optional[threading.Thread] = None
@@ -1801,23 +1808,60 @@ class BotLoop:
         best_bid = Decimal("0")
         best_ask = Decimal("0")
 
+        def _trade_id(offer: Dict) -> str:
+            try:
+                return str((offer or {}).get("trade_id") or (offer or {}).get("offer_id") or "")
+            except Exception:
+                return ""
+
+        live_trade_ids = [
+            tid
+            for tid in (_trade_id(o) for o in list(open_buys or []) + list(open_sells or []))
+            if tid
+        ]
+        db_by_trade_id = {}
+        if live_trade_ids:
+            try:
+                db_by_trade_id = {
+                    str(row.get("trade_id") or ""): row
+                    for row in get_offers_by_trade_ids(live_trade_ids)
+                    if row.get("trade_id")
+                }
+            except Exception:
+                db_by_trade_id = {}
+
+        def _price_candidates(offers, side: str):
+            prices = []
+            for offer in offers or []:
+                raw_values = []
+                tid = _trade_id(offer)
+                db_offer = db_by_trade_id.get(tid) if tid else None
+                # Sage can briefly omit price_xch on a subset of open offers
+                # during startup/sync.  Use DB prices only for trade IDs that
+                # the wallet just confirmed live so stale DB rows cannot widen
+                # the displayed inner spread by themselves.
+                if db_offer and str(db_offer.get("side") or "").lower() == side:
+                    raw_values.append(db_offer.get("price_xch") or db_offer.get("price"))
+                raw_values.append((offer or {}).get("price_xch") or (offer or {}).get("price"))
+                for raw in raw_values:
+                    try:
+                        price = Decimal(str(raw or 0))
+                    except Exception:
+                        price = Decimal("0")
+                    if price > 0:
+                        prices.append(price)
+                        break
+            return prices
+
         try:
-            buy_prices = [
-                Decimal(str(o.get("price_xch") or 0))
-                for o in (open_buys or [])
-                if o.get("price_xch") not in (None, "")
-            ]
+            buy_prices = _price_candidates(open_buys, "buy")
             if buy_prices:
                 best_bid = max(buy_prices)
         except Exception:
             best_bid = Decimal("0")
 
         try:
-            sell_prices = [
-                Decimal(str(o.get("price_xch") or 0))
-                for o in (open_sells or [])
-                if o.get("price_xch") not in (None, "")
-            ]
+            sell_prices = _price_candidates(open_sells, "sell")
             positive_sell_prices = [p for p in sell_prices if p > 0]
             if positive_sell_prices:
                 best_ask = min(positive_sell_prices)
@@ -12024,10 +12068,12 @@ class BotLoop:
 
                 # Fetch current wallet state (2 RPC calls)
                 xch_result = get_spendable_coins_rpc(cfg.WALLET_ID_XCH)
-                xch_records = _extract_coin_records(xch_result) if xch_result else []
-
                 cat_result = get_spendable_coins_rpc(cfg.CAT_WALLET_ID)
-                cat_records = _extract_coin_records(cat_result) if cat_result else []
+                snapshot_reliable = self._is_coin_watcher_snapshot_reliable(
+                    xch_result, cat_result
+                )
+                xch_records = _extract_coin_records(xch_result) if snapshot_reliable else []
+                cat_records = _extract_coin_records(cat_result) if snapshot_reliable else []
 
                 # Build current wallet snapshot
                 wallet_coins = {}
@@ -12063,48 +12109,10 @@ class BotLoop:
                             "source": "db_locked",
                         }
 
-                # First poll — log the baseline so we know our starting point
-                if not self._coin_snapshot:
-                    xch_free = sum(1 for c in current_snapshot.values()
-                                   if c["wallet_type"] == "xch" and c.get("source") == "wallet")
-                    xch_locked = sum(1 for c in current_snapshot.values()
-                                     if c["wallet_type"] == "xch" and c.get("source") == "db_locked")
-                    cat_free = sum(1 for c in current_snapshot.values()
-                                   if c["wallet_type"] == "cat" and c.get("source") == "wallet")
-                    cat_locked = sum(1 for c in current_snapshot.values()
-                                     if c["wallet_type"] == "cat" and c.get("source") == "db_locked")
-                    xch_total_mojos = sum(c["amount"] for c in current_snapshot.values()
-                                          if c["wallet_type"] == "xch")
-                    cat_total_mojos = sum(c["amount"] for c in current_snapshot.values()
-                                          if c["wallet_type"] == "cat")
-                    log_event("info", "coin_watcher_baseline",
-                              f"[CoinWatch] Baseline established: "
-                              f"XCH {xch_free} free + {xch_locked} locked "
-                              f"({xch_total_mojos / 1_000_000_000_000:.4f} XCH) | "
-                              f"CAT {cat_free} free + {cat_locked} locked "
-                              f"({cat_total_mojos} mojos) | "
-                              f"{len(current_snapshot)} coins tracked",
-                              data={"xch_free": xch_free, "xch_locked": xch_locked,
-                                    "xch_total_mojos": xch_total_mojos,
-                                    "cat_free": cat_free, "cat_locked": cat_locked,
-                                    "cat_total_mojos": cat_total_mojos,
-                                    "total_tracked": len(current_snapshot)})
-                    self._coin_snapshot = current_snapshot
-                    continue  # Skip change detection on first poll
-
-                # Compare against previous snapshot
-                changes = self._detect_coin_changes(
-                    self._coin_snapshot, current_snapshot, db_state
+                # Process the snapshot only when the wallet view is complete.
+                self._handle_coin_watcher_snapshot(
+                    current_snapshot, db_state, snapshot_reliable=snapshot_reliable
                 )
-
-                # Log each change with structured data
-                for change in changes:
-                    log_event(change["severity"], change["event_type"],
-                              change["message"],
-                              data=change.get("data"))
-
-                # Update snapshot for next comparison
-                self._coin_snapshot = current_snapshot
 
             except Exception as e:
                 log_event("debug", "coin_watcher_error",
@@ -12117,6 +12125,76 @@ class BotLoop:
                 time.sleep(1)
 
         log_event("info", "coin_watcher_exit", "Coin watcher stopped")
+
+    def _is_coin_watcher_snapshot_reliable(self, xch_result, cat_result) -> bool:
+        """Return True when both wallet coin RPC responses are usable."""
+        if self._wallet_sync_stale_cycle:
+            return False
+
+        for result in (xch_result, cat_result):
+            if not isinstance(result, dict):
+                return False
+            if result.get("error") or result.get("success") is False:
+                return False
+
+        return True
+
+    def _handle_coin_watcher_snapshot(self, current_snapshot: Dict, db_state: Dict,
+                                      *, snapshot_reliable: bool) -> None:
+        """Log coin watcher changes without poisoning the baseline on stale RPC data."""
+        if not snapshot_reliable:
+            self._log_coin_watcher_stale_snapshot_skip()
+            return
+
+        if not self._coin_snapshot:
+            xch_free = sum(1 for c in current_snapshot.values()
+                           if c["wallet_type"] == "xch" and c.get("source") == "wallet")
+            xch_locked = sum(1 for c in current_snapshot.values()
+                             if c["wallet_type"] == "xch" and c.get("source") == "db_locked")
+            cat_free = sum(1 for c in current_snapshot.values()
+                           if c["wallet_type"] == "cat" and c.get("source") == "wallet")
+            cat_locked = sum(1 for c in current_snapshot.values()
+                             if c["wallet_type"] == "cat" and c.get("source") == "db_locked")
+            xch_total_mojos = sum(c["amount"] for c in current_snapshot.values()
+                                  if c["wallet_type"] == "xch")
+            cat_total_mojos = sum(c["amount"] for c in current_snapshot.values()
+                                  if c["wallet_type"] == "cat")
+            log_event("info", "coin_watcher_baseline",
+                      f"[CoinWatch] Baseline established: "
+                      f"XCH {xch_free} free + {xch_locked} locked "
+                      f"({xch_total_mojos / 1_000_000_000_000:.4f} XCH) | "
+                      f"CAT {cat_free} free + {cat_locked} locked "
+                      f"({cat_total_mojos} mojos) | "
+                      f"{len(current_snapshot)} coins tracked",
+                      data={"xch_free": xch_free, "xch_locked": xch_locked,
+                            "xch_total_mojos": xch_total_mojos,
+                            "cat_free": cat_free, "cat_locked": cat_locked,
+                            "cat_total_mojos": cat_total_mojos,
+                            "total_tracked": len(current_snapshot)})
+            self._coin_snapshot = current_snapshot
+            return
+
+        changes = self._detect_coin_changes(
+            self._coin_snapshot, current_snapshot, db_state
+        )
+
+        for change in changes:
+            log_event(change["severity"], change["event_type"],
+                      change["message"],
+                      data=change.get("data"))
+
+        self._coin_snapshot = current_snapshot
+
+    def _log_coin_watcher_stale_snapshot_skip(self) -> None:
+        now = time.time()
+        if now - self._coin_watcher_stale_log_last < 60:
+            return
+
+        self._coin_watcher_stale_log_last = now
+        log_event("info", "coin_watcher_stale_snapshot_skipped",
+                  "[CoinWatch] Skipping coin lifecycle check while wallet "
+                  "coin RPC data is stale or unavailable",
+                  data={"wallet_sync_stale": self._wallet_sync_stale_cycle})
 
     def _detect_coin_changes(self, old_snapshot: Dict, new_snapshot: Dict,
                               db_state: Dict) -> list:
