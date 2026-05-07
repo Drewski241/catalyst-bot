@@ -243,6 +243,60 @@ class TestCoinPrepVerify(_FlaskBase):
         self.assertEqual(body["reason"], "tier_size_drift")
         self.assertEqual(body["tier_size_drift"], self._DRIFT)
 
+    def test_tier_verify_sell_only_cat_pool_does_not_require_xch_pool(self):
+        cat_coins = {
+            "success": True,
+            "records": [
+                {"coin": {"amount": 10_000}},
+                {"coin": {"amount": 10_000}},
+            ],
+        }
+
+        with patch("wallet.get_spendable_coins_rpc",
+                   side_effect=[self._EMPTY_COINS, cat_coins]), \
+             patch("wallet.get_wallet_balance", return_value=self._ENOUGH_BALANCE), \
+             patch("wallet.WALLET_ID_XCH", 1), \
+             patch("coin_manager.check_tier_size_drift_standalone",
+                   return_value=[]), \
+             patch.object(coin_prep_blueprint.cfg, "TIER_ENABLED", True):
+            resp = self.client.get(
+                "/api/coin-prep/verify?tier_enabled=true&liquidity_mode=sell_only"
+                "&inner_cat=10&inner_count=2",
+                environ_base=self._LOOPBACK,
+            )
+
+        body = resp.get_json()
+        self.assertTrue(body["all_sufficient"])
+        self.assertEqual(body["tiers"]["inner"]["xch_have"], 0)
+        self.assertEqual(body["tiers"]["inner"]["cat_have"], 2)
+
+    def test_tier_verify_sell_only_still_requires_fee_xch_pool(self):
+        cat_coins = {
+            "success": True,
+            "records": [
+                {"coin": {"amount": 10_000}},
+            ],
+        }
+
+        with patch("wallet.get_spendable_coins_rpc",
+                   side_effect=[self._EMPTY_COINS, cat_coins]), \
+             patch("wallet.get_wallet_balance", return_value=self._ENOUGH_BALANCE), \
+             patch("wallet.WALLET_ID_XCH", 1), \
+             patch("coin_manager.check_tier_size_drift_standalone",
+                   return_value=[]), \
+             patch.object(coin_prep_blueprint.cfg, "TIER_ENABLED", True):
+            resp = self.client.get(
+                "/api/coin-prep/verify?tier_enabled=true&liquidity_mode=sell_only"
+                "&inner_cat=10&inner_count=1&fees_xch=0.0005&fees_count=1",
+                environ_base=self._LOOPBACK,
+            )
+
+        body = resp.get_json()
+        self.assertFalse(body["all_sufficient"])
+        self.assertFalse(body["tiers"]["fees"]["sufficient"])
+        self.assertEqual(body["tiers"]["fees"]["xch_have"], 0)
+        self.assertGreater(body["xch_needed_mojos"], 0)
+
 
 # ---------------------------------------------------------------------------
 # 3. POST /api/coin-prep/trigger

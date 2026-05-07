@@ -264,6 +264,37 @@ class TestConfigLive(_FlaskBase):
                                    {"key": "SPREAD_BPS", "value": "300"})
         self.assertIn(resp.status_code, (200, 500))  # bot=None may return error but not 4xx
 
+    def test_live_liquidity_mode_change_blocked_while_running(self):
+        fake_cfg = MagicMock()
+        fake_cfg.update.return_value = True
+        fake_bot = MagicMock()
+        fake_bot.is_running.return_value = True
+        fake_bot.get_state.return_value = {"status": "running"}
+
+        with patch.object(api_server, "cfg", fake_cfg), \
+             patch.object(api_server, "bot", fake_bot):
+            resp = self._post_json(
+                "/api/config/live",
+                {"key": "LIQUIDITY_MODE", "value": "sell_only"},
+            )
+
+        self.assertEqual(resp.status_code, 409)
+        fake_cfg.update.assert_not_called()
+
+    def test_live_liquidity_mode_rejects_unknown_mode(self):
+        fake_cfg = MagicMock()
+        fake_cfg.update.return_value = True
+
+        with patch.object(api_server, "cfg", fake_cfg), \
+             patch.object(api_server, "bot", None):
+            resp = self._post_json(
+                "/api/config/live",
+                {"key": "LIQUIDITY_MODE", "value": "sideways"},
+            )
+
+        self.assertEqual(resp.status_code, 400)
+        fake_cfg.update.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

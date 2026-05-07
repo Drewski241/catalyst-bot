@@ -275,6 +275,21 @@ class TestSmartDefaultsSourceContract(unittest.TestCase):
         self.assertIn("selectedCAT.decimals ?? 3", smart_block)
         self.assertIn("currentCAT = { ...selectedCAT }", smart_block)
 
+    def test_single_sided_smart_defaults_disable_inventory_management(self):
+        root = Path(__file__).resolve().parents[1]
+        src = (root / "src" / "catalyst" / "blueprints" / "smart_defaults.py").read_text(
+            encoding="utf-8"
+        )
+        buy_block = src.split('if liquidity_mode == "buy_only":', 1)[1].split(
+            'elif liquidity_mode == "sell_only":', 1
+        )[0]
+        sell_block = src.split('elif liquidity_mode == "sell_only":', 1)[1].split(
+            "# ── UNIVERSAL MAX_POSITION_XCH", 1
+        )[0]
+
+        self.assertIn('result["inventory_enabled"] = False', buy_block)
+        self.assertIn('result["inventory_enabled"] = False', sell_block)
+
     def test_frontend_smart_settings_watches_safety_fields(self):
         root = Path(__file__).resolve().parents[1]
         html = (root / "bot_gui.html").read_text(encoding="utf-8")

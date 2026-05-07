@@ -839,7 +839,7 @@
             color: var(--danger-200);
             font-size: 12px;
             font-weight: 700;
-            letter-spacing: 0.02em;
+            letter-spacing: 0;
             cursor: pointer;
             transition: all var(--transition-fast);
             margin-right: 8px;
@@ -2741,11 +2741,64 @@
             cursor: not-allowed !important;
             pointer-events: none;
         }
-        /* Hide side-specific sections when the matching mode flag is set on the body */
-        body.liquidity-mode-buy-only .mode-hide-on-buy-only,
-        body.liquidity-mode-sell-only .mode-hide-on-sell-only,
+        /* Single-sided mode keeps inactive/two-sided-only sections visible,
+           but clearly parked so users understand why they are not active. */
         body.liquidity-mode-two-sided .mode-hide-on-two-sided {
             display: none !important;
+        }
+        body.liquidity-mode-buy-only .mode-hide-on-buy-only,
+        body.liquidity-mode-sell-only .mode-hide-on-sell-only {
+            position: relative;
+            opacity: 0.58;
+            filter: grayscale(0.18);
+        }
+        body.liquidity-mode-buy-only .mode-hide-on-buy-only::after,
+        body.liquidity-mode-sell-only .mode-hide-on-sell-only::after {
+            content: "Two-sided only";
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            z-index: 2;
+            padding: 2px 8px;
+            border-radius: 999px;
+            border: 1px solid rgba(251,191,36,0.45);
+            background: rgba(251,191,36,0.10);
+            color: var(--warning-300);
+            font-size: 0.68rem;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+            pointer-events: none;
+        }
+        body.liquidity-mode-buy-only .mode-hide-on-buy-only :is(input, select, textarea, button),
+        body.liquidity-mode-sell-only .mode-hide-on-sell-only :is(input, select, textarea, button) {
+            pointer-events: none;
+        }
+        .one-sided-mode-banner {
+            display: none;
+            margin-bottom: var(--space-3);
+            padding: 10px 14px;
+            border-radius: 8px;
+            border: 1px solid rgba(251,191,36,0.30);
+            background: rgba(251,191,36,0.08);
+            color: var(--text-secondary);
+            font-size: var(--text-sm);
+            line-height: 1.5;
+        }
+        .two-sided-only-badge {
+            display: none;
+            padding: 2px 8px;
+            border-radius: 999px;
+            border: 1px solid rgba(251,191,36,0.45);
+            background: rgba(251,191,36,0.10);
+            color: var(--warning-300);
+            font-size: var(--text-xs);
+            font-weight: 700;
+        }
+        .one-sided-parked-side {
+            opacity: 0.58;
+        }
+        .one-sided-parked-side .two-sided-only-badge {
+            display: inline-flex;
         }
         /* Banners that should only appear in a SINGLE-sided mode — hidden
            by default inline styles; we clear the display when the body is
@@ -9482,6 +9535,7 @@
 
         <!-- Offers Card -->
         <div class="card" style="margin-bottom: var(--space-5);">
+            <div id="offersModeBanner" class="one-sided-mode-banner"></div>
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-3);">
                 <div class="offers-tabs">
                     <button class="offers-tab active" onclick="switchOffersTab('active')">
@@ -9511,11 +9565,12 @@
                     <div style="font-size: 0.85em;">Start the bot to begin market making, or wait for the next loop cycle.</div>
                 </div>
                 <!-- Buy Offers -->
-                <div class="offers-section">
+                <div class="offers-section" id="buyOffersSection">
                     <div class="offers-header" style="border-left: 3px solid var(--status-success);">
                         <div class="offers-title">
                             <span style="color: var(--status-success);">BUY Offers</span>
                             <span class="offers-count" id="buyCount">(0)</span>
+                            <span class="two-sided-only-badge" id="buyOffersModeBadge">Two-sided only</span>
                         </div>
                         <div class="offers-controls">
                             <button class="btn-small" onclick="toggleOfferSort('buy')" id="buySortBtn">↕ Newest</button>
@@ -9529,11 +9584,12 @@
                 </div>
 
                 <!-- Sell Offers -->
-                <div class="offers-section" style="margin-top: 15px;">
+                <div class="offers-section" id="sellOffersSection" style="margin-top: 15px;">
                     <div class="offers-header" style="border-left: 3px solid var(--status-danger);">
                         <div class="offers-title">
                             <span style="color: var(--status-danger);">SELL Offers</span>
                             <span class="offers-count" id="sellCount">(0)</span>
+                            <span class="two-sided-only-badge" id="sellOffersModeBadge">Two-sided only</span>
                         </div>
                         <div class="offers-controls">
                             <button class="btn-small" onclick="toggleOfferSort('sell')" id="sellSortBtn">↕ Newest</button>
@@ -9592,12 +9648,12 @@
 
                 <!-- Time-Period Hero Cards -->
                 <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-3); margin-bottom: var(--space-5);">
-                    <div class="v4-hero-card">
+                    <div class="v4-hero-card mode-hide-on-buy-only mode-hide-on-sell-only" id="pnlRoundTripsCard">
                         <div class="v4-hero-label">Session <span class="cc-help">?<span class="cc-tooltip">Realised XCH profit/loss from completed round-trip trades this session.</span></span></div>
                         <div class="v4-hero-value" id="pnlRealised" style="font-size: var(--text-xl);">0.000</div>
                         <div class="v4-hero-sub" id="pnlRealisedSub" style="color: var(--status-success);">XCH realised</div>
                     </div>
-                    <div class="v4-hero-card">
+                    <div class="v4-hero-card mode-hide-on-buy-only mode-hide-on-sell-only" id="pnlAvgRoundTripCard">
                         <div class="v4-hero-label">Round Trips <span class="cc-help">?<span class="cc-tooltip">Completed buy-then-sell or sell-then-buy pairs. Win rate = % that were profitable.</span></span></div>
                         <div class="v4-hero-value" id="pnlRoundTrips">0</div>
                         <div class="v4-hero-sub" id="pnlWinRate">0% win rate</div>
@@ -9684,7 +9740,7 @@
                 </div>
 
                 <!-- Cumulative PnL Chart Area -->
-                <div style="background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: var(--space-4); margin-bottom: var(--space-5);">
+                <div class="mode-hide-on-buy-only mode-hide-on-sell-only" id="pnlCumulativeChartPanel" style="background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: var(--space-4); margin-bottom: var(--space-5);">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-3);">
                         <span style="font-size: var(--text-sm); font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.8px;">Cumulative PnL <span class="cc-help">?<span class="cc-tooltip">Running total of all realised PnL this session, shown as a bar chart. Updates after each round-trip match.</span></span></span>
                         <span id="v4PnlChartStatus" style="font-size: var(--text-xs); color: var(--text-tertiary);">Collecting data...</span>
@@ -9739,11 +9795,11 @@
                     <div style="background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: var(--space-4);">
                         <div style="font-size: var(--text-sm); font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: var(--space-3);">Current Spreads <span class="cc-help">?<span class="cc-tooltip">Spreads your bot is using right now. Affected by dynamic pricing, volatility, inventory, and market conditions.</span></span></div>
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3);">
-                            <div>
+                            <div id="pnlBuySpreadPanel">
                                 <div style="color: var(--text-tertiary); font-size: var(--text-xs); margin-bottom: 2px;">Buy Spread <span class="cc-help">?<span class="cc-tooltip">Spread % on buy side. Wider = less aggressive buying, tighter = buying closer to mid-price.</span></span></div>
                                 <div id="spreadBuy" style="font-size: var(--text-lg); font-weight: 700; font-family: var(--font-mono); color: var(--status-success);">—</div>
                             </div>
-                            <div>
+                            <div id="pnlSellSpreadPanel">
                                 <div style="color: var(--text-tertiary); font-size: var(--text-xs); margin-bottom: 2px;">Sell Spread <span class="cc-help">?<span class="cc-tooltip">Spread % on sell side. Wider = less aggressive selling, tighter = selling closer to mid-price.</span></span></div>
                                 <div id="spreadSell" style="font-size: var(--text-lg); font-weight: 700; font-family: var(--font-mono); color: var(--status-danger);">—</div>
                             </div>
@@ -9754,7 +9810,7 @@
                     </div>
 
                     <!-- Sniper Stats -->
-                    <div style="background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: var(--space-4);">
+                    <div class="mode-hide-on-buy-only mode-hide-on-sell-only" id="pnlSniperStatsPanel" style="background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: var(--space-4);">
                         <div style="font-size: var(--text-sm); font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: var(--space-3);">Sniper Stats <span class="cc-help">?<span class="cc-tooltip">All sniper probe activity — automatic arb snipes plus manual Close the Gap probes. Both use the sniper pool to probe price levels.</span></span></div>
                         <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--space-2); margin-bottom: var(--space-3);">
                             <div>
@@ -9864,17 +9920,18 @@
 
             <!-- Market Intelligence Content (moved from tab) -->
             <div id="intelTab" class="tab-content active" style="display: block;">
+                <div id="intelModeBanner" class="one-sided-mode-banner"></div>
                 <!-- Competitor Analysis -->
                 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px;">
                     <div style="background: rgba(139,92,246,0.1); border: 1px solid rgba(139,92,246,0.3); border-radius: 8px; padding: 12px; text-align: center;">
                         <div style="color: rgba(255,255,255,0.5); font-size: 11px; margin-bottom: 4px;">Competitor Spread <span class="cc-help">?<span class="cc-tooltip">Tightest spread from other market makers on Dexie for this pair. Lower = more competition.</span></span></div>
                         <div id="intelCompSpread" style="color: var(--accent-secondary); font-size: 18px; font-weight: 700;">—</div>
                     </div>
-                    <div style="background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.3); border-radius: 8px; padding: 12px; text-align: center;">
+                    <div id="intelBidPanel" style="background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.3); border-radius: 8px; padding: 12px; text-align: center;">
                         <div style="color: rgba(255,255,255,0.5); font-size: 11px; margin-bottom: 4px;">Best Live Bid <span class="cc-help">?<span class="cc-tooltip">Highest live buy price we can currently see across the Dexie book plus this bot's active offers.</span></span></div>
                         <div id="intelBestBid" style="color: var(--status-success); font-size: 18px; font-weight: 700;">—</div>
                     </div>
-                    <div style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; padding: 12px; text-align: center;">
+                    <div id="intelAskPanel" style="background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; padding: 12px; text-align: center;">
                         <div style="color: rgba(255,255,255,0.5); font-size: 11px; margin-bottom: 4px;">Best Live Ask <span class="cc-help">?<span class="cc-tooltip">Lowest live sell price we can currently see across the Dexie book plus this bot's active offers.</span></span></div>
                         <div id="intelBestAsk" style="color: var(--text-primary); font-size: 18px; font-weight: 700;">—</div>
                     </div>
@@ -9911,12 +9968,12 @@
                 <div style="background: var(--bg-surface); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 16px; margin-bottom: 16px;">
                     <div style="font-weight: 600; margin-bottom: 12px; color: rgba(255,255,255,0.8);">📊 Orderbook Depth <span class="cc-help">?<span class="cc-tooltip">Total XCH value of all buy and sell offers on Dexie. Deeper books mean more liquidity and less price impact per trade.</span></span></div>
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-                        <div>
+                        <div id="intelBuyDepthPanel">
                             <div style="color: rgba(255,255,255,0.5); font-size: 11px;">Buy Depth <span class="cc-help">?<span class="cc-tooltip">Total XCH sitting in buy offers. Higher = stronger buying support.</span></span></div>
                             <div id="intelBuyDepth" style="font-size: 16px; font-weight: 600; color: var(--status-success);">0.00 XCH</div>
                             <div style="color: rgba(255,255,255,0.4); font-size: 11px;"><span id="intelBuyCount">0</span> offers</div>
                         </div>
-                        <div>
+                        <div id="intelSellDepthPanel">
                             <div style="color: rgba(255,255,255,0.5); font-size: 11px;">Sell Depth <span class="cc-help">?<span class="cc-tooltip">Total XCH value of sell offers. Higher = more tokens available to buy.</span></span></div>
                             <div id="intelSellDepth" style="font-size: 16px; font-weight: 600; color: var(--status-danger);">0.00 XCH</div>
                             <div style="color: rgba(255,255,255,0.4); font-size: 11px;"><span id="intelSellCount">0</span> offers</div>
@@ -11172,10 +11229,11 @@
                 
                 <div class="coin-prep-confirm-summary">
                 <div class="coin-prep-side-grid">
-                    <div class="coin-prep-side coin-prep-side--buy">
+                    <div class="coin-prep-side coin-prep-side--buy" id="cpConfirmBuySide">
                         <div class="coin-prep-side-title" style="color:var(--status-success);">
                             <span>Buy Side</span>
                             <small>XCH liquidity</small>
+                            <span class="two-sided-only-badge">Two-sided only</span>
                         </div>
                         <div class="coin-prep-side-metrics">
                             <div class="coin-prep-side-label">Coins</div>
@@ -11187,10 +11245,11 @@
                         </div>
                     </div>
 
-                    <div class="coin-prep-side coin-prep-side--sell">
+                    <div class="coin-prep-side coin-prep-side--sell" id="cpConfirmSellSide">
                         <div class="coin-prep-side-title" style="color:var(--sell-color);">
                             <span>Sell Side</span>
                             <small><span id="cpConfirmCatName">Tokens</span> inventory</small>
+                            <span class="two-sided-only-badge">Two-sided only</span>
                         </div>
                         <div class="coin-prep-side-metrics">
                             <div class="coin-prep-side-label">Coins</div>
@@ -13658,8 +13717,17 @@
             const sellTotal = (sellOffers || []).reduce((s, o) => s + parseFloat(o.size_xch || 0), 0);
             const buyTotalEl = document.getElementById('v4ObBuyTotal');
             const sellTotalEl = document.getElementById('v4ObSellTotal');
-            if (buyTotalEl)  buyTotalEl.textContent  = 'Buy: '  + (buyOffers || []).length  + ' offers, ' + buyTotal.toFixed(2)  + ' XCH';
-            if (sellTotalEl) sellTotalEl.textContent = 'Sell: ' + (sellOffers || []).length + ' offers, ' + sellTotal.toFixed(2) + ' XCH';
+            const modeState = getLiquidityModeState();
+            if (buyTotalEl) {
+                buyTotalEl.textContent = modeState.buyActive
+                    ? 'Buy: ' + (buyOffers || []).length + ' offers, ' + buyTotal.toFixed(2) + ' XCH'
+                    : 'Buy: two-sided only';
+            }
+            if (sellTotalEl) {
+                sellTotalEl.textContent = modeState.sellActive
+                    ? 'Sell: ' + (sellOffers || []).length + ' offers, ' + sellTotal.toFixed(2) + ' XCH'
+                    : 'Sell: two-sided only';
+            }
         }
 
         // Canvas depth chart: two-sided step chart with price on X axis and
@@ -14166,7 +14234,11 @@
                 heroOffers.textContent = totalOffers;
             }
             const heroSplit = document.getElementById('heroOffersSplit');
-            if (heroSplit) { heroSplit.textContent = buyCount + ' buy / ' + sellCount + ' sell'; heroSplit.classList.remove('data-pending'); }
+            if (heroSplit) {
+                heroSplit.textContent = formatSideSplitForLiquidityMode(
+                    buyCount, sellCount, data.liquidity && data.liquidity.mode);
+                heroSplit.classList.remove('data-pending');
+            }
             if (heroOffers) heroOffers.classList.remove('data-pending');
             const cancelAllCountEl = document.getElementById('cancelAllCount');
             if (cancelAllCountEl) cancelAllCountEl.textContent = totalOffers;
@@ -14253,7 +14325,13 @@
             const thresholds = rq.thresholds || {};
             const inner = Number(thresholds.inner_bps || 30);
             const mid = Number(thresholds.mid_bps || 80);
+            const modeState = getLiquidityModeState((data.liquidity && data.liquidity.mode) || getLiquidityMode());
             const renderSide = (side, valueId, subId) => {
+                if ((side === 'buy' && !modeState.buyActive) || (side === 'sell' && !modeState.sellActive)) {
+                    _diagText(valueId, 'Two-sided only');
+                    _diagText(subId, `${side} side parked by ${modeState.label}`);
+                    return;
+                }
                 const s = sides[side] || {};
                 const move = Number(s.move_bps || 0);
                 _diagText(valueId, _fmtDiagBps(move));
@@ -18738,7 +18816,12 @@
                 // tier (thin-balance tokens like GYATT). Null-guard each
                 // .toFixed() call so the whole apply block doesn't throw
                 // and leave the form half-populated.
-                if (data.inner_size_xch > 0) {
+                const _hasAnyTierSize = [
+                    data.inner_size_xch, data.mid_size_xch, data.outer_size_xch, data.extreme_size_xch,
+                    data.buy_inner_size_xch, data.buy_mid_size_xch, data.buy_outer_size_xch, data.buy_extreme_size_xch,
+                    data.sell_inner_size_xch, data.sell_mid_size_xch, data.sell_outer_size_xch, data.sell_extreme_size_xch,
+                ].some(v => typeof v === 'number' && isFinite(v) && v > 0);
+                if (_hasAnyTierSize) {
                     document.getElementById('configTierEnabled').checked = true;
                     const _tierVal = (v) => (typeof v === 'number' && isFinite(v) && v > 0) ? v.toFixed(4) : '';
                     // F62 (2026-04-09): populate BOTH visible size rows.
@@ -18749,14 +18832,14 @@
                     // values — buy is smaller at position inner, larger at
                     // position extreme. Under normal orientation both rows
                     // match.
-                    const _sellInner = data.sell_inner_size_xch   || data.inner_size_xch;
-                    const _sellMid   = data.sell_mid_size_xch     || data.mid_size_xch;
-                    const _sellOuter = data.sell_outer_size_xch   || data.outer_size_xch;
-                    const _sellExt   = data.sell_extreme_size_xch || data.extreme_size_xch;
-                    const _buyInner  = data.buy_inner_size_xch    || data.inner_size_xch;
-                    const _buyMid    = data.buy_mid_size_xch      || data.mid_size_xch;
-                    const _buyOuter  = data.buy_outer_size_xch    || data.outer_size_xch;
-                    const _buyExt    = data.buy_extreme_size_xch  || data.extreme_size_xch;
+                    const _sellInner = data.sell_inner_size_xch   ?? data.inner_size_xch;
+                    const _sellMid   = data.sell_mid_size_xch     ?? data.mid_size_xch;
+                    const _sellOuter = data.sell_outer_size_xch   ?? data.outer_size_xch;
+                    const _sellExt   = data.sell_extreme_size_xch ?? data.extreme_size_xch;
+                    const _buyInner  = data.buy_inner_size_xch    ?? data.inner_size_xch;
+                    const _buyMid    = data.buy_mid_size_xch      ?? data.mid_size_xch;
+                    const _buyOuter  = data.buy_outer_size_xch    ?? data.outer_size_xch;
+                    const _buyExt    = data.buy_extreme_size_xch  ?? data.extreme_size_xch;
                     // Sell row (legacy IDs)
                     document.getElementById('configInnerSizeXch').value   = _tierVal(_sellInner);
                     document.getElementById('configMidSizeXch').value     = _tierVal(_sellMid);
@@ -18808,8 +18891,8 @@
                     };
                 }
                 // Offer counts from capital sizing
-                if (data.max_active_buy > 0) document.getElementById('configMaxBuy').value = data.max_active_buy;
-                if (data.max_active_sell > 0) document.getElementById('configMaxSell').value = data.max_active_sell;
+                if (data.max_active_buy !== undefined) document.getElementById('configMaxBuy').value = data.max_active_buy || '';
+                if (data.max_active_sell !== undefined) document.getElementById('configMaxSell').value = data.max_active_sell || '';
                 // Per-tier counts (market-adaptive distribution).
                 // Sell row first — Smart Settings sizes by SIZE column, which
                 // matches the sell ladder directly (no reversal).
@@ -20233,10 +20316,14 @@
         }
 
         function getEffectiveOfferLimitsFromInputs() {
-            return {
+            const mode = normalizeLiquidityMode(typeof getLiquidityMode === 'function' ? getLiquidityMode() : 'two_sided');
+            const limits = {
                 maxBuy: parseInt(document.getElementById('configMaxBuy')?.value) || 0,
                 maxSell: parseInt(document.getElementById('configMaxSell')?.value) || 0
             };
+            if (mode === 'buy_only') limits.maxSell = 0;
+            if (mode === 'sell_only') limits.maxBuy = 0;
+            return limits;
         }
 
         function updateTierCountHint() {
@@ -20321,6 +20408,7 @@
         }
 
         function buildCoinPrepPlan({
+            liquidityMode,
             tradeSize,
             maxBuy,
             maxSell,
@@ -20363,6 +20451,11 @@
             feeCoinSize,
             feeCount
         }) {
+            const modeState = getLiquidityModeState(liquidityMode);
+            const buySideActive = modeState.buyActive;
+            const sellSideActive = modeState.sellActive;
+            if (!buySideActive) maxBuy = 0;
+            if (!sellSideActive) maxSell = 0;
             const prepMult = getCoinPrepHeadroomMultiplier(headroomPct);
             const plan = {
                 tierEnabled,
@@ -20429,16 +20522,20 @@
                     inner: tierSpareInnerXch, mid: tierSpareMidXch,
                     outer: tierSpareOuterXch, extreme: tierSpareExtremeXch
                 };
-                const buyDist = getCoinPrepTierDistribution(maxBuy, configuredTierCountsBuy);
-                const sellDist = getCoinPrepTierDistribution(maxSell, configuredTierCountsSell);
-                const buyWeightedCounts = getCoinPrepPreparedTierCounts(
+                const buyDist = buySideActive
+                    ? getCoinPrepTierDistribution(maxBuy, configuredTierCountsBuy)
+                    : { inner: 0, mid: 0, outer: 0, extreme: 0 };
+                const sellDist = sellSideActive
+                    ? getCoinPrepTierDistribution(maxSell, configuredTierCountsSell)
+                    : { inner: 0, mid: 0, outer: 0, extreme: 0 };
+                const buyWeightedCounts = buySideActive ? getCoinPrepPreparedTierCounts(
                     maxBuy, coinPrepMultiplier, plan.offerTierSizesXch,
                     configuredTierCountsBuy, configuredTierSparesBuy
-                );
-                const sellWeightedCounts = getCoinPrepPreparedTierCounts(
+                ) : { inner: 0, mid: 0, outer: 0, extreme: 0 };
+                const sellWeightedCounts = sellSideActive ? getCoinPrepPreparedTierCounts(
                     maxSell, coinPrepMultiplier, plan.offerTierSizesXch,
                     configuredTierCountsSell, configuredTierSparesSell
-                );
+                ) : { inner: 0, mid: 0, outer: 0, extreme: 0 };
 
                 // The XCH inputs (and buyWeightedCounts) are SLOT-position
                 // indexed: BUY_INNER_TIER_COUNT = "offers at slot inner".
@@ -20507,7 +20604,7 @@
 
                 const parsedSniperSize = parseFloat(sniperSize) || 0;
                 const parsedSniperCount = parseInt(sniperCount) || 0;
-                if (sniperEnabled && parsedSniperSize > 0 && parsedSniperCount > 0) {
+                if (buySideActive && sellSideActive && sniperEnabled && parsedSniperSize > 0 && parsedSniperCount > 0) {
                     plan.tierSequence.push('sniper');
                     plan.offerTierSizesXch.sniper = parsedSniperSize;
                     plan.preparedTierSizesXch.sniper = parsedSniperSize * prepMult;
@@ -20589,7 +20686,8 @@
                     _topupBufferXch = Math.max(0,
                         _smartXchBal - _reserveForTopup - plan.totalXchForCoinPrep - _safetyMarginXch);
                 }
-                const _topupBufferCat = Number(window._topupBufferCat || 0);
+                if (!buySideActive) _topupBufferXch = 0;
+                const _topupBufferCat = sellSideActive ? Number(window._topupBufferCat || 0) : 0;
                 if (_topupBufferXch > 0 || _topupBufferCat > 0) {
                     plan.tierSequence.push('topup');
                     plan.offerTierSizesXch.topup = _topupBufferXch;
@@ -20638,8 +20736,8 @@
                     }
                 }
             } else {
-                plan.xchCoinsNeeded = maxBuy + maxSell;
-                plan.catCoinsNeeded = maxBuy + maxSell;
+                plan.xchCoinsNeeded = buySideActive ? (maxBuy + (sellSideActive ? maxSell : 0)) : 0;
+                plan.catCoinsNeeded = sellSideActive ? (maxSell + (buySideActive ? maxBuy : 0)) : 0;
                 plan.totalXchForCoinPrep = plan.preparedXchSize * plan.xchCoinsNeeded;
                 plan.totalCatForCoinPrep = plan.preparedCatPerCoin * plan.catCoinsNeeded;
                 plan.minXchForOffers = plan.preparedXchSize * maxBuy;
@@ -20773,6 +20871,7 @@
             } catch (_) { /* non-fatal */ }
             // Smart Settings expects to know the mode on its next run.
             window._liquidityMode = resolved;
+            try { applyOneSidedUiState(resolved); } catch (_) {}
             if (!silent) {
                 try { scheduleSettingsUpdate(); } catch (_) {}
                 // Re-evaluate the wallet-aware suggestion after a mode change
@@ -20922,6 +21021,159 @@
             }
         }
 
+        function normalizeLiquidityMode(mode) {
+            return ['two_sided', 'buy_only', 'sell_only'].includes(mode) ? mode : 'two_sided';
+        }
+
+        function getLiquidityModeState(mode) {
+            const resolved = normalizeLiquidityMode(mode || getLiquidityMode());
+            const buyActive = resolved !== 'sell_only';
+            const sellActive = resolved !== 'buy_only';
+            return {
+                mode: resolved,
+                isSingleSided: resolved !== 'two_sided',
+                buyActive,
+                sellActive,
+                inactiveSide: !buyActive ? 'buy' : (!sellActive ? 'sell' : null),
+                activeSide: resolved === 'buy_only' ? 'buy' : (resolved === 'sell_only' ? 'sell' : 'both'),
+                label: resolved === 'buy_only'
+                    ? 'Buy Only (Accumulate)'
+                    : (resolved === 'sell_only' ? 'Sell Only (Distribute)' : 'Two-Sided'),
+                banner: resolved === 'buy_only'
+                    ? 'Accumulation mode: buy-side liquidity is active. Sell-side panels are visible for two-sided context only and will not deploy.'
+                    : (resolved === 'sell_only'
+                        ? 'Distribution mode: sell-side liquidity is active. Buy-side panels are visible for two-sided context only and will not deploy.'
+                        : ''),
+            };
+        }
+
+        function setParkedSide(el, parked) {
+            if (!el) return;
+            el.classList.toggle('one-sided-parked-side', !!parked);
+            el.setAttribute('aria-disabled', parked ? 'true' : 'false');
+        }
+
+        function setModeBannerText(id, state, suffix = '') {
+            const el = document.getElementById(id);
+            if (!el) return;
+            if (!state.isSingleSided) {
+                el.style.display = 'none';
+                el.textContent = '';
+                return;
+            }
+            el.style.display = 'block';
+            el.textContent = suffix ? `${state.banner} ${suffix}` : state.banner;
+        }
+
+        function applyOneSidedUiState(modeOrLiquidity) {
+            const mode = typeof modeOrLiquidity === 'string'
+                ? modeOrLiquidity
+                : (modeOrLiquidity && modeOrLiquidity.mode) || getLiquidityMode();
+            const state = getLiquidityModeState(mode);
+
+            setModeBannerText('offersModeBanner', state,
+                'Inactive-side offers should be treated as stale cleanup items, not a ladder target.');
+            setParkedSide(document.getElementById('buyOffersSection'), !state.buyActive);
+            setParkedSide(document.getElementById('sellOffersSection'), !state.sellActive);
+
+            setParkedSide(document.getElementById('pnlBuySpreadPanel'), !state.buyActive);
+            setParkedSide(document.getElementById('pnlSellSpreadPanel'), !state.sellActive);
+
+            setModeBannerText('intelModeBanner', state,
+                'External market data remains two-sided; only this bot participation is one-sided.');
+            setParkedSide(document.getElementById('intelBidPanel'), !state.buyActive);
+            setParkedSide(document.getElementById('intelBuyDepthPanel'), !state.buyActive);
+            setParkedSide(document.getElementById('intelDbxBuySide'), !state.buyActive);
+            setParkedSide(document.getElementById('intelAskPanel'), !state.sellActive);
+            setParkedSide(document.getElementById('intelSellDepthPanel'), !state.sellActive);
+            setParkedSide(document.getElementById('intelDbxSellSide'), !state.sellActive);
+            setParkedSide(document.getElementById('cpConfirmBuySide'), !state.buyActive);
+            setParkedSide(document.getElementById('cpConfirmSellSide'), !state.sellActive);
+
+            document.querySelectorAll('.mode-hide-on-buy-only, .mode-hide-on-sell-only').forEach((section) => {
+                const parked = (section.classList.contains('mode-hide-on-buy-only') && state.mode === 'buy_only')
+                    || (section.classList.contains('mode-hide-on-sell-only') && state.mode === 'sell_only');
+                section.setAttribute('aria-disabled', parked ? 'true' : 'false');
+            });
+
+            return state;
+        }
+
+        function getOfferEmptyStateMessage(side) {
+            const state = getLiquidityModeState();
+            if ((side === 'buy' && !state.buyActive) || (side === 'sell' && !state.sellActive)) {
+                const sideLabel = side === 'buy' ? 'buy' : 'sell';
+                return `No ${sideLabel} offers on the book. This side is two-sided only in ${state.label} mode and will stay parked unless you switch back to Two-Sided.`;
+            }
+            if (side === 'buy') {
+                return 'No buy offers on the book yet. The active buy ladder will create them once it has a fresh mid price and prepared XCH coins.';
+            }
+            return 'No sell offers on the book yet. The active sell ladder will create them once it has a fresh mid price and prepared token coins.';
+        }
+
+        function formatSideSplitForLiquidityMode(buyCount, sellCount, mode) {
+            const state = getLiquidityModeState(mode);
+            const buyText = state.buyActive ? `${buyCount} buy` : 'buy two-sided-only';
+            const sellText = state.sellActive ? `${sellCount} sell` : 'sell two-sided-only';
+            return `${buyText} / ${sellText}`;
+        }
+
+        function normalizeConfigForLiquidityMode(config) {
+            const mode = normalizeLiquidityMode(config?.liquidity_mode || getLiquidityMode());
+            const normalized = config || {};
+            normalized.liquidity_mode = mode;
+            if (mode === 'buy_only') {
+                normalized.max_active_sell = 0;
+                normalized.sell_inner_size_xch = 0;
+                normalized.sell_mid_size_xch = 0;
+                normalized.sell_outer_size_xch = 0;
+                normalized.sell_extreme_size_xch = 0;
+                normalized.inner_size_xch = 0;
+                normalized.mid_size_xch = 0;
+                normalized.outer_size_xch = 0;
+                normalized.extreme_size_xch = 0;
+                normalized.sell_inner_tier_count = 0;
+                normalized.sell_mid_tier_count = 0;
+                normalized.sell_outer_tier_count = 0;
+                normalized.sell_extreme_tier_count = 0;
+                normalized.inner_tier_count = 0;
+                normalized.mid_tier_count = 0;
+                normalized.outer_tier_count = 0;
+                normalized.extreme_tier_count = 0;
+                normalized.sell_inner_tier_spare_count = 0;
+                normalized.sell_mid_tier_spare_count = 0;
+                normalized.sell_outer_tier_spare_count = 0;
+                normalized.sell_extreme_tier_spare_count = 0;
+                normalized.inner_tier_spare_count = 0;
+                normalized.mid_tier_spare_count = 0;
+                normalized.outer_tier_spare_count = 0;
+                normalized.extreme_tier_spare_count = 0;
+                normalized.topup_pool_cat = 0;
+            } else if (mode === 'sell_only') {
+                normalized.max_active_buy = 0;
+                normalized.buy_inner_size_xch = 0;
+                normalized.buy_mid_size_xch = 0;
+                normalized.buy_outer_size_xch = 0;
+                normalized.buy_extreme_size_xch = 0;
+                normalized.buy_inner_tier_count = 0;
+                normalized.buy_mid_tier_count = 0;
+                normalized.buy_outer_tier_count = 0;
+                normalized.buy_extreme_tier_count = 0;
+                normalized.buy_inner_tier_spare_count = 0;
+                normalized.buy_mid_tier_spare_count = 0;
+                normalized.buy_outer_tier_spare_count = 0;
+                normalized.buy_extreme_tier_spare_count = 0;
+                normalized.buy_ladder_reversed = false;
+                normalized.topup_pool_xch = 0;
+            }
+            if (mode !== 'two_sided') {
+                normalized.inventory_enabled = false;
+                normalized.sniper_enabled = false;
+                normalized.sniper_prep_count = 0;
+            }
+            return normalized;
+        }
+
         function updateCoinPrepPreview() {
             const settingsCAT = getSettingsSelectedCAT();
             syncSettingsPairLabels(settingsCAT);
@@ -21011,6 +21263,7 @@
             } : (window._smartSellSizes && window._smartSellSizes.inner > 0
                 ? { ...window._smartSellSizes } : null);
             const plan = buildCoinPrepPlan({
+                liquidityMode: getLiquidityMode(),
                 tradeSize,
                 maxBuy,
                 maxSell,
@@ -21238,6 +21491,9 @@
             const effectiveOffers = getEffectiveOfferLimitsFromInputs();
             const maxBuy = effectiveOffers.maxBuy;
             const maxSell = effectiveOffers.maxSell;
+            const modeState = (typeof getLiquidityModeState === 'function')
+                ? getLiquidityModeState()
+                : { buyActive: true, sellActive: true };
             const xchReserve = parseFloat(document.getElementById('configXchReserve')?.value);
             
             const saveBtn = document.getElementById('saveConfigBtn');
@@ -21317,8 +21573,8 @@
             
             const fields = [
                 { id: 'configTradeXch', valid: tradeSize > 0 },
-                { id: 'configMaxBuy', valid: maxBuy > 0 },
-                { id: 'configMaxSell', valid: maxSell > 0 },
+                { id: 'configMaxBuy', valid: maxBuy > 0, active: modeState.buyActive },
+                { id: 'configMaxSell', valid: maxSell > 0, active: modeState.sellActive },
                 { id: 'configXchReserve', valid: !isNaN(xchReserve) && xchReserve >= 0 },
                 { id: 'configCatReserve', valid: !isNaN(catReserve) && catReserve >= 0 }
             ];
@@ -21326,7 +21582,9 @@
             fields.forEach(f => {
                 const el = document.getElementById(f.id);
                 if (el) {
-                    if (el.value === '' || el.value === undefined) {
+                    if (f.active === false) {
+                        el.style.borderColor = 'rgba(251,191,36,0.35)';
+                    } else if (el.value === '' || el.value === undefined) {
                         el.style.borderColor = 'var(--status-danger)';
                     } else if (f.valid) {
                         el.style.borderColor = 'var(--status-success)';
@@ -22649,7 +22907,22 @@
             // the dashboard when a single-sided mode has parked due to fuel
             // exhaustion. The wallet-aware suggestion refresh is cheap so
             // we call it on every status tick — it no-ops if nothing changed.
+            try {
+                if (data && data.liquidity && data.liquidity.mode) {
+                    const currentMode = getLiquidityMode();
+                    const serverMode = normalizeLiquidityMode(data.liquidity.mode);
+                    const lastServerMode = window._lastServerLiquidityMode || null;
+                    const hasModeClass = document.body.classList.contains('liquidity-mode-two-sided')
+                        || document.body.classList.contains('liquidity-mode-buy-only')
+                        || document.body.classList.contains('liquidity-mode-sell-only');
+                    if (!lastServerMode || !hasModeClass || currentMode === lastServerMode || currentMode === serverMode) {
+                        setLiquidityMode(data.liquidity.mode, { silent: true });
+                    }
+                    window._lastServerLiquidityMode = serverMode;
+                }
+            } catch (_) {}
             try { updateLiquidityModeBanner(data && data.liquidity); } catch (_) {}
+            try { applyOneSidedUiState(data && data.liquidity); } catch (_) {}
             try { refreshLiquidityModeSuggestion(); } catch (_) {}
 
             // Status badge — handle running, stopped, blocked, and starting states
@@ -22719,6 +22992,7 @@
                 stopBtn.textContent = '⏹ Stop';  // Reset from "⏳ Stopping..."
             }
             updateCancelAllButtonState(isRunning);
+            updateDataResetButtonState(isRunning);
             
 
             // Stats
@@ -24654,15 +24928,23 @@
                 // Trading
                 if (s.trading) {
                     const t = s.trading;
-                    const buyBadge = t.enable_buy
+                    const modeState = getLiquidityModeState(t.liquidity_mode || d.liquidity_mode || getLiquidityMode());
+                    const buyBadge = !modeState.buyActive
+                        ? '<span class="cc-badge cc-badge-off">Two-sided only</span>'
+                        : t.enable_buy
                         ? '<span class="cc-badge cc-badge-on">ON</span>'
                         : '<span class="cc-badge cc-badge-off">OFF</span>';
-                    const sellBadge = t.enable_sell
+                    const sellBadge = !modeState.sellActive
+                        ? '<span class="cc-badge cc-badge-off">Two-sided only</span>'
+                        : t.enable_sell
                         ? '<span class="cc-badge cc-badge-on">ON</span>'
                         : '<span class="cc-badge cc-badge-off">OFF</span>';
                     el('ccBuySell').innerHTML = buyBadge + ' / ' + sellBadge;
                     if (t.loop_seconds && el('ccLoopSecs')) el('ccLoopSecs').textContent = t.loop_seconds + 's';
-                    if (t.max_active_buy !== undefined && el('ccMaxOffers')) el('ccMaxOffers').textContent = t.max_active_buy + ' / ' + t.max_active_sell;
+                    if (t.max_active_buy !== undefined && el('ccMaxOffers')) {
+                        el('ccMaxOffers').textContent = formatSideSplitForLiquidityMode(
+                            t.max_active_buy, t.max_active_sell, modeState.mode);
+                    }
                     if (t.offer_expiry_mins && el('ccExpiry')) el('ccExpiry').textContent = t.offer_expiry_mins + 'm';
                 }
 
@@ -25897,7 +26179,8 @@
                         heroOffers.textContent = total;
                     }
                     const heroSplit = document.getElementById('heroOffersSplit');
-                    if (heroSplit) heroSplit.textContent = data.open_buys + ' buy / ' + data.open_sells + ' sell';
+                    if (heroSplit) heroSplit.textContent = formatSideSplitForLiquidityMode(
+                        data.open_buys, data.open_sells, bot_state?.liquidity?.mode);
                     const cancelAllCountEl = document.getElementById('cancelAllCount');
                     if (cancelAllCountEl) cancelAllCountEl.textContent = total;
                 }
@@ -28548,8 +28831,7 @@
             const pagination = offersPagination[side];
             
             if (offers.length === 0) {
-                const sideLabel = side === 'buy' ? 'buy' : 'sell';
-                container.innerHTML = '<div class="empty-state">No ' + sideLabel + ' offers on the book yet. The bot will create them on the next cycle once it has a fresh price and prepared coins.</div>';
+                container.innerHTML = '<div class="empty-state">' + escapeHtml(getOfferEmptyStateMessage(side)) + '</div>';
                 return;
             }
 
@@ -28830,8 +29112,9 @@
             const activeEl = document.getElementById('activeCount');
             const historyEl = document.getElementById('historyCount');
             
-            if (buyEl) buyEl.textContent = `(${buyCount})`;
-            if (sellEl) sellEl.textContent = `(${sellCount})`;
+            const modeState = getLiquidityModeState();
+            if (buyEl) buyEl.textContent = modeState.buyActive ? `(${buyCount})` : '(two-sided only)';
+            if (sellEl) sellEl.textContent = modeState.sellActive ? `(${sellCount})` : '(two-sided only)';
             if (activeEl) activeEl.textContent = buyCount + sellCount;
             if (historyEl) historyEl.textContent = historyCount;
         }
@@ -31210,6 +31493,27 @@
         // the result as a toast. All three are gated server-side on the
         // bot being stopped; if the bot is running the endpoint returns
         // 409 and we surface the message.
+        function updateDataResetButtonState(isRunning) {
+            const blocked = !!isRunning;
+            ['btnResetPnl', 'btnResetOfferHistory', 'btnResetFull'].forEach(id => {
+                const btn = document.getElementById(id);
+                if (!btn) return;
+                btn.disabled = blocked;
+                btn.setAttribute('aria-disabled', blocked ? 'true' : 'false');
+                btn.title = blocked ? 'Stop the bot before resetting data.' : '';
+                btn.style.opacity = blocked ? '0.45' : '';
+                btn.style.cursor = blocked ? 'not-allowed' : '';
+            });
+        }
+
+        function _dataResetBlockedWhileRunning() {
+            if (bot_state && bot_state.running) {
+                showToast('Stop the bot before resetting data.', 'warning', 4000);
+                return true;
+            }
+            return false;
+        }
+
         async function _runReset(endpoint, label, successMsgBuilder) {
             try {
                 const resp = await apiFetch(`${API_URL}/${endpoint}`, {
@@ -31233,6 +31537,7 @@
         }
 
         async function handleResetPnL() {
+            if (_dataResetBlockedWhileRunning()) return;
             const confirmed = await showStyledConfirm({
                 icon: '🧮',
                 title: 'Reset P&L Counters',
@@ -31248,6 +31553,7 @@
         }
 
         async function handleClearOfferHistory() {
+            if (_dataResetBlockedWhileRunning()) return;
             const confirmed = await showStyledConfirm({
                 icon: '🗑️',
                 title: 'Clear Offer History',
@@ -31265,6 +31571,7 @@
         }
 
         async function handleFullReset() {
+            if (_dataResetBlockedWhileRunning()) return;
             const confirmed = await showStyledConfirm({
                 icon: '💣',
                 title: 'Full Reset',
@@ -31467,21 +31774,30 @@
             try {
                 const _tierEnabled = document.getElementById('configTierEnabled')?.checked;
                 if (_tierEnabled) {
-                    const _tiers = ['configInnerTierCount', 'configMidTierCount',
-                                    'configOuterTierCount', 'configExtremeTierCount'];
-                    let _totalTier = 0;
+                    const _modeState = (typeof getLiquidityModeState === 'function')
+                        ? getLiquidityModeState()
+                        : { buyActive: true, sellActive: true };
+                    const _sellTiers = ['configInnerTierCount', 'configMidTierCount',
+                                        'configOuterTierCount', 'configExtremeTierCount'];
+                    const _buyTiers = ['configInnerTierCountXch', 'configMidTierCountXch',
+                                       'configOuterTierCountXch', 'configExtremeTierCountXch'];
                     let _negTier = false;
-                    for (const id of _tiers) {
+                    const _sumTiers = (ids) => ids.reduce((sum, id) => {
                         const v = parseInt(document.getElementById(id)?.value) || 0;
                         if (v < 0) _negTier = true;
-                        _totalTier += v;
-                    }
+                        return sum + v;
+                    }, 0);
+                    const _sellTotalTier = _sumTiers(_sellTiers);
+                    const _buyTotalTier = _sumTiers(_buyTiers);
+                    const _activeTierTotal =
+                        (_modeState.buyActive ? _buyTotalTier : 0) +
+                        (_modeState.sellActive ? _sellTotalTier : 0);
                     if (_negTier) {
                         _riskBlockers.push(`<strong>Tier counts cannot be negative.</strong>`);
                     }
-                    if (_totalTier === 0) {
+                    if (_activeTierTotal === 0) {
                         _riskBlockers.push(
-                            `<strong>All tier counts are zero</strong> with TIER_ENABLED = ON. ` +
+                            `<strong>All active-side tier counts are zero</strong> with TIER_ENABLED = ON. ` +
                             `The bot will not create any offers.`
                         );
                     }
@@ -31533,7 +31849,7 @@
             if (maxBuyEl) maxBuyEl.value = effectiveOffers.maxBuy || '';
             if (maxSellEl) maxSellEl.value = effectiveOffers.maxSell || '';
 
-            const config = {
+            let config = {
                 loop_seconds: parseInt(document.getElementById('configLoopSeconds').value),
                 spread_bps: Math.round(parseFloat(document.getElementById('configSpreadBps').value) * 100),
                 default_trade_xch: parseFloat(document.getElementById('configTradeXch').value),
@@ -31690,6 +32006,7 @@
                 enable_runtime_coin_health: document.getElementById('configRuntimeCoinHealth').checked,
                 sage_set_change_address: document.getElementById('configSageChangeAddress').checked,
             };
+            config = normalizeConfigForLiquidityMode(config);
 
             const activeOffers = (bot_state && bot_state.offers)
                 ? (bot_state.offers.buy_count || 0) + (bot_state.offers.sell_count || 0)
@@ -31964,9 +32281,12 @@ function closeCtgErrorModal() {
         // user can decide whether to run prep.
         async function checkIfCoinPrepNeeded(config) {
             try {
+                config = normalizeConfigForLiquidityMode(config || {});
                 const tierEnabled = !!config.tier_enabled;
+                const liquidityMode = normalizeLiquidityMode(config.liquidity_mode || getLiquidityMode());
                 const params = new URLSearchParams();
                 params.set('tier_enabled', tierEnabled ? 'true' : 'false');
+                params.set('liquidity_mode', liquidityMode);
 
                 if (tierEnabled) {
                     const midPrice = Number(bot_state?.pricing?.mid || 0);
@@ -31974,17 +32294,29 @@ function closeCtgErrorModal() {
                     const sizeKey = (t) => t + '_size_xch';
                     const countKey = (t) => t + '_tier_count';
                     for (const t of tiers) {
-                        const xch = Number(config[sizeKey(t)] || 0);
-                        const cnt = parseInt(config[countKey(t)] || 0);
-                        if (xch > 0) params.set(`${t}_xch`, String(xch));
-                        if (cnt > 0) params.set(`${t}_count`, String(cnt));
-                        if (midPrice > 0 && xch > 0) {
-                            params.set(`${t}_cat`, String(xch / midPrice));
+                        const buyXch = Number(config[`buy_${t}_size_xch`] || config[sizeKey(t)] || 0);
+                        const sellXch = Number(config[`sell_${t}_size_xch`] || config[sizeKey(t)] || 0);
+                        const buyCnt = parseInt(config[`buy_${t}_tier_count`] || config[countKey(t)] || 0);
+                        const sellCnt = parseInt(config[`sell_${t}_tier_count`] || config[countKey(t)] || 0);
+                        if (liquidityMode === 'buy_only') {
+                            if (buyXch > 0) params.set(`${t}_xch`, String(buyXch));
+                            if (buyCnt > 0) params.set(`${t}_count`, String(buyCnt));
+                        } else if (liquidityMode === 'sell_only') {
+                            if (midPrice > 0 && sellXch > 0) params.set(`${t}_cat`, String(sellXch / midPrice));
+                            if (sellCnt > 0) params.set(`${t}_count`, String(sellCnt));
+                        } else {
+                            const xch = Number(config[sizeKey(t)] || sellXch || 0);
+                            const cnt = parseInt(config[countKey(t)] || sellCnt || 0);
+                            if (xch > 0) params.set(`${t}_xch`, String(xch));
+                            if (cnt > 0) params.set(`${t}_count`, String(cnt));
+                            if (midPrice > 0 && xch > 0) {
+                                params.set(`${t}_cat`, String(xch / midPrice));
+                            }
                         }
                     }
                     const sniperSize = Number(config.sniper_size_xch || 0);
                     const sniperCount = parseInt(config.sniper_prep_count || 0);
-                    if (config.sniper_enabled && sniperSize > 0 && sniperCount > 0) {
+                    if (liquidityMode === 'two_sided' && config.sniper_enabled && sniperSize > 0 && sniperCount > 0) {
                         params.set('sniper_xch', String(sniperSize));
                         params.set('sniper_count', String(sniperCount));
                     }
@@ -32048,6 +32380,7 @@ function closeCtgErrorModal() {
         }
 
         function showCoinPrepConfirm(config, reason, reasonMessage) {
+            config = normalizeConfigForLiquidityMode(config || {});
             const modal = document.getElementById('coinPrepConfirmOverlay');
             if (!modal) return;
 
@@ -32065,6 +32398,7 @@ function closeCtgErrorModal() {
             const configuredTierSpares = getConfiguredTierSpareCountsFromConfig(config);
             const configuredTierSparesXch = getConfiguredTierSpareCountsFromConfigXch(config);
             const plan = buildCoinPrepPlan({
+                liquidityMode: config.liquidity_mode || getLiquidityMode(),
                 tradeSize,
                 maxBuy,
                 maxSell,
@@ -32157,6 +32491,7 @@ function closeCtgErrorModal() {
                 }
             }
 
+            try { applyOneSidedUiState(config.liquidity_mode); } catch (_) {}
             showCoinPrepView('confirm');
             modal.classList.add('active');
         }

@@ -1358,6 +1358,12 @@ def api_status():
         except Exception:
             lifecycle_out = {}
 
+        _liquidity_raw = dict(raw)
+        _liquidity_raw["balances"] = balances_out
+        _liquidity_raw["offers"] = offers_out
+        _liquidity_raw["coin_tracking"] = coin_tracking
+        _liquidity_raw["pricing"] = pricing_out
+
         # --- Assemble response ---
         result = {
             "running": raw.get("running", False),
@@ -1387,7 +1393,7 @@ def api_status():
             # and, in single-sided modes, a "fuel parked" banner when the
             # active side can no longer fund a single offer at the smallest
             # tier size. Two-sided mode reports parked=False.
-            "liquidity": api_server._build_liquidity_status_block(raw),
+            "liquidity": api_server._build_liquidity_status_block(_liquidity_raw),
         }
 
         return jsonify(api_server._serialize_dict(result))

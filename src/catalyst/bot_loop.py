@@ -936,6 +936,16 @@ class BotLoop:
             targets[side] = max_offers
         return targets
 
+    @staticmethod
+    def _config_enables_side(side: str) -> bool:
+        """Return whether config currently permits creating/requoting a side."""
+        side = str(side or "").lower()
+        if side == "buy":
+            return bool(getattr(cfg, "ENABLE_BUY", True))
+        if side == "sell":
+            return bool(getattr(cfg, "ENABLE_SELL", True))
+        return False
+
     def _wallet_type_for_offer_side(self, side: str) -> str:
         return "xch" if str(side or "").lower() == "buy" else "cat"
 
@@ -7629,6 +7639,9 @@ class BotLoop:
         )
         if emergency_requote_triggered and not recovery_active_now:
             for eq_side in ["sell", "buy"]:
+                if not self._config_enables_side(eq_side):
+                    self._force_requote[eq_side] = False
+                    continue
                 last_q = self._last_quoted_price.get(eq_side, Decimal("0"))
                 if last_q <= 0:
                     continue
@@ -8563,6 +8576,10 @@ class BotLoop:
             return
 
         for side in ["buy", "sell"]:
+            if not self._config_enables_side(side):
+                self._force_requote[side] = False
+                continue
+
             # Time budget check — don't let requotes block the loop forever.
             # If buy-side requote took 20s, defer sell to next cycle.
             _requote_elapsed = time.time() - _requote_start_time

@@ -664,6 +664,11 @@ def api_coin_prep_verify():
 
         cat_wallet_id = int(api_server._active_cat.get("wallet_id") or getattr(cfg, "CAT_WALLET_ID", 2) or 2)
         tier_enabled = request.args.get("tier_enabled", "false").lower() == "true"
+        liquidity_mode = (request.args.get("liquidity_mode")
+                          or getattr(cfg, "LIQUIDITY_MODE", "two_sided")
+                          or "two_sided").lower()
+        if liquidity_mode not in ("two_sided", "buy_only", "sell_only"):
+            liquidity_mode = "two_sided"
         tolerance = 0.05  # 5% tolerance for matching coin sizes
 
         # Fetch wallet balances for sufficiency check
@@ -779,8 +784,20 @@ def api_coin_prep_verify():
                 needed = spec["needed"]
                 xch_have = xch_allocated.get(tier, 0) if spec["xch_mojos"] > 0 else 0
                 cat_have = cat_allocated.get(tier, 0) if spec["cat_mojos"] > 0 else 0
+                needs_xch = (
+                    spec["xch_mojos"] > 0
+                    and needed > 0
+                    and (liquidity_mode != "sell_only" or tier == "fees")
+                )
+                needs_cat = (
+                    not spec["xch_only"]
+                    and spec["cat_mojos"] > 0
+                    and needed > 0
+                    and liquidity_mode != "buy_only"
+                )
                 sufficient = (
-                    xch_have >= needed and (True if spec["xch_only"] else cat_have >= needed)
+                    ((not needs_xch) or xch_have >= needed)
+                    and ((not needs_cat) or cat_have >= needed)
                 ) if needed > 0 else True
                 if not sufficient:
                     all_sufficient = False
@@ -803,8 +820,9 @@ def api_coin_prep_verify():
                 xch_size = float(request.args.get(f"{tier}_xch", "0"))
                 cat_size = float(request.args.get(f"{tier}_cat", "0"))
                 needed = int(request.args.get(f"{tier}_count", "0"))
-                total_xch_needed_mojos += int(xch_size * 1e12) * needed
-                if tier != "fees" and cat_size > 0:
+                if liquidity_mode != "sell_only" or tier == "fees":
+                    total_xch_needed_mojos += int(xch_size * 1e12) * needed
+                if liquidity_mode != "buy_only" and tier != "fees" and cat_size > 0:
                     total_cat_needed_mojos += int(cat_size * (10 ** cat_decimals)) * needed
 
             xch_balance_sufficient = xch_balance_mojos >= total_xch_needed_mojos
@@ -836,6 +854,7 @@ def api_coin_prep_verify():
             response = {
                 "success": True,
                 "tier_enabled": True,
+                "liquidity_mode": liquidity_mode,
                 "tiers": result_tiers,
                 "all_sufficient": all_sufficient,
                 "needs_coin_prep": not all_sufficient,
@@ -862,6 +881,10 @@ def api_coin_prep_verify():
             prepared_cat_size = float(request.args.get("prepared_cat_size", "0"))
             max_buy = int(request.args.get("max_buy", "0"))
             max_sell = int(request.args.get("max_sell", "0"))
+            if liquidity_mode == "buy_only":
+                max_sell = 0
+            elif liquidity_mode == "sell_only":
+                max_buy = 0
             if prepared_cat_size <= 0:
                 prepared_cat_size = trade_size
 
@@ -896,6 +919,7 @@ def api_coin_prep_verify():
             return jsonify({
                 "success": True,
                 "tier_enabled": False,
+                "liquidity_mode": liquidity_mode,
                 "xch_coins_right_size": xch_right_size,
                 "cat_coins_right_size": cat_right_size,
                 "xch_needed": max_buy,
@@ -1298,6 +1322,11 @@ def _api_coin_prep_trigger_locked():
                     from coin_manager import flip_position_tiers_to_coin_size_tiers as _flip_tiers
                     xch_tier_counts = _flip_tiers(buy_position_counts, side="buy")
                     cat_tier_counts = _flip_tiers(sell_position_counts, side="sell")
+                    _liquidity_mode = (getattr(cfg, "LIQUIDITY_MODE", "two_sided") or "two_sided").lower()
+                    if _liquidity_mode == "buy_only":
+                        cat_tier_counts = {}
+                    elif _liquidity_mode == "sell_only":
+                        xch_tier_counts = {}
 
                     # Sniper needs BOTH sides: buy snipers lock XCH coins, sell snipers
                     # lock CAT coins. preferred_tier="sniper" strict on both sides, so a
@@ -1305,7 +1334,12 @@ def _api_coin_prep_trigger_locked():
                     # the ladder anchored to one-sided probe data only. Fees are XCH-only.
                     sniper_count = int(getattr(cfg, "SNIPER_PREP_COUNT", 0) or 0)
                     sniper_size = Decimal(str(getattr(cfg, "SNIPER_SIZE_XCH", "0") or "0"))
-                    if getattr(cfg, "SNIPER_ENABLED", False) and sniper_count > 0 and sniper_size > 0:
+                    if (
+                        _liquidity_mode == "two_sided"
+                        and getattr(cfg, "SNIPER_ENABLED", False)
+                        and sniper_count > 0
+                        and sniper_size > 0
+                    ):
                         xch_tier_counts["sniper"] = sniper_count
                         cat_tier_counts["sniper"] = sniper_count
                         tier_sizes["sniper"] = sniper_size

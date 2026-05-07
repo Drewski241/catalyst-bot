@@ -443,12 +443,26 @@ def api_config_live():
     if "key" not in data or "value" not in data:
         return jsonify({"success": False, "error": "Missing key/value"}), 400
 
-    key = data["key"]
+    raw_key = str(data["key"])
+    key = _KEY_MAP.get(raw_key, raw_key.upper())
     value = str(data["value"])
     graceful = data.get("graceful", False)
 
     if key in _BLOCKED_KEYS:
         return jsonify({"success": False, "error": f"Cannot modify {key} via live controls"}), 403
+
+    if key == "LIQUIDITY_MODE":
+        _allowed = ("two_sided", "buy_only", "sell_only")
+        if str(value).lower().strip() not in _allowed:
+            return jsonify({
+                "success": False,
+                "error": f"LIQUIDITY_MODE must be one of: {', '.join(_allowed)}"
+            }), 400
+        if bot and bot.is_running():
+            return jsonify({
+                "success": False,
+                "error": "LIQUIDITY_MODE cannot be changed while bot is running — stop the bot first"
+            }), 409
 
     ok = cfg.update(key, value, source="gui_live_control")
     if not ok:

@@ -1858,6 +1858,22 @@ def _build_liquidity_status_block(raw_status: dict) -> dict:
     if block["mode"] == "two_sided":
         return block
 
+    try:
+        _offers = raw_status.get("offers") or {}
+        _coin_tracking = raw_status.get("coin_tracking") or {}
+        if block["mode"] == "buy_only":
+            _live_buys = _offers.get("buy") or []
+            _xch_free_count = int(_coin_tracking.get("xch_free", 0) or 0)
+            if _live_buys or _xch_free_count > 1:
+                return block
+        elif block["mode"] == "sell_only":
+            _live_sells = _offers.get("sell") or []
+            _cat_free_count = int(_coin_tracking.get("cat_free", 0) or 0)
+            if _live_sells or _cat_free_count > 1:
+                return block
+    except Exception:
+        pass
+
     # Compute parked-state for the single-sided modes. We use "smallest
     # prep tier size" as the floor — if the wallet can't cover even one
     # offer at the smallest tier (with a 10% headroom margin) there's

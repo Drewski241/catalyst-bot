@@ -1164,6 +1164,26 @@ class ProbeAnchorTests(unittest.TestCase):
             "forced requote should retry after pending cancels settle",
         )
 
+    def test_requote_skips_config_disabled_side(self):
+        loop = bot_loop.BotLoop()
+        loop._loop_count = 6
+        loop._last_quoted_price["sell"] = Decimal("1.00")
+        loop._force_requote["sell"] = True
+
+        with patch.object(fake_config.cfg, "ENABLE_SELL", False), \
+                contextlib.redirect_stdout(io.StringIO()):
+            loop._handle_requoting(
+                Decimal("1.20"),
+                current_buy_ids=set(),
+                current_sell_ids={"sell-live"},
+            )
+
+        self.assertEqual(loop.offer_manager.requote_calls, [])
+        self.assertFalse(
+            loop._force_requote["sell"],
+            "disabled sell side should not keep a stale forced-requote flag",
+        )
+
     def test_opposite_side_requote_waits_during_recent_tibet_shock_guard(self):
         loop = bot_loop.BotLoop()
         loop._loop_count = 6

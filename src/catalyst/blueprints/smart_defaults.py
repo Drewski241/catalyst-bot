@@ -3541,8 +3541,9 @@ def _calculate_smart_defaults(
         # Sniper arb needs both sides
         result["sniper_enabled"] = False
         result["sniper_prep_count"] = 0
+        result["inventory_enabled"] = False
         result["messages"] = (result.get("messages") or []) + [
-            "Buy-only mode: sell ladder disabled, sniper off."
+            "Buy-only mode: sell ladder disabled; sniper and inventory skew are two-sided only."
         ]
         print("[SMART_DEFAULTS] liquidity_mode=buy_only — zeroed sell-side fields")
     elif liquidity_mode == "sell_only":
@@ -3575,8 +3576,9 @@ def _calculate_smart_defaults(
         # Sniper arb needs both sides
         result["sniper_enabled"] = False
         result["sniper_prep_count"] = 0
+        result["inventory_enabled"] = False
         result["messages"] = (result.get("messages") or []) + [
-            "Sell-only mode: buy ladder disabled, sniper off."
+            "Sell-only mode: buy ladder disabled; sniper and inventory skew are two-sided only."
         ]
         print("[SMART_DEFAULTS] liquidity_mode=sell_only — zeroed buy-side fields")
 

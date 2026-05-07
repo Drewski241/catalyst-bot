@@ -3231,7 +3231,7 @@ class CoinPrepWorker:
 
             if not payments:
                 self.log(f"   ℹ️ {side_label}: no tiers need splitting")
-                return []
+                return {"tier_details": [], "tx_ids": []}
 
             total_mojos = sum(p["amount"] for p in payments)
             self.log(f"\n   📤 {side_label} MULTI-SEND: {len(payments)} payments, "
