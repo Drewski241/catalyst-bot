@@ -12057,11 +12057,13 @@
                         <div class="v4-modal-panel-title">What's current - May 2026 public beta</div>
                         <div class="v4-modal-panel-copy">
                             <strong>Public beta release flow</strong> - The website, installer metadata, and in-app update badge now track the current release so testers can download the latest build from one place.<br>
-                            <strong>Sage wallet selection</strong> - Startup asks which Sage fingerprint to use on every launch instead of silently reusing the previous wallet, then runs RPC, version, Spacescan, Splash, Smart Settings, coin prep, and start-guard checks against that wallet.<br>
+                            <strong>Sage wallet selection</strong> - Startup asks testers to choose the Sage signing wallet/fingerprint on every launch, then runs RPC, version, Spacescan, Splash, Smart Settings, coin prep, and start-guard checks against that wallet.<br>
                             <strong>Smart Settings refresh</strong> - Smart Settings uses the selected CAT, live Dexie/TibetSwap/Spacescan/Sage context where available, handles thin or new CATs conservatively, and writes TibetSwap shock-cancel fields, reserves, ladder depth, tier sizes, topup pool, and safety limits together.<br>
                             <strong>Safer requote, cancel, and Close the Gap recovery</strong> - Dynamic pricing can tighten when the market supports it while stale-cancel and shock-cancel guards keep replacement offers from stacking on top of older wallet-active offers.<br>
                             <strong>Coin prep and topup improvements</strong> - Prepared XCH/CAT pools, fee coins, reserve coins, and sniper/topup outputs are classified immediately so live topup does not churn useful coins back into reserve.<br>
+                            <strong>Close the Gap probes</strong> - Manual gap closing uses small per-side probes to discover where active arbers respond, then plants tighter inner-tier offers while cancelling the furthest inner offers to keep the book from stacking.<br>
                             <strong>Beta feedback and diagnostics</strong> - Debug Bundle, crash reports, and public issue forms are ready for early testers to report bugs or rough edges in the bot repo.<br>
+                            <strong>Dashboard guidance cleanup</strong> - Guidance waits for stronger tipping points before showing advice, deduplicates overlapping alerts, and keeps action items separate from lower-confidence advisor notes.<br>
                             <strong>Diagnostics and charts</strong> - Market Diagnostics show Dexie, TibetSwap, Spacescan, Sage, Splash, and arb-gap health in the relevant tabs, with longer price context and more detailed order/depth views where the data exists.
                         </div>
                     </div>
@@ -12410,20 +12412,20 @@
                 <!-- CLOSE THE GAP -->
                 <div id="help_gap-closer" class="help-panel" style="display: none;">
                     <h3 style="color: var(--accent-primary-hover); margin-top: 0;">Close the Gap</h3>
-                    <p>This feature gradually tightens your spread to find the best price you can safely offer — like slowly turning up a dial to see how far you can go.</p>
+                    <p>This feature probes for the tightest useful inner book without blindly stacking new offers. It is a manual testing mode for finding where Dexie/TibetSwap arbers actually respond on the current pair.</p>
                     <h3 style="color: var(--accent-primary-hover);">How it works</h3>
                     <ol style="padding-left: 20px;">
-                        <li>Creates a small pair of "probe" offers (buy + sell) starting at a wide spread</li>
-                        <li>Every 60 seconds, it tightens the spread by 10%</li>
-                        <li>If someone arbs the offers (fills both sides quickly), it backs off — the spread was too tight</li>
-                        <li>The tightest safe spread becomes the "floor" — it won't go below the arb gap plus a safety buffer</li>
-                        <li>When it reaches the floor, it plants a real inner-tier offer at the proven price and swaps out the furthest inner offer</li>
-                        <li>The rest of the ladder catches up naturally via the incremental reaction strategy</li>
+                        <li>Creates a small buy probe and sell probe using the dedicated sniper/gap coin pool</li>
+                        <li>Tests one side at a time, waiting roughly 60 seconds between pushes so cancel/create activity has time to settle</li>
+                        <li>Moves each surviving side deeper in fixed bps steps until it is filled by arbers or reaches the configured ceiling</li>
+                        <li>Tracks buy and sell floors separately because arbers can react asymmetrically</li>
+                        <li>When both sides settle, it plants tighter real inner-tier offers and cancels the furthest inner offers on each side</li>
+                        <li>The normal ladder then converges behind the proven level while the gap-closing probe state is cleared</li>
                     </ol>
                     <h3 style="color: var(--accent-primary-hover);">The arb floor</h3>
-                    <p>The gap closer uses the current arb gap between Dexie and TibetSwap as an intelligent floor. It will never tighten your spread below the arb gap + a safety buffer (default 0.2%), because that would let arbitrageurs pick you off.</p>
+                    <p>The gap closer uses the current arb gap between Dexie and TibetSwap plus configured probe limits to avoid pushing indefinitely. A filled probe is treated as useful evidence that the tested side has reached an active arb zone.</p>
                     <h3 style="color: var(--accent-primary-hover);">Floor handoff</h3>
-                    <p>When the floor is found and proven stable, the gap closer creates a real inner-tier offer at that price and cancels the furthest existing inner offer — swapping old for new. The main book then converges naturally over time.</p>
+                    <p>When both sides are settled, the gap closer creates a small cascade of tighter inner-tier offers and cancels the same number of furthest inner offers. That is the "close the gap" swap: more competitive inner liquidity without leaving the old wider inner offers stacked behind it.</p>
                     <h3 style="color: var(--accent-primary-hover);">Using it</h3>
                     <p>Open <strong>Settings -> Live</strong> and use the <strong>"Close the Gap"</strong> control there. You can set the aggression level (how wide to start). The control shows the current gap-closer spread while active. Stop it any time by clicking again.</p>
                 </div>
