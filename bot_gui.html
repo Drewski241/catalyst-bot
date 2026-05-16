@@ -2908,6 +2908,25 @@
             color: var(--text-tertiary);
             margin-top: 5px;
         }
+        .v4-settings-info-note {
+            display: grid;
+            gap: 4px;
+            margin-top: 10px;
+            padding: 10px 12px;
+            border: 1px solid rgba(251, 191, 36, 0.34);
+            border-radius: var(--radius-md);
+            background: rgba(245, 158, 11, 0.08);
+            color: var(--text-secondary);
+            font-size: var(--text-xs);
+            line-height: 1.45;
+        }
+        .v4-settings-info-note strong {
+            color: var(--warning-300);
+            font-weight: 700;
+        }
+        .v4-settings-info-note span {
+            display: block;
+        }
         .v4-settings-select {
             width: 100%;
             padding: 10px;
@@ -10268,7 +10287,7 @@
                     <div id="splashSectionBody">
                     <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px; margin-bottom: 10px;">
                         <div>
-                            <div style="color: rgba(255,255,255,0.5); font-size: 11px;">Broadcast</div>
+                            <div style="color: rgba(255,255,255,0.5); font-size: 11px;">Local Submit</div>
                             <div id="splashPosted" style="font-size: 14px; font-weight: 600; color: var(--status-success);">0</div>
                         </div>
                         <div>
@@ -10339,7 +10358,7 @@
                         <div id="splashPeersHint" style="margin-top: 6px; font-size: 11px; color: var(--status-warning);"></div>
                         <div id="splashIncomingHint" style="margin-top: 8px; font-size: 11px; color: rgba(255,255,255,0.45);">Relevant = inbound peer offers that match the current CAT/XCH pair.</div>
                     </div>
-                    <div id="splashStatusHint" style="margin-top: 10px; font-size: 11px; color: rgba(255,255,255,0.45);">Posted / failed / skipped are session counters. Queue and cached live offers explain quiet runs.</div>
+                    <div id="splashStatusHint" style="margin-top: 10px; font-size: 11px; color: rgba(255,255,255,0.45);">Submitted / failed / skipped are local submits only; peer relay depends on daemon peers. Queue and cached live offers explain quiet runs.</div>
                     <!-- Setup / Download section -->
                     <div id="splashSetupSection" style="border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px; margin-top: 8px;">
                         <div style="display: flex; align-items: center; gap: 10px;">
@@ -11114,6 +11133,10 @@
                                 </div>
                             </div>
                             <div class="v4-settings-hint">Smart Settings keeps this gentle on deep markets and defensive for small wallets, one-sided setups, thin books, or volatile tokens.</div>
+                            <div class="v4-settings-info-note">
+                                <span><strong>Market toxicity levels:</strong> Normal &lt;30, Mild 30-54, Elevated 55-74, High 75-89, Extreme 90+.</span>
+                                <span><strong>Live score:</strong> Dashboard &rarr; Market Health &rarr; Toxicity.</span>
+                            </div>
                         </div>
 
                         <!-- Inventory Management -->
@@ -13301,8 +13324,8 @@
                             // The dynamic limits (DYNAMIC_LIMIT_PCT) and step-change guard
                             // (MAX_STEP_CHANGE_FRACTION) cover the same ground correctly.
                             // Field is preserved in the DOM as a hidden vestige; ignored on save.
-                            document.getElementById('configMinMid').value = parseFloat(g('HARD_MIN_PRICE_XCH') || 0) > 0 ? g('HARD_MIN_PRICE_XCH') : '';
-                            document.getElementById('configMaxMid').value = parseFloat(g('HARD_MAX_PRICE_XCH') || 0) > 0 ? g('HARD_MAX_PRICE_XCH') : '';
+                            document.getElementById('configMinMid').value = formatPriceGuardInput(g('HARD_MIN_PRICE_XCH'));
+                            document.getElementById('configMaxMid').value = formatPriceGuardInput(g('HARD_MAX_PRICE_XCH'));
                             const dlp = parseFloat(g('DYNAMIC_LIMIT_PCT') || 0); document.getElementById('configDynamicLimitPct').value = dlp > 0 ? dlp : 50;
                             const msc = parseFloat(g('MAX_STEP_CHANGE_FRACTION') || 0); document.getElementById('configMaxStepChange').value = msc > 0 ? (msc * 100).toFixed(0) : 0;
                             const tsp = parseFloat(g('TIBET_SHOCK_CANCEL_TRIGGER_PCT') || 0); document.getElementById('configTibetShockCancelPct').value = tsp > 0 ? tsp.toFixed(2) : 0;
@@ -15215,6 +15238,13 @@
         }
         const _bps2pct = v => (Number(v) / 100).toFixed(1);
         const _pct2bps = v => Math.round((parseFloat(v) || 0) * 100);
+
+        function formatPriceGuardInput(value) {
+            const n = Number(String(value ?? '').trim());
+            if (!Number.isFinite(n) || n <= 0) return '';
+            const fixed = n >= 1 ? n.toFixed(8) : n.toFixed(12);
+            return fixed.replace(/(\.\d*?[1-9])0+$/, '$1').replace(/\.0+$/, '');
+        }
 
         // =================================================================
         // LIVE CONTROLS — Toggles, Sliders, Debounce, Apply
@@ -24459,7 +24489,7 @@
                     const cached = Number(splash.fingerprints_cached || 0);
                     const sessionPosts = Number(splash.total_posted || 0);
                     el('splashStatusHint').textContent =
-                        'Queue ' + queueSize + ' • cached live offers ' + cached + ' • session posts ' + sessionPosts + '.';
+                        'Queue ' + queueSize + ' • cached live offers ' + cached + ' • local submits ' + sessionPosts + '.';
                 }
             }
 
@@ -27018,10 +27048,12 @@
 
             // Handle alert events from SSE
             if (type === 'alert') {
+                _serverAlertIds.add(data.id);
                 _activeAlerts[data.id] = data;
                 renderAlerts();
             }
             if (type === 'alert_cleared') {
+                _serverAlertIds.delete(data.id);
                 delete _activeAlerts[data.id];
                 renderAlerts();
             }
@@ -27654,6 +27686,7 @@
 
         // ===== ALERT NOTIFICATION SYSTEM =====
         let _activeAlerts = {};
+        let _serverAlertIds = new Set();
         const ADVISOR_ACTION_IDS = new Set([
             'enableInventory',
             'applySpread',
@@ -27677,6 +27710,26 @@
             'bot_health_watch',
             'runtime_monitor'
         ]);
+
+        function syncServerAlerts(alerts = []) {
+            const nextServerAlertIds = new Set();
+            (Array.isArray(alerts) ? alerts : []).forEach((alert) => {
+                const alertId = String((alert && alert.id) || '');
+                if (!alertId) return;
+                nextServerAlertIds.add(alertId);
+                _activeAlerts[alertId] = alert;
+            });
+
+            const knownBackendIds = new Set([
+                ..._serverAlertIds,
+                ...ACTIONABLE_ALERT_IDS,
+                ...ADVISOR_DIAGNOSTIC_ALERT_IDS
+            ]);
+            knownBackendIds.forEach((alertId) => {
+                if (!nextServerAlertIds.has(alertId)) delete _activeAlerts[alertId];
+            });
+            _serverAlertIds = nextServerAlertIds;
+        }
 
         function isRecoveryGuidanceActive() {
             const recoveryAlert = _activeAlerts && _activeAlerts.bot_recovery;
@@ -28183,7 +28236,7 @@
                         <div class="v4-modal-panel-title">Splash ${sp.available ? (sp.healthy ? '✅' : '⚠️') : '❌'}</div>
                         ${sp.available ? `
                           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;font-size:0.92em;">
-                            <div style="color:var(--text-secondary);">Offers posted</div><div>${fmtN(sp.total_posted)}</div>
+                            <div style="color:var(--text-secondary);">Local submits</div><div>${fmtN(sp.total_posted)}</div>
                             <div style="color:var(--text-secondary);">Post failures</div><div>${fmtN(sp.total_failed)}</div>
                             <div style="color:var(--text-secondary);">Skipped (dedup)</div><div>${fmtN(sp.total_skipped)}</div>
                             <div style="color:var(--text-secondary);">Queue size</div><div>${fmtN(sp.queue_size)}</div>
@@ -28791,7 +28844,7 @@
                 const res = await apiFetch(`${API_URL}/alerts`);
                 const data = await res.json();
                 if (data.alerts) {
-                    data.alerts.forEach(a => { _activeAlerts[a.id] = a; });
+                    syncServerAlerts(data.alerts);
                     renderAlerts();
                 }
             } catch (e) { /* will retry on next SSE event */ }

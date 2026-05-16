@@ -113,6 +113,147 @@ class DatabaseVerifiedFillsTests(unittest.TestCase):
         self.assertEqual(stats["fee_xch"], "0.002")
         self.assertEqual(stats["net_xch_flow_after_fees"], "0.008")
 
+    def test_offer_coin_usage_summary_counts_requoted_source_coin(self):
+        asset_id = "asset-requote"
+        coin_id = "0xcoin-reused"
+
+        database.add_offer(
+            trade_id="trade-old",
+            side="sell",
+            price_xch=Decimal("0.001"),
+            size_xch=Decimal("0.1"),
+            size_cat=Decimal("100"),
+            cat_asset_id=asset_id,
+            tier="inner",
+            coin_id=coin_id,
+        )
+        database.add_offer(
+            trade_id="trade-new",
+            side="sell",
+            price_xch=Decimal("0.001"),
+            size_xch=Decimal("0.1"),
+            size_cat=Decimal("100"),
+            cat_asset_id=asset_id,
+            tier="inner",
+            coin_id=coin_id,
+        )
+        database.record_fill(
+            trade_id="trade-new",
+            side="sell",
+            price_xch=Decimal("0.001"),
+            size_xch=Decimal("0.1"),
+            size_cat=Decimal("100"),
+            cat_asset_id=asset_id,
+            tier="inner",
+        )
+
+        summary = database.get_offer_coin_usage_summary(coin_id, asset_id)
+
+        self.assertEqual(summary["offer_count"], 2)
+        self.assertEqual(summary["verified_fill_count"], 1)
+        self.assertEqual(set(summary["trade_ids"]), {"trade-old", "trade-new"})
+        self.assertEqual(summary["verified_trade_ids"], ["trade-new"])
+
+    def test_stats_deduplicate_verified_fills_for_reused_source_coin(self):
+        asset_id = "asset-requote-stats"
+        coin_id = "0xcoin-reused-stats"
+
+        for trade_id in ("trade-old", "trade-new"):
+            database.add_offer(
+                trade_id=trade_id,
+                side="sell",
+                price_xch=Decimal("0.001"),
+                size_xch=Decimal("0.1"),
+                size_cat=Decimal("100"),
+                cat_asset_id=asset_id,
+                tier="inner",
+                coin_id=coin_id,
+            )
+            database.record_fill(
+                trade_id=trade_id,
+                side="sell",
+                price_xch=Decimal("0.001"),
+                size_xch=Decimal("0.1"),
+                size_cat=Decimal("100"),
+                cat_asset_id=asset_id,
+                tier="inner",
+            )
+
+        stats = database.get_stats(asset_id)
+
+        self.assertEqual(stats["raw_total_fills"], 2)
+        self.assertEqual(stats["duplicate_fill_rows"], 1)
+        self.assertEqual(stats["total_fills"], 1)
+        self.assertEqual(stats["sell_fills"], 1)
+        self.assertEqual(stats["volume_xch"], "0.1")
+
+    def test_stats_count_exact_verified_reused_source_coin_fills_by_trade(self):
+        asset_id = "asset-requote-exact-stats"
+        coin_id = "0xcoin-reused-exact-stats"
+
+        for trade_id, status in (
+            ("trade-old", "verified"),
+            ("trade-new", "verified_exact"),
+        ):
+            database.add_offer(
+                trade_id=trade_id,
+                side="sell",
+                price_xch=Decimal("0.001"),
+                size_xch=Decimal("0.1"),
+                size_cat=Decimal("100"),
+                cat_asset_id=asset_id,
+                tier="inner",
+                coin_id=coin_id,
+            )
+            database.record_fill(
+                trade_id=trade_id,
+                side="sell",
+                price_xch=Decimal("0.001"),
+                size_xch=Decimal("0.1"),
+                size_cat=Decimal("100"),
+                cat_asset_id=asset_id,
+                tier="inner",
+                verification_status=status,
+            )
+
+        stats = database.get_stats(asset_id)
+
+        self.assertEqual(stats["raw_total_fills"], 2)
+        self.assertEqual(stats["duplicate_fill_rows"], 0)
+        self.assertEqual(stats["total_fills"], 2)
+        self.assertEqual(stats["sell_fills"], 2)
+        self.assertEqual(stats["volume_xch"], "0.2")
+
+    def test_unmatched_fills_deduplicate_verified_fills_for_reused_source_coin(self):
+        asset_id = "asset-requote-unmatched"
+        coin_id = "0xcoin-reused-unmatched"
+
+        for trade_id in ("trade-old", "trade-new"):
+            database.add_offer(
+                trade_id=trade_id,
+                side="sell",
+                price_xch=Decimal("0.001"),
+                size_xch=Decimal("0.1"),
+                size_cat=Decimal("100"),
+                cat_asset_id=asset_id,
+                tier="inner",
+                coin_id=coin_id,
+            )
+            database.record_fill(
+                trade_id=trade_id,
+                side="sell",
+                price_xch=Decimal("0.001"),
+                size_xch=Decimal("0.1"),
+                size_cat=Decimal("100"),
+                cat_asset_id=asset_id,
+                tier="inner",
+            )
+
+        unmatched = database.get_unmatched_fills(asset_id, "sell")
+
+        self.assertEqual(len(unmatched), 1)
+        self.assertEqual(unmatched[0]["trade_id"], "trade-new")
+
     def test_fill_and_expiry_update_all_locked_coins_for_trade(self):
         conn = database.get_connection()
         asset_id = "asset-test"

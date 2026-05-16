@@ -427,6 +427,32 @@ class TestBotLoopWiring(_PatchedCfg):
 
         self.assertIs(loop.risk_manager._bot_ref, loop)
 
+    def test_sage_wires_coinset_for_chain_truth_without_inventory_init(self):
+        loop = _make_loop()
+
+        class Client:
+            def __init__(self):
+                self.initialized = False
+
+            def initialize_puzzle_hashes(self):
+                self.initialized = True
+                return True
+
+        client = Client()
+        loop.coinset_client = client
+        loop.coin_manager = types.SimpleNamespace()
+
+        with (
+            patch.object(bot_loop.cfg, "COINSET_ENABLED", True, create=True),
+            patch.object(bot_loop, "log_event") as log_event,
+        ):
+            loop._initialize_coinset_for_wallet_type("sage")
+
+        self.assertIs(loop.coin_manager._coinset_client, client)
+        self.assertFalse(client.initialized)
+        event_types = [call.args[1] for call in log_event.call_args_list]
+        self.assertIn("coinset_ready", event_types)
+
     def test_record_live_offer_edges_updates_cache_and_gui_state(self):
         loop = _make_loop()
         edges = {"our_best_bid": "1.00", "our_best_ask": "1.05"}
@@ -436,6 +462,60 @@ class TestBotLoopWiring(_PatchedCfg):
         self.assertEqual(loop._last_live_offer_edges, edges)
         self.assertEqual(loop._bot_state["our_best_bid"], "1.00")
         self.assertEqual(loop._bot_state["our_best_ask"], "1.05")
+
+    def test_toxicity_throttle_cancels_live_offers_for_throttled_side(self):
+        loop = _make_loop()
+        calls = []
+
+        class Snapshot:
+            score = 95
+            level = "extreme"
+            suggested_action = "Throttle new buy offers"
+            throttled_sides = ("buy",)
+
+            def is_side_throttled(self, side, now):
+                return side == "buy"
+
+            def to_dict(self):
+                return {
+                    "score": self.score,
+                    "level": self.level,
+                    "throttled_sides": list(self.throttled_sides),
+                }
+
+        def cancel_offers(trade_ids, **kwargs):
+            calls.append((tuple(trade_ids), kwargs))
+            return {tid: {"success": True} for tid in trade_ids}
+
+        loop.offer_manager = types.SimpleNamespace(cancel_offers=cancel_offers)
+        loop._pending_cancel_wallet_ids_by_side = {
+            "buy": {"pending-buy"},
+            "sell": set(),
+        }
+
+        with (
+            patch.object(
+                bot_loop.cfg,
+                "MARKET_TOXICITY_CANCEL_LIVE_OFFERS",
+                True,
+                create=True,
+            ),
+            patch.object(bot_loop, "log_event"),
+            patch.object(bot_loop.time, "time", return_value=1000),
+        ):
+            cancelled = loop._cancel_toxicity_throttled_offers(
+                Snapshot(),
+                current_buy_ids={"buy-1", "buy-2", "pending-buy"},
+                current_sell_ids={"sell-1"},
+            )
+
+        self.assertEqual(cancelled["buy"], {"buy-1", "buy-2"})
+        self.assertEqual(cancelled["sell"], set())
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(set(calls[0][0]), {"buy-1", "buy-2"})
+        self.assertEqual(calls[0][1]["reason"], "market_toxicity_guard")
+        self.assertTrue(calls[0][1]["skip_confirmation"])
+        self.assertTrue(calls[0][1]["force_storm"])
 
 
 class TestTierSizeDriftTopup(_PatchedCfg):
@@ -696,6 +776,50 @@ class TestCoinTopupPriority(_PatchedCfg):
             loop._handle_coins(active_buy_count=4, active_sell_count=3)
 
         self.assertEqual(calls, [(4, 3, None)])
+
+    def test_spare_topup_defers_when_toxicity_sets_targets_to_zero(self):
+        loop = _make_loop()
+        loop._loop_count = 11
+        loop._current_mid_price = Decimal("1")
+        loop._startup_coin_recheck_done = True
+        calls = []
+
+        class ToxicityTopupCoinManager:
+            _topup_is_drip = False
+            _topup_needed_wallet_types = {"xch", "cat"}
+            _reconcile_counter = 0
+
+            def is_busy(self):
+                return False
+
+            def check_coin_prep_status(self):
+                return {}
+
+            def update_coin_counts(self):
+                return None
+
+            def needs_coin_prep(self, active_buy, active_sell):
+                return False
+
+            def needs_topup(self, active_buy, active_sell):
+                return True
+
+            def start_topup(self, active_buy, active_sell, is_drip=None):
+                calls.append((active_buy, active_sell, is_drip))
+
+            def check_runtime_health(self, active_buy, active_sell):
+                return False
+
+        loop.coin_manager = ToxicityTopupCoinManager()
+        loop._reclaim_oversized_locked_offers = lambda: False
+        loop._get_expected_offer_targets = lambda mid_price: {"buy": 0, "sell": 0}
+
+        with patch.object(bot_loop, "log_event") as log_event:
+            loop._handle_coins(active_buy_count=15, active_sell_count=0)
+
+        events = [call.args[1] for call in log_event.call_args_list]
+        self.assertEqual(calls, [])
+        self.assertIn("topup_deferred_zero_offer_targets", events)
 
 
 class TestGetLiveOfferEdges(_PatchedCfg):

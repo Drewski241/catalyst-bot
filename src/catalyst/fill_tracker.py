@@ -33,6 +33,56 @@ from database import (
 )
 
 
+def _dexie_asset_key(value) -> str:
+    text = str(value or "").strip().lower()
+    return text[2:] if text.startswith("0x") else text
+
+
+def _dexie_status_code(detail: Dict) -> Optional[int]:
+    try:
+        return int(detail.get("status"))
+    except Exception:
+        return None
+
+
+def _dexie_detail_has_requested_output(detail: Dict) -> bool:
+    """True when Dexie detail shows requested-asset outputs.
+
+    This is useful diagnostic context, but it is not enough to prove a fill:
+    real-world cancel records can also expose requested-asset output rows in
+    the Dexie payload. Spacescan/offer_info must arbitrate ambiguous status=3
+    rows instead of letting Dexie alone book a fill.
+    """
+    requested = {
+        _dexie_asset_key(item.get("id"))
+        for item in (detail.get("requested") or [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    requested.discard("")
+    if not requested:
+        return False
+
+    output_coins = detail.get("output_coins") or {}
+    if not isinstance(output_coins, dict):
+        return False
+
+    for asset_id, coins in output_coins.items():
+        if _dexie_asset_key(asset_id) in requested and coins:
+            return True
+    return False
+
+
+def _dexie_detail_confirms_fill(detail: Dict) -> bool:
+    status = _dexie_status_code(detail)
+    return status == 4
+
+
+def _dexie_detail_confirms_cancel(detail: Dict) -> bool:
+    return _dexie_status_code(detail) == 3 and not _dexie_detail_has_requested_output(
+        detail
+    )
+
+
 class FillTracker:
     """Detects fills and matches round-trip PnL.
 
@@ -57,7 +107,7 @@ class FillTracker:
         mempool_warned,
     ) -> str:
         coin_str = f" coin={str(coin_id)[:16]}..." if coin_id != "unknown" else ""
-        warned_tag = "" if mempool_warned else " (mempool-miss)"
+        warned_tag = " (mempool-hit)" if mempool_warned else " (mempool-miss)"
         price_display = f"{Decimal(str(price or 0)):.8f}"
         size_cat_display = f"{Decimal(str(size_cat or 0)):.2f}"
         return (
@@ -94,6 +144,7 @@ class FillTracker:
         # consumed by _record_fill(). Avoids making a second HTTP call for
         # the same offer just to pass detail to the fill classifier.
         self._last_dexie_details: Dict[str, Optional[Dict]] = {}
+        self._exact_trade_confirmations: Set[str] = set()
 
         # Unverified-fill retry bookkeeping. A disappeared offer whose on-chain
         # verification is "unverified" (Spacescan unreachable, coin data not
@@ -1038,6 +1089,21 @@ class FillTracker:
                     pass
                 # Clear any cached Dexie detail — _record_fill() won't run to consume it
                 self._last_dexie_details.pop(trade_id, None)
+                if local_clock_expired:
+                    self._retire_local_offer(
+                        trade_id,
+                        side,
+                        details_cache,
+                        status="expired",
+                        event_type="offer_closed_nonfill",
+                        severity="info",
+                        suffix="expired after source-truth rejection",
+                        data_extra={
+                            "verification_state": "rejected",
+                            "source": "spacescan_or_sage_dexie",
+                            "local_clock_expired": True,
+                        },
+                    )
             elif verification == "unverified":
                 # Spacescan couldn't decisively classify the on-chain spend.
                 # Instead of retiring immediately (which used to misclassify
@@ -1326,6 +1392,11 @@ class FillTracker:
         coin_id = verified_coin_id  # use the coin that gave a decisive answer
 
         if is_real_fill:
+            reused_coin_verdict = self._reused_coin_fill_verdict(
+                trade_id, side, coin_id, db_offer
+            )
+            if reused_coin_verdict:
+                return reused_coin_verdict
             log_event(
                 "success",
                 "fill_verified",
@@ -1358,6 +1429,7 @@ class FillTracker:
                         f"{trade_id[:16]}... (batch settlement via own address). "
                         f"Recording fill.",
                     )
+                    self._exact_trade_confirmations.add(trade_id)
                     return "filled"
 
                 # Sage also non-confirmatory — try Dexie as a final tiebreaker.
@@ -1381,15 +1453,15 @@ class FillTracker:
                             _match_f = (
                                 _dexie_trade_f == _our_trade_f or not _dexie_trade_f
                             )
-                            if _detail_f.get("status") == 4 and _match_f:
+                            if _dexie_detail_confirms_fill(_detail_f) and _match_f:
                                 log_event(
-                                    "success",
-                                    "fill_dexie_override_false_path",
+                                    "warning",
+                                    "fill_spacescan_rejected_dexie_disagrees",
                                     f"Spacescan self-spend AND Sage non-confirm BUT "
-                                    f"Dexie status=4 confirms FILL for "
-                                    f"{trade_id[:16]}... — recording fill.",
+                                    f"Dexie status={_detail_f.get('status')} suggests FILL for "
+                                    f"{trade_id[:16]}... — Spacescan remains authoritative; "
+                                    f"NOT recording fill.",
                                 )
-                                return "filled"
                 except Exception as _dexie_err_f:
                     log_event(
                         "debug",
@@ -1429,12 +1501,13 @@ class FillTracker:
                         )
                         _our_trade_r = str(trade_id).lower().replace("0x", "")
                         _match_r = _dexie_trade_r == _our_trade_r or not _dexie_trade_r
-                        if _detail_r.get("status") == 4 and _match_r:
+                        if _dexie_detail_confirms_fill(_detail_r) and _match_r:
                             log_event(
                                 "warning",
                                 "fill_spacescan_dexie_disagree",
                                 f"Spacescan REJECTED {side} fill for "
-                                f"{trade_id[:16]}... but Dexie status=4 "
+                                f"{trade_id[:16]}... but Dexie status="
+                                f"{_detail_r.get('status')} "
                                 f"suggests COMPLETED. Spacescan is "
                                 f"authoritative — NOT recording fill. "
                                 f"Operator should reconcile manually if "
@@ -1443,7 +1516,7 @@ class FillTracker:
                                     "trade_id": trade_id,
                                     "side": side,
                                     "dexie_id": _dexie_id_rej,
-                                    "dexie_status": 4,
+                                    "dexie_status": _detail_r.get("status"),
                                     "spacescan_verdict": "rejected",
                                 },
                             )
@@ -1480,6 +1553,7 @@ class FillTracker:
                         f"Spacescan inconclusive BUT Sage confirms FILL for "
                         f"{trade_id[:16]}... — recording fill.",
                     )
+                    self._exact_trade_confirmations.add(trade_id)
                     return "filled"
             except Exception as _sage_err:
                 log_event(
@@ -1509,18 +1583,17 @@ class FillTracker:
                             _dexie_trade == _our_trade
                             or not _dexie_trade  # no trade_id in response = trust dexie_id match
                         )
-                        dexie_status = detail.get("status")
-                        if (
-                            dexie_status == 4 and _trade_match
-                        ):  # Dexie: 4 = completed/filled
+                        if _dexie_detail_confirms_fill(detail) and _trade_match:
                             log_event(
                                 "success",
                                 "fill_verified_via_dexie",
                                 f"Spacescan inconclusive BUT Dexie confirms FILL "
-                                f"(status=4) for {trade_id[:16]}... — recording fill.",
+                                f"(status={detail.get('status')}) for "
+                                f"{trade_id[:16]}... — recording fill.",
                             )
+                            self._exact_trade_confirmations.add(trade_id)
                             return "filled"
-                        elif dexie_status == 3:  # Dexie: 3 = cancelled
+                        elif _dexie_detail_confirms_cancel(detail):
                             log_event(
                                 "info",
                                 "fill_rejected_via_dexie",
@@ -1550,6 +1623,139 @@ class FillTracker:
                 f"inconclusive. NOT recording (retry will re-verify).",
             )
             return "unverified"
+
+    def _reused_coin_fill_verdict(
+        self, trade_id: str, side: str, coin_id: str, db_offer: Optional[Dict]
+    ) -> Optional[str]:
+        """Require offer-specific proof when a source coin backed re-quotes.
+
+        Spacescan can prove a Chia coin was spent, but if the same source coin
+        appears on several local re-quoted offers, that spend alone does not
+        identify which offer was actually taken. In that narrow case, require
+        Dexie or Sage to confirm this exact trade before recording a fill.
+        """
+        try:
+            from database import get_offer_coin_usage_summary
+
+            summary = get_offer_coin_usage_summary(
+                coin_id,
+                cat_asset_id=(db_offer or {}).get("cat_asset_id")
+                or getattr(cfg, "CAT_ASSET_ID", None),
+            )
+        except Exception as exc:
+            log_event(
+                "debug",
+                "fill_reused_coin_summary_failed",
+                f"Could not check reused source coin {coin_id[:16]}... "
+                f"for {trade_id[:16]}...: {exc}",
+            )
+            return None
+
+        try:
+            offer_count = int(summary.get("offer_count") or 0)
+            verified_fill_count = int(summary.get("verified_fill_count") or 0)
+        except Exception:
+            offer_count = 0
+            verified_fill_count = 0
+
+        verified_trade_ids = {
+            str(tid) for tid in (summary.get("verified_trade_ids") or []) if tid
+        }
+        if offer_count <= 1 and not (verified_trade_ids - {trade_id}):
+            return None
+        if trade_id in verified_trade_ids:
+            return None
+
+        dexie_terminal = self._dexie_terminal_status(trade_id)
+        if dexie_terminal == "filled":
+            log_event(
+                "success",
+                "fill_reused_coin_confirmed",
+                f"Source coin {coin_id[:16]}... appears on {offer_count} "
+                f"re-quotes, and Dexie confirms {trade_id[:16]}... was filled.",
+                data={
+                    "trade_id": trade_id,
+                    "side": side,
+                    "coin_id": coin_id,
+                    "offer_count": offer_count,
+                    "source": "dexie",
+                },
+            )
+            self._exact_trade_confirmations.add(trade_id)
+            return None
+        if dexie_terminal == "cancelled":
+            log_event(
+                "info",
+                "fill_reused_coin_cancel_confirmed",
+                f"Source coin {coin_id[:16]}... appears on {offer_count} "
+                f"re-quotes, but Dexie reports {trade_id[:16]}... was cancelled. "
+                f"Rejecting fill attribution.",
+                data={
+                    "trade_id": trade_id,
+                    "side": side,
+                    "coin_id": coin_id,
+                    "offer_count": offer_count,
+                    "source": "dexie",
+                },
+            )
+            return "rejected"
+
+        try:
+            sage_confirmed = self._check_sage_offer_confirmed(trade_id)
+        except Exception:
+            sage_confirmed = False
+        if sage_confirmed:
+            log_event(
+                "success",
+                "fill_reused_coin_confirmed",
+                f"Source coin {coin_id[:16]}... appears on {offer_count} "
+                f"re-quotes, and Sage confirms {trade_id[:16]}... was filled.",
+                data={
+                    "trade_id": trade_id,
+                    "side": side,
+                    "coin_id": coin_id,
+                    "offer_count": offer_count,
+                    "source": "sage",
+                },
+            )
+            self._exact_trade_confirmations.add(trade_id)
+            return None
+
+        if verified_fill_count > 0:
+            log_event(
+                "warning",
+                "fill_reused_coin_duplicate_needs_trade_confirmation",
+                f"Spacescan saw source coin {coin_id[:16]}... spent for "
+                f"{trade_id[:16]}..., but that coin is already attributed to "
+                f"{verified_fill_count} verified fill(s). Dexie/Sage did not "
+                f"confirm this exact trade, so the bot will retry instead of "
+                f"booking a likely duplicate fill.",
+                data={
+                    "trade_id": trade_id,
+                    "side": side,
+                    "coin_id": coin_id,
+                    "offer_count": offer_count,
+                    "verified_fill_count": verified_fill_count,
+                },
+            )
+            return "unverified"
+
+        log_event(
+            "warning",
+            "fill_reused_coin_needs_trade_confirmation",
+            f"Spacescan saw source coin {coin_id[:16]}... spent, but that coin "
+            f"appears on {offer_count} local re-quotes. Dexie/Sage did not "
+            f"confirm this exact trade {trade_id[:16]}..., so the bot will "
+            f"retry instead of booking a likely duplicate fill.",
+            data={
+                "trade_id": trade_id,
+                "side": side,
+                "coin_id": coin_id,
+                "offer_count": offer_count,
+                "verified_fill_count": verified_fill_count,
+            },
+        )
+        return "unverified"
 
     def _check_sage_offer_confirmed(self, trade_id: str) -> bool:
         """Ask Sage directly whether this offer is in a filled/confirmed state.
@@ -1663,12 +1869,14 @@ class FillTracker:
         Used for bot-cancel cleanup and as a fallback when Spacescan
         verification is exhausted so we don't silently lose a real fill
         to a rate-limit cascade. Dexie indexes every on-chain spend and
-        distinguishes status=3 (spend was a cancel) from status=4
-        (spend was a fill) once a block confirms.
+        distinguishes status=3 (usually cancel/expired) from status=4
+        (filled) once a block confirms. Status=3 rows are intentionally
+        conservative even when requested-output coin details are present:
+        that payload shape has been observed on bot cancel transactions too.
 
         Returns:
             "filled"    — Dexie status=4
-            "cancelled" — Dexie status=3
+            "cancelled" — Dexie status=3 without requested outputs
             "unknown"   — any other state (still open, pending, 404,
                           rate-limited, mismatched trade_id, or network
                           error). The caller should fall back to a
@@ -1709,12 +1917,11 @@ class FillTracker:
         if detail_trade_id and detail_trade_id != norm_trade_id:
             return "unknown"
 
-        status = detail.get("status")
-        if status == 4:
+        if _dexie_detail_confirms_fill(detail):
             # Cache for _record_fill() so it doesn't re-fetch
             self._last_dexie_details[trade_id] = detail
             return "filled"
-        if status == 3:
+        if _dexie_detail_confirms_cancel(detail):
             return "cancelled"
         return "unknown"
 
@@ -1788,6 +1995,30 @@ class FillTracker:
             status_num = None
 
         if status_num == 0:
+            now_ts = time.time()
+            expiry_sources = []
+            db_expiry_ts = self._parse_iso_ts((db_offer or {}).get("expires_at"))
+            if db_expiry_ts is not None:
+                expiry_sources.append(("db", db_expiry_ts))
+            dexie_expiry_ts = self._parse_iso_ts(
+                detail.get("date_expiry") or detail.get("expires_at")
+            )
+            if dexie_expiry_ts is not None:
+                expiry_sources.append(("dexie", dexie_expiry_ts))
+            if expiry_sources and all(now_ts > ts for _, ts in expiry_sources):
+                log_event(
+                    "info",
+                    "fill_dexie_open_expired_defer",
+                    f"Dexie still shows {trade_id[:16]}... as OPEN, but the "
+                    f"offer expiry has passed; deferring to Spacescan for "
+                    f"the authoritative verdict.",
+                    data={
+                        "trade_id": trade_id,
+                        "dexie_id": dexie_id,
+                        "expiry_sources": {source: ts for source, ts in expiry_sources},
+                    },
+                )
+                return None
             log_event(
                 "info",
                 "fill_dexie_still_open",
@@ -1921,6 +2152,11 @@ class FillTracker:
                     _fee_mojos = int(_fee_xch * Decimal("1000000000000"))
             except Exception:
                 _fee_mojos = 0
+            verification_status = (
+                "verified_exact"
+                if trade_id in self._exact_trade_confirmations
+                else "verified"
+            )
             fill_id = record_fill(
                 trade_id=trade_id,
                 side=side,
@@ -1929,8 +2165,10 @@ class FillTracker:
                 size_cat=size_cat,
                 cat_asset_id=cfg.CAT_ASSET_ID,
                 tier=tier,
+                verification_status=verification_status,
                 fee_mojos_xch=_fee_mojos,
             )
+            self._exact_trade_confirmations.discard(trade_id)
         except Exception as e:
             log_event(
                 "error",

@@ -11,6 +11,7 @@ Fixes:
 import sys
 import os
 import io
+import importlib
 
 # ---------------------------------------------------------------------------
 # Isolate the test run from the user's real %APPDATA%\Catalyst\ data dir.
@@ -57,6 +58,24 @@ _SRC_DIR = os.path.abspath(
 )
 if os.path.isdir(_SRC_DIR) and _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
+
+
+# Some older pure-unit tests install tiny import-time stubs for optional-ish
+# dependencies when those packages are absent from sys.modules. Under full
+# collection those stubs can leak into later modules before fixture teardown
+# runs, so preload the real packages once for the test session.
+def _preload_real_package(package: str) -> None:
+    try:
+        importlib.import_module(package)
+    except ModuleNotFoundError as exc:
+        if exc.name != package:
+            raise
+        # Ad-hoc unit-test environments may omit optional runtime packages.
+        return
+
+
+_preload_real_package("dotenv")
+_preload_real_package("urllib3")
 
 # ---------------------------------------------------------------------------
 # Exclude standalone integration scripts from collection.

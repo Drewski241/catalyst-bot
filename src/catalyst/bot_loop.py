@@ -274,6 +274,31 @@ def map_sage_terminal_offer_status(
     return None
 
 
+def collect_locally_expired_stale_offer_ids(
+    stale_ids, stale_db_map, already_resolved=None, now_ts=None
+):
+    """Return stale DB offers whose local max_time has already elapsed.
+
+    Startup cleanup only sees offers missing from the wallet-open list. If
+    Sage completed history also omits one of those offers, the local expiry
+    timestamp is still enough to distinguish an expiry from a cancel.
+    """
+    resolved = set(already_resolved or set())
+    expired = set()
+    for tid in stale_ids:
+        if tid in resolved:
+            continue
+        mapped = map_sage_terminal_offer_status(
+            None,
+            sage_offer={},
+            local_offer=(stale_db_map or {}).get(tid, {}),
+            now_ts=now_ts,
+        )
+        if mapped == "expired":
+            expired.add(tid)
+    return expired
+
+
 class _ReserveCheckDeferred(Exception):
     """Raised inside the reserve-floor block when a balance read failed.
 
@@ -753,10 +778,34 @@ class BotLoop:
             "buy": 0,
             "sell": 0,
         }
+        self._last_zero_target_topup_defer_log_at: float = 0.0
+        self._last_toxicity_live_cancel: Dict[str, Dict] = {
+            "buy": {"at": 0.0, "signature": ""},
+            "sell": {"at": 0.0, "signature": ""},
+        }
+        self._toxicity_live_cancel_cooldown: float = float(
+            getattr(cfg, "MARKET_TOXICITY_CANCEL_COOLDOWN_SECS", 60) or 60
+        )
 
         # Flag: __init__ complete — get_state() checks this to avoid
         # AttributeError when SSE connects before all attrs are set.
+        try:
+            from bot_health import set_dexie_requeue_handler
+
+            set_dexie_requeue_handler(self._queue_stale_dexie_post)
+        except Exception as e:
+            log_event(
+                "warning",
+                "bot_health_dexie_requeue_hook_failed",
+                f"Failed to register Dexie stale-post repair hook: {e}",
+            )
+
         self._init_complete = True
+
+    def _queue_stale_dexie_post(
+        self, offer_bech32: str, trade_id: Optional[str] = None
+    ) -> None:
+        self.dexie_manager.queue_post(offer_bech32, trade_id, force=True)
 
     def _requote_backoff_remaining(self, side: str) -> float:
         try:
@@ -1336,6 +1385,53 @@ class BotLoop:
             "book is full and there is no reserve, top-up pool, or useful "
             "small coin source to split yet.",
             data={"wallet_types": waiting},
+        )
+        return True
+
+    def _defer_topup_for_zero_offer_targets(
+        self,
+        active_buy_count: int,
+        active_sell_count: int,
+    ) -> bool:
+        """Avoid splitting coins while risk logic intentionally disables quoting."""
+        try:
+            mid_price = Decimal(str(self._current_mid_price or "0"))
+            targets = self._get_expected_offer_targets(mid_price)
+        except Exception:
+            return False
+
+        buy_target = max(0, int((targets or {}).get("buy", 0) or 0))
+        sell_target = max(0, int((targets or {}).get("sell", 0) or 0))
+        if buy_target > 0 or sell_target > 0:
+            return False
+
+        try:
+            now = time.time()
+            cooldown = float(
+                getattr(cfg, "TOPUP_ZERO_TARGET_LOG_COOLDOWN_SECS", 120) or 120
+            )
+            if now - float(self._last_zero_target_topup_defer_log_at or 0.0) < cooldown:
+                return True
+            self._last_zero_target_topup_defer_log_at = now
+        except Exception as e:
+            log_event(
+                "debug",
+                "topup_zero_target_log_cooldown_error",
+                "Could not update zero-target top-up deferral log cooldown; "
+                "continuing with the deferral log.",
+                data={"error": str(e)},
+            )
+        log_event(
+            "info",
+            "topup_deferred_zero_offer_targets",
+            "Skipping coin top-up because risk controls have reduced both "
+            "offer targets to zero; coin shaping will resume when quoting resumes.",
+            data={
+                "active_buy": int(active_buy_count or 0),
+                "active_sell": int(active_sell_count or 0),
+                "buy_target": buy_target,
+                "sell_target": sell_target,
+            },
         )
         return True
 
@@ -2521,6 +2617,116 @@ class BotLoop:
                 "warning", "toxicity_guard_error", f"Market toxicity guard failed: {e}"
             )
             return None
+
+    def _cancel_toxicity_throttled_offers(
+        self,
+        snapshot,
+        current_buy_ids=None,
+        current_sell_ids=None,
+    ) -> Dict[str, set]:
+        """Cancel live offers on sides the toxicity guard has risked off."""
+        cancelled_by_side = {"buy": set(), "sell": set()}
+        if snapshot is None:
+            return cancelled_by_side
+        if not bool(getattr(cfg, "MARKET_TOXICITY_CANCEL_LIVE_OFFERS", True)):
+            return cancelled_by_side
+
+        now_ts = time.time()
+        side_ids = {
+            "buy": set(current_buy_ids or set()),
+            "sell": set(current_sell_ids or set()),
+        }
+
+        try:
+            snapshot_data = snapshot.to_dict()
+        except Exception:
+            snapshot_data = {}
+
+        for side, current_ids in side_ids.items():
+            try:
+                throttled = bool(snapshot.is_side_throttled(side, now_ts))
+            except Exception:
+                throttled = side in set(getattr(snapshot, "throttled_sides", []) or [])
+            if not throttled:
+                continue
+
+            pending_cancel_ids = self._pending_cancel_wallet_ids(side)
+            live_ids = {tid for tid in current_ids if tid} - pending_cancel_ids
+            if not live_ids:
+                continue
+
+            signature = ",".join(sorted(live_ids))
+            last = (self._last_toxicity_live_cancel or {}).get(side, {}) or {}
+            cooldown = float(
+                getattr(
+                    cfg,
+                    "MARKET_TOXICITY_CANCEL_COOLDOWN_SECS",
+                    self._toxicity_live_cancel_cooldown,
+                )
+                or self._toxicity_live_cancel_cooldown
+            )
+            if (
+                signature == str(last.get("signature") or "")
+                and now_ts - float(last.get("at") or 0) < cooldown
+            ):
+                continue
+
+            log_event(
+                "warning",
+                "market_toxicity_live_cancel_start",
+                f"Market toxicity is throttling {side}; cancelling "
+                f"{len(live_ids)} live {side} offer(s) instead of leaving "
+                "exposure on-book.",
+                data={
+                    "side": side,
+                    "offer_count": len(live_ids),
+                    "pending_cancel_count": len(pending_cancel_ids),
+                    "toxicity": snapshot_data,
+                },
+            )
+
+            try:
+                results = self.offer_manager.cancel_offers(
+                    sorted(live_ids),
+                    reason="market_toxicity_guard",
+                    force_storm=True,
+                    skip_confirmation=True,
+                )
+            except Exception as e:
+                log_event(
+                    "warning",
+                    "market_toxicity_live_cancel_failed",
+                    f"Could not cancel {side} offers for toxicity guard: {e}",
+                    data={"side": side, "offer_count": len(live_ids)},
+                )
+                continue
+
+            success_ids = {
+                tid
+                for tid, result in (results or {}).items()
+                if result and result.get("success")
+            }
+            failed_ids = live_ids - success_ids
+            cancelled_by_side[side] = success_ids
+            self._last_toxicity_live_cancel[side] = {
+                "at": now_ts,
+                "signature": signature,
+            }
+
+            log_event(
+                "warning" if failed_ids else "info",
+                "market_toxicity_live_cancel_result",
+                f"Market toxicity cancel for {side}: "
+                f"{len(success_ids)} submitted, {len(failed_ids)} failed.",
+                data={
+                    "side": side,
+                    "submitted_count": len(success_ids),
+                    "failed_count": len(failed_ids),
+                    "failed_trade_ids": sorted(failed_ids)[:10],
+                },
+            )
+
+        return cancelled_by_side
 
     def _clear_adaptive_target_backoff_for_confirmed_fills(
         self, buy_fills, sell_fills
@@ -3936,6 +4142,14 @@ class BotLoop:
         Without this, stale _probe_state, _last_quoted_price, etc. from
         the previous session cause incorrect behaviour on the second start.
         """
+
+        def note_reset_failure(component: str, exc: Exception) -> None:
+            log_event(
+                "debug",
+                "runtime_state_reset_skipped",
+                f"Runtime reset skipped {component}: {exc}",
+            )
+
         # Reset probe state to empty initial value (lock for thread safety)
         with self._probe_lock:
             self._probe_state = {
@@ -4008,6 +4222,26 @@ class BotLoop:
         self._consecutive_unhealthy = 0
         self._sweep_protection = {}
         self._recent_sweep_events = []
+        self._last_toxicity_live_cancel = {
+            "buy": {"at": 0.0, "signature": ""},
+            "sell": {"at": 0.0, "signature": ""},
+        }
+        try:
+            self.market_toxicity_guard.reset()
+        except Exception as exc:
+            note_reset_failure("market_toxicity_guard", exc)
+        try:
+            from sweep_coordinator import reset_coordinator as _reset_sweeps
+
+            _reset_sweeps()
+        except Exception as exc:
+            note_reset_failure("sweep_coordinator", exc)
+        try:
+            from dynamic_amm_buffer import reset_buffer as _reset_dynamic_buffer
+
+            _reset_dynamic_buffer()
+        except Exception as exc:
+            note_reset_failure("dynamic_amm_buffer", exc)
         self._adaptive_target_backoff_until = {"buy": 0.0, "sell": 0.0}
         self._last_adaptive_offer_targets = {"buy": 0, "sell": 0}
         self._last_pricing_success_ts = 0
@@ -6028,6 +6262,35 @@ class BotLoop:
     # Startup sync
     # -------------------------------------------------------------------
 
+    def _initialize_coinset_for_wallet_type(self, wallet_type: str) -> None:
+        """Wire Coinset where it is safe for the active wallet backend.
+
+        Sage cannot use Coinset as an inventory source because the light wallet
+        owns address discovery, but point lookups by coin id are still useful
+        chain truth for top-up submit verification.
+        """
+        if not getattr(cfg, "COINSET_ENABLED", True):
+            return
+
+        wallet_type = str(wallet_type or "").lower().strip()
+        if wallet_type != "sage":
+            return
+
+        try:
+            self.coin_manager._coinset_client = self.coinset_client
+            log_event(
+                "info",
+                "coinset_ready",
+                "Coinset point lookups enabled for Sage chain-truth checks; "
+                "wallet RPC remains the inventory source",
+            )
+        except Exception as e:
+            log_event(
+                "info",
+                "coinset_init_error",
+                f"Coinset Sage chain-truth wiring failed: {e} - using wallet RPC only",
+            )
+
     def _startup_sync(self):
         """Sync state from the Chia wallet on startup.
 
@@ -6390,6 +6653,26 @@ class BotLoop:
                             "warning",
                             "db_cleanup_status_check_failed",
                             f"Could not check completed offers at startup: {e}",
+                        )
+
+                    local_expire_ids = collect_locally_expired_stale_offer_ids(
+                        stale_ids,
+                        stale_db_map,
+                        already_resolved=(
+                            fill_ids
+                            | expire_ids
+                            | pending_cancel_ids
+                            | deferred_stale_ids
+                        ),
+                        now_ts=now_ts_cleanup,
+                    )
+                    if local_expire_ids:
+                        expire_ids.update(local_expire_ids)
+                        log_event(
+                            "info",
+                            "db_cleanup_local_expired",
+                            f"Classified {len(local_expire_ids)} stale DB offers "
+                            f"as expired from local offer max_time",
                         )
 
                     cancel_ids = [
@@ -7317,6 +7600,8 @@ class BotLoop:
                 if hasattr(cfg, "WALLET_TYPE")
                 else os.getenv("WALLET_TYPE", "sage").lower().strip()
             )
+            if getattr(cfg, "COINSET_ENABLED", True) and wallet_type == "sage":
+                self._initialize_coinset_for_wallet_type(wallet_type)
             if getattr(cfg, "COINSET_ENABLED", True) and wallet_type != "sage":
                 try:
                     ok = self.coinset_client.initialize_puzzle_hashes()
@@ -7422,29 +7707,40 @@ class BotLoop:
                     getattr(cfg, "SWEEP_PROTECTION_UNKNOWN_SECS", 30)
                 )
                 _protected_sides: dict = {}  # side → expiry timestamp
+                _side_fill_counts = {"buy": 0, "sell": 0}
+
+                def _protect_sweep_side(_side: str, _secs: float) -> None:
+                    if _side not in ("buy", "sell"):
+                        return
+                    _protected_sides[_side] = time.time() + _secs
+                    _side_fill_counts[_side] += 1
+
                 for _entry in _sweep_evt.fills:
                     if _entry.classification == _FT.ARB_SWEEP_BUY:
                         # Arb bought from us → our SELL offers swept
-                        _protected_sides["sell"] = time.time() + _prot_secs_known
+                        _protect_sweep_side("sell", _prot_secs_known)
                     elif _entry.classification == _FT.ARB_SWEEP_SELL:
                         # Arb sold to us → our BUY offers swept
-                        _protected_sides["buy"] = time.time() + _prot_secs_known
+                        _protect_sweep_side("buy", _prot_secs_known)
                     elif _entry.side in ("buy", "sell"):
                         # Direction from fill side: the offer that got swept
-                        _protected_sides[_entry.side] = time.time() + _prot_secs_known
+                        _protect_sweep_side(_entry.side, _prot_secs_known)
                     else:
                         # No direction data — protect both but only briefly
                         for _s in ("buy", "sell"):
-                            _protected_sides.setdefault(
-                                _s, time.time() + _prot_secs_unknown
-                            )
+                            _protect_sweep_side(_s, _prot_secs_unknown)
                 self._sweep_protection.update(_protected_sides)
                 _sweep_now = time.time()
                 for _side in _protected_sides.keys() or [""]:
+                    _side_fill_count = (
+                        _side_fill_counts.get(_side) or _sweep_evt.fill_count
+                    )
                     self._recent_sweep_events.append(
                         {
                             "side": _side,
-                            "fill_count": _sweep_evt.fill_count,
+                            "fill_count": _side_fill_count,
+                            "side_fill_count": _side_fill_count,
+                            "total_fill_count": _sweep_evt.fill_count,
                             "sweep_group_id": _sweep_evt.sweep_group_id,
                             "spent_block_index": _sweep_evt.spent_block_index,
                             "timestamp": _sweep_now,
@@ -7872,6 +8168,8 @@ class BotLoop:
         # (mirroring trim_excess_offers), so neither inflates the main ladder
         # count and triggers a false trim-create cycle. Boost = Close the Gap
         # probes, sniper = arb snipes — both live in their own pools.
+        _db_buy_all = []
+        _db_sell_all = []
         try:
             from database import get_open_offers as _db_get_open
 
@@ -8036,7 +8334,15 @@ class BotLoop:
             try:
                 w = _mempool_watcher_mod._watcher_instance
                 if w:
-                    all_open_offers = list(open_buys) + list(open_sells)
+                    # Sage wallet offer records do not reliably include the
+                    # locked coin_id. CATalyst's DB rows do, so include the
+                    # DB-open book when feeding the mempool watcher.
+                    all_open_offers = (
+                        list(open_buys)
+                        + list(open_sells)
+                        + list(_db_buy_all)
+                        + list(_db_sell_all)
+                    )
                     offer_coin_ids = {
                         o.get("coin_id", "")
                         for o in all_open_offers
@@ -8189,7 +8495,7 @@ class BotLoop:
             )
             self._apply_immediate_sweep_protection(buy_fills, sell_fills)
 
-        self._update_market_toxicity(
+        toxicity_snapshot = self._update_market_toxicity(
             price_data=price_data,
             mid_price=mid_price,
             arb_gap=arb_gap,
@@ -8198,6 +8504,24 @@ class BotLoop:
             buy_fills=buy_fills,
             sell_fills=sell_fills,
         )
+        toxicity_cancelled = self._cancel_toxicity_throttled_offers(
+            toxicity_snapshot,
+            current_buy_ids=current_buy_ids,
+            current_sell_ids=current_sell_ids,
+        )
+        if toxicity_cancelled["buy"] or toxicity_cancelled["sell"]:
+            current_buy_ids -= toxicity_cancelled["buy"]
+            current_sell_ids -= toxicity_cancelled["sell"]
+            open_buys = [
+                offer
+                for offer in open_buys
+                if str(offer.get("trade_id") or "") not in toxicity_cancelled["buy"]
+            ]
+            open_sells = [
+                offer
+                for offer in open_sells
+                if str(offer.get("trade_id") or "") not in toxicity_cancelled["sell"]
+            ]
 
         if not buy_fills and not sell_fills:
             print(" none", flush=True)
@@ -11471,31 +11795,29 @@ class BotLoop:
             print("   [11] Dexie auto-post OFF", flush=True)
             log_event("debug", "dexie_disabled", "DEXIE_AUTO_POST is off")
 
-        # ---- Step 11b: Broadcast to Splash after Dexie visibility is live ----
+        # ---- Step 11b: Submit to local Splash node after Dexie is live ----
         if getattr(cfg, "SPLASH_ENABLED", False):
             try:
                 splash_q = len(getattr(self.splash_manager, "_queue", []) or [])
                 if splash_q > 0:
                     print(
-                        f"   [11b] Broadcasting {splash_q} offers to Splash...",
+                        f"   [11b] Submitting {splash_q} offers to local Splash node...",
                         end="",
                         flush=True,
                     )
                     log_event(
                         "debug",
                         "splash_flush_start",
-                        f"Broadcasting {splash_q} offers to Splash...",
+                        f"Submitting {splash_q} offers to local Splash node...",
                     )
                 result = self.splash_manager.flush_queue()
                 if splash_q > 0:
                     print(f" {result}", flush=True)
-                    log_event(
-                        "info", "splash_flush_result", f"Splash broadcast: {result}"
-                    )
+                    log_event("info", "splash_flush_result", f"Splash submit: {result}")
                 else:
                     print("   [11b] Splash queue empty", flush=True)
             except Exception as e:
-                print(f"   [11b] Splash broadcast error: {e}", flush=True)
+                print(f"   [11b] Splash submit error: {e}", flush=True)
                 log_event("debug", "splash_error", f"Splash flush failed: {e}")
         else:
             print("   [11b] Splash OFF", flush=True)
@@ -11838,6 +12160,11 @@ class BotLoop:
         # path, True for drip path); start_topup with no is_drip arg preserves
         # that, so the worker uses the matching action threshold.
         if self.coin_manager.needs_topup(active_buy_count, active_sell_count):
+            if self._defer_topup_for_zero_offer_targets(
+                active_buy_count,
+                active_sell_count,
+            ):
+                return
             if bool(
                 getattr(self.coin_manager, "_topup_is_drip", False)
             ) and self._defer_drip_topup_for_offer_rebuild(
