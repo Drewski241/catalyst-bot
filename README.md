@@ -219,6 +219,27 @@ where CATalyst is running.
    Windows uses `Catalyst-Setup-v*.exe`, macOS uses the `.dmg`, and Linux users
    can use either the `.AppImage` or the `.deb` package.
 2. Install or open the package using the normal flow for your operating system.
+
+#### Ubuntu 24.04 (Noble)
+
+The `.deb` package is the most stable install path on Ubuntu 24.04. It declares
+the GTK/WebKit and notification dependencies the desktop window needs:
+
+```bash
+sudo apt install ./catalyst_v1.2.6_amd64.deb
+catalyst
+```
+
+If you prefer a portable install, make the AppImage executable and run it:
+
+```bash
+chmod +x Catalyst-linux-v1.2.6-x86_64.AppImage
+./Catalyst-linux-v1.2.6-x86_64.AppImage
+```
+
+Both formats bundle Python and the Qt desktop backend, so you do not need to
+install PyWebView or PyQt6 separately. Sage wallet must still be installed
+locally with RPC enabled.
    The packaged app includes Python and the app defaults; no manual `.env`
    editing is needed for normal use.
 3. Launch CATalyst on the same computer as Sage wallet. On first run it checks
