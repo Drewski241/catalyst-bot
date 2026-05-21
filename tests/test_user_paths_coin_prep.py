@@ -1,7 +1,9 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "src", "catalyst"))
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "src", "catalyst")
+)
 
 from user_paths import (
     coin_prep_last_json,

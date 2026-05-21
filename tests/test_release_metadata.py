@@ -15,7 +15,7 @@ def test_sync_release_metadata_writes_runtime_version_and_windows_info(tmp_path)
     version_file.write_text(
         '"""Runtime version helpers."""\n\n__version__ = "1.0.0"\n\n'
         "def get_version() -> str:\n"
-        '    return __version__\n',
+        "    return __version__\n",
         encoding="utf-8",
     )
 
