@@ -31,6 +31,11 @@ from flask import Blueprint, Response, jsonify, request, send_file
 import api_server
 from config import cfg
 from database import log_event, get_stats, backup_database, get_connection
+from user_paths import (
+    coin_prep_last_json,
+    coin_prep_output_log,
+    coin_prep_status_file,
+)
 
 
 # Package directory — the parent of blueprints/ (i.e. src/catalyst/).
@@ -1393,9 +1398,7 @@ def _api_coin_prep_trigger_locked():
                 worker_path = os.path.join(worker_dir, "coin_prep_worker.py")
                 worker_cmd = _coin_prep_worker_command(worker_path)
 
-                if not getattr(sys, "frozen", False) and not os.path.exists(
-                    worker_path
-                ):
+                if not os.path.exists(worker_path):
                     api_server._coin_prep_state["error"] = (
                         "coin_prep_worker.py not found"
                     )
