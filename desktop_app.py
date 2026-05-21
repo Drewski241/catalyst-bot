@@ -128,6 +128,41 @@ WINDOW_WIDTH = 1600
 WINDOW_HEIGHT = 1000
 WINDOW_MIN_WIDTH = 1000
 WINDOW_MIN_HEIGHT = 700
+
+
+def _configure_linux_webengine_env() -> None:
+    """Allow the Qt WebEngine shell to reach loopback Flask on Linux.
+
+    Packaged Linux builds show splash.html via file:// first. Its redirect to
+    http://127.0.0.1:5000/ is blocked by Chromium Private Network Access unless
+    we either load Flask directly or relax the block for the embedded shell.
+    """
+    if sys.platform != "linux":
+        return
+    existing = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "").strip()
+    flags = (
+        "--disable-features=BlockInsecurePrivateNetworkRequests",
+        "--allow-insecure-localhost",
+    )
+    for flag in flags:
+        if flag not in existing:
+            existing = f"{existing} {flag}".strip()
+    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = existing
+
+
+def _initial_desktop_url() -> str:
+    """Pick the first URL shown in the native desktop window."""
+    flask_url = f"http://{FLASK_HOST}:{FLASK_PORT}/"
+    if sys.platform == "linux":
+        # Flask is already up before the window opens; skip file:// splash so
+        # Qt WebEngine does not hit ERR_NETWORK_ACCESS_DENIED on redirect.
+        return flask_url
+    splash_path = _bundle_path("splash.html")
+    if os.path.exists(splash_path):
+        return "file:///" + splash_path.replace("\\", "/")
+    return flask_url
+
+
 # True when the app is running without a visible console (pythonw.exe or
 # after _hide_windows_console() is called).  The crash handler uses this to
 # decide whether to show a native dialog instead of printing to the terminal.

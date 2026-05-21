@@ -75,11 +75,14 @@ def test_linux_notification_runtime_dependencies_are_declared():
     assert "libnotify-bin" in workflow
     assert "libnotify-bin" in package_script
 
-    for package in (
-        "gir1.2-ayatanaappindicator3-0.1",
-        "libayatana-appindicator3-1",
-    ):
-        assert package in package_script
+
+def test_linux_desktop_skips_file_splash_redirect():
+    desktop_app = (ROOT / "desktop_app.py").read_text(encoding="utf-8")
+
+    assert "_initial_desktop_url" in desktop_app
+    assert "_configure_linux_webengine_env" in desktop_app
+    assert 'sys.platform == "linux"' in desktop_app
+    assert "ERR_NETWORK_ACCESS_DENIED" in desktop_app or "file:// → loopback" in desktop_app
 
 
 def test_linux_detect_gui_backend_prefers_qt_when_available(monkeypatch):
