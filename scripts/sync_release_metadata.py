@@ -65,27 +65,29 @@ VSVersionInfo(
 """
 
 
-def _bump_version_constant(version_file: Path, normalized: str) -> None:
-    text = version_file.read_text(encoding="utf-8")
-    updated, count = re.subn(
-        r'^__version__\s*=\s*["\'][^"\']+["\']',
-        f'__version__ = "{normalized}"',
-        text,
-        count=1,
-        flags=re.MULTILINE,
-    )
-    if count != 1:
-        raise ValueError(f"could not update __version__ in {version_file}")
-    version_file.write_text(updated, encoding="utf-8")
-
-
 def sync_release_metadata(root: Path, version: str) -> None:
     normalized, parts = _parse_version(version)
 
     version_file = root / "src" / "catalyst" / "_version.py"
-    if not version_file.is_file():
-        raise FileNotFoundError(version_file)
-    _bump_version_constant(version_file, normalized)
+    version_line = f'__version__ = "{normalized}"'
+    if version_file.is_file():
+        source = version_file.read_text(encoding="utf-8")
+        if "def get_version" in source:
+            if not re.search(r"^__version__ = ", source, flags=re.M):
+                raise ValueError("_version.py missing __version__ assignment")
+            source = re.sub(
+                r'^__version__ = ".*?"\s*$',
+                version_line,
+                source,
+                count=1,
+                flags=re.M,
+            )
+            version_file.write_text(source, encoding="utf-8")
+        else:
+            version_file.write_text(f"{version_line}\n", encoding="utf-8")
+    else:
+        version_file.parent.mkdir(parents=True, exist_ok=True)
+        version_file.write_text(f"{version_line}\n", encoding="utf-8")
 
     version_info = root / "version_info.txt"
     version_info.write_text(_version_info(normalized, parts), encoding="utf-8")

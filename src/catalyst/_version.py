@@ -15,9 +15,7 @@ from functools import lru_cache
 from pathlib import Path
 
 
-__version__ = "1.2.38.2"
-
-
+__version__ = "1.2.38.3"
 def _describe_to_version(describe: str) -> str:
     raw = str(describe or "").strip()
     if raw.lower().startswith("v"):
