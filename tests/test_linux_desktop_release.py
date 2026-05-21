@@ -75,6 +75,12 @@ def test_linux_notification_runtime_dependencies_are_declared():
     assert "libnotify-bin" in workflow
     assert "libnotify-bin" in package_script
 
+    for package in (
+        "gir1.2-ayatanaappindicator3-0.1",
+        "libayatana-appindicator3-1",
+    ):
+        assert package in package_script
+
 
 def test_linux_detect_gui_backend_prefers_qt_when_available(monkeypatch):
     sys.modules.pop("desktop_app", None)

@@ -222,24 +222,30 @@ where CATalyst is running.
 
 #### Ubuntu 24.04 (Noble)
 
-The `.deb` package is the most stable install path on Ubuntu 24.04. It declares
-the GTK/WebKit and notification dependencies the desktop window needs:
+Use the **v1.2.37** (or newer) `.deb` from the
+[releases page](https://github.com/catalystxch/catalyst-bot/releases/latest) — do
+not install mis-tagged older fork builds (for example `v1.2.6`).
 
 ```bash
-sudo apt install ./catalyst_v1.2.6_amd64.deb
+sudo apt install ./catalyst_v1.2.37_amd64.deb
 catalyst
 ```
 
-If you prefer a portable install, make the AppImage executable and run it:
+For a portable install:
 
 ```bash
-chmod +x Catalyst-linux-v1.2.6-x86_64.AppImage
-./Catalyst-linux-v1.2.6-x86_64.AppImage
+chmod +x Catalyst-linux-v1.2.37-x86_64.AppImage
+./Catalyst-linux-v1.2.37-x86_64.AppImage
 ```
 
-Both formats bundle Python and the Qt desktop backend, so you do not need to
-install PyWebView or PyQt6 separately. Sage wallet must still be installed
-locally with RPC enabled.
+System tray icon (optional):
+
+```bash
+sudo apt install gir1.2-ayatanaappindicator3-0.1 libayatana-appindicator3-1
+```
+
+Sage wallet must be installed locally with RPC enabled. Python and PyWebView are
+bundled inside the package.
    The packaged app includes Python and the app defaults; no manual `.env`
    editing is needed for normal use.
 3. Launch CATalyst on the same computer as Sage wallet. On first run it checks
