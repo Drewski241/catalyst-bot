@@ -219,6 +219,33 @@ where CATalyst is running.
    Windows uses `Catalyst-Setup-v*.exe`, macOS uses the `.dmg`, and Linux users
    can use either the `.AppImage` or the `.deb` package.
 2. Install or open the package using the normal flow for your operating system.
+
+#### Ubuntu 24.04 (Noble)
+
+Use the **v1.2.37** (or newer) `.deb` from the
+[releases page](https://github.com/catalystxch/catalyst-bot/releases/latest) — do
+not install mis-tagged older fork builds (for example `v1.2.6`).
+
+```bash
+sudo apt install ./catalyst_v1.2.37_amd64.deb
+catalyst
+```
+
+For a portable install:
+
+```bash
+chmod +x Catalyst-linux-v1.2.37-x86_64.AppImage
+./Catalyst-linux-v1.2.37-x86_64.AppImage
+```
+
+System tray icon (optional):
+
+```bash
+sudo apt install gir1.2-ayatanaappindicator3-0.1 libayatana-appindicator3-1
+```
+
+Sage wallet must be installed locally with RPC enabled. Python and PyWebView are
+bundled inside the package.
    The packaged app includes Python and the app defaults; no manual `.env`
    editing is needed for normal use.
 3. Launch CATalyst on the same computer as Sage wallet. On first run it checks

@@ -767,8 +767,9 @@ def api_debug_coinprep():
     bot = api_server.bot
     result = {"_coin_prep_state": api_server._coin_prep_state}
 
-    base_dir = os.path.dirname(os.path.abspath(api_server.__file__))
-    status_file = os.path.join(base_dir, "coin_prep_status.json")
+    from user_paths import coin_prep_output_log, coin_prep_status_file
+
+    status_file = coin_prep_status_file()
     if os.path.exists(status_file):
         try:
             with open(status_file, "r") as f:
@@ -778,7 +779,7 @@ def api_debug_coinprep():
     else:
         result["worker_status_file"] = "NOT FOUND"
 
-    log_file = os.path.join(base_dir, "coin_prep_output.log")
+    log_file = coin_prep_output_log()
     if os.path.exists(log_file):
         try:
             with open(log_file, "r", encoding="utf-8") as f:

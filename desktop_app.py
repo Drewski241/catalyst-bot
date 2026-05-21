@@ -128,6 +128,43 @@ WINDOW_WIDTH = 1600
 WINDOW_HEIGHT = 1000
 WINDOW_MIN_WIDTH = 1000
 WINDOW_MIN_HEIGHT = 700
+
+
+def _configure_linux_webengine_env() -> None:
+    """Allow the Qt WebEngine shell to reach loopback Flask on Linux.
+
+    Packaged Linux builds show splash.html via file:// first. Its redirect to
+    http://127.0.0.1:5000/ is blocked by Chromium Private Network Access unless
+    we either load Flask directly or relax the block for the embedded shell.
+    """
+    if sys.platform != "linux":
+        return
+    existing = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "").strip()
+    flags = (
+        "--disable-features=BlockInsecurePrivateNetworkRequests",
+        "--allow-insecure-localhost",
+    )
+    for flag in flags:
+        if flag not in existing:
+            existing = f"{existing} {flag}".strip()
+    os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = existing
+
+
+def _initial_desktop_url() -> str:
+    """Pick the first URL shown in the native desktop window."""
+    flask_url = f"http://{FLASK_HOST}:{FLASK_PORT}/"
+    if sys.platform == "linux" or (
+        getattr(sys, "frozen", False) and sys.platform.startswith("linux")
+    ):
+        # Flask is already up before the window opens; skip file:// splash so
+        # Qt WebEngine does not hit ERR_NETWORK_ACCESS_DENIED on redirect.
+        return flask_url
+    splash_path = _bundle_path("splash.html")
+    if os.path.exists(splash_path):
+        return "file:///" + splash_path.replace("\\", "/")
+    return flask_url
+
+
 # True when the app is running without a visible console (pythonw.exe or
 # after _hide_windows_console() is called).  The crash handler uses this to
 # decide whether to show a native dialog instead of printing to the terminal.
@@ -712,6 +749,7 @@ def start_flask_server():
 
 def run_desktop_mode(dev_mode: bool = False):
     """Main desktop app flow."""
+    _configure_linux_webengine_env()
     try:
         import webview
     except ImportError:
@@ -874,15 +912,8 @@ def run_desktop_mode(dev_mode: bool = False):
     _win_x = _saved_state.get("x")
     _win_y = _saved_state.get("y")
 
-    # Show a local splash page first (logo + "created by MonkeyZoo") so the
-    # window doesn't flash black while the WebView2 backend boots and Flask's
-    # first HTML render lands. The splash auto-redirects to the Flask URL
-    # after a brief delay (see splash.html).
-    _splash_path = _bundle_path("splash.html")
-    if os.path.exists(_splash_path):
-        _initial_url = "file:///" + _splash_path.replace("\\", "/")
-    else:
-        _initial_url = f"http://{FLASK_HOST}:{FLASK_PORT}/"
+    _initial_url = _initial_desktop_url()
+    print(f"  Desktop window URL: {_initial_url}", flush=True)
 
     _create_window_kwargs = dict(
         title=APP_NAME,
@@ -1069,6 +1100,10 @@ def _detect_gui_backend():
     elif sys.platform == "darwin":
         return None  # Default WebKit on macOS
     else:
+        # PyInstaller bundles Qt WebEngine; find_spec("qtpy") can fail in frozen
+        # builds even though the Qt backend is present.
+        if getattr(sys, "frozen", False):
+            return "qt"
         if importlib.util.find_spec("qtpy") is not None:
             return "qt"
         return None  # Default GTK WebKit on Linux when Qt is not bundled
@@ -1325,6 +1360,8 @@ def main(argv=None):
     # creation so that the taskbar and notifications use the user-facing
     # CATalyst identity regardless of how the process was launched.
     _set_windows_app_user_model_id()
+    if sys.platform.startswith("linux"):
+        _configure_linux_webengine_env()
 
     parser = argparse.ArgumentParser(description=f"{APP_NAME} v{APP_VERSION}")
     parser.add_argument(

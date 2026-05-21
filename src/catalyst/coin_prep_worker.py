@@ -655,8 +655,16 @@ class CoinPrepWorker:
             self.tier_cat_sizes = {}
             self.tier_order = []
 
-        # Status file for GUI communication
-        self.status_file = "coin_prep_status.json"
+        # Status file for GUI communication (writable user data dir on packaged Linux)
+        _status = (os.environ.get("CATALYST_COIN_PREP_STATUS_FILE") or "").strip()
+        if not _status:
+            try:
+                from user_paths import coin_prep_status_file
+
+                _status = coin_prep_status_file()
+            except Exception:
+                _status = "coin_prep_status.json"
+        self.status_file = _status
 
         # Thread-safe status updates
         self.status_lock = threading.Lock()

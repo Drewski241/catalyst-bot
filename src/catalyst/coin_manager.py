@@ -194,6 +194,12 @@ def _coin_prep_worker_environment(base_env: Optional[dict] = None) -> dict:
     env = dict(os.environ if base_env is None else base_env)
     env["PYTHONIOENCODING"] = "utf-8"
     env["_CATALYST_PRESERVE_PROCESS_ENV"] = "1"
+    try:
+        from user_paths import coin_prep_status_file
+
+        env["CATALYST_COIN_PREP_STATUS_FILE"] = coin_prep_status_file()
+    except Exception:
+        pass
 
     wallet_type = (
         (env.get("WALLET_TYPE") or getattr(cfg, "WALLET_TYPE", "sage") or "sage")

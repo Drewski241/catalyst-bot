@@ -88,3 +88,43 @@ def test_linux_detect_gui_backend_prefers_qt_when_available(monkeypatch):
     )
 
     assert desktop_app._detect_gui_backend() == "qt"
+
+
+def test_linux_detect_gui_backend_uses_qt_in_frozen_build(monkeypatch):
+    sys.modules.pop("desktop_app", None)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    desktop_app = importlib.import_module("desktop_app")
+
+    monkeypatch.setattr(
+        desktop_app.importlib.util,
+        "find_spec",
+        lambda name: None,
+    )
+
+    assert desktop_app._detect_gui_backend() == "qt"
+
+
+def test_linux_initial_desktop_url_uses_loopback(monkeypatch):
+    sys.modules.pop("desktop_app", None)
+    monkeypatch.setattr(sys, "platform", "linux")
+    desktop_app = importlib.import_module("desktop_app")
+
+    assert desktop_app._initial_desktop_url() == "http://127.0.0.1:5000/"
+
+
+def test_build_py_verifies_linux_desktop_source_before_pyinstaller():
+    build_py = (ROOT / "build.py").read_text(encoding="utf-8")
+    assert "def _verify_linux_desktop_source" in build_py
+    assert "    _verify_linux_desktop_source()" in build_py
+
+
+def test_linux_package_launchers_export_qt_webengine_flags():
+    package_script = (ROOT / "scripts" / "package_linux.sh").read_text(encoding="utf-8")
+    assert "BlockInsecurePrivateNetworkRequests" in package_script
+    assert "FONTCONFIG_FILE" in package_script
+
+
+def test_linux_desktop_smoke_requires_loopback_url():
+    smoke = (ROOT / "scripts" / "linux_desktop_smoke.sh").read_text(encoding="utf-8")
+    assert "Desktop window URL: http://127.0.0.1:5000/" in smoke

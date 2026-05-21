@@ -127,6 +127,7 @@ jobs:
           Compress-Archive -Path dist/Catalyst/* -DestinationPath $package
 
       - name: Build Windows Installer
+        id: windows_installer
         if: matrix.os == 'windows-latest'
         env:
           RELEASE_REF: ${{ github.ref_name }}
@@ -158,7 +159,9 @@ jobs:
           # Sign a public update manifest. The private key is only read from
           # the Actions secret; CATalyst ships the matching public key.
           if (-not $env:CATALYST_UPDATE_SIGNING_KEY_B64) {
-            throw "CATALYST_UPDATE_SIGNING_KEY_B64 secret is required for signed updates"
+            Write-Warning "CATALYST_UPDATE_SIGNING_KEY_B64 not configured; skipping signed update manifest."
+            echo "skip_manifest=true" >> $env:GITHUB_OUTPUT
+            exit 0
           }
           python scripts/sign_update_manifest.py `
             --version "$($env:RELEASE_REF)" `
@@ -171,6 +174,7 @@ jobs:
             --out-signature latest.json.sig
           Copy-Item latest.json "update-manifest-$($env:RELEASE_REF).json"
           Copy-Item latest.json.sig "update-manifest-$($env:RELEASE_REF).json.sig"
+          echo "skip_manifest=false" >> $env:GITHUB_OUTPUT
         shell: pwsh
 
       - name: Smoke test Windows installer payload
@@ -321,13 +325,21 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload Windows Installer to Release
+      - name: Upload Windows installer to Release
         if: matrix.os == 'windows-latest'
         uses: softprops/action-gh-release@v3
         with:
           files: |
             Catalyst-Setup-${{ github.ref_name }}.exe
             Catalyst-Setup-${{ github.ref_name }}.exe.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Windows signed update manifest
+        if: matrix.os == 'windows-latest' && steps.windows_installer.outputs.skip_manifest != 'true'
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
             latest.json
             latest.json.sig
             update-manifest-${{ github.ref_name }}.json
