@@ -1100,6 +1100,10 @@ def _detect_gui_backend():
     elif sys.platform == "darwin":
         return None  # Default WebKit on macOS
     else:
+        # PyInstaller bundles Qt WebEngine; find_spec("qtpy") can fail in frozen
+        # builds even though the Qt backend is present.
+        if getattr(sys, "frozen", False):
+            return "qt"
         if importlib.util.find_spec("qtpy") is not None:
             return "qt"
         return None  # Default GTK WebKit on Linux when Qt is not bundled

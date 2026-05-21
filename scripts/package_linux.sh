@@ -25,6 +25,9 @@ cat > "$appdir/AppRun" <<'APPRUN'
 #!/usr/bin/env sh
 set -eu
 HERE="$(dirname "$(readlink -f "$0")")"
+if [ -f /etc/fonts/fonts.conf ]; then
+  export FONTCONFIG_FILE=/etc/fonts/fonts.conf
+fi
 export QTWEBENGINE_CHROMIUM_FLAGS="${QTWEBENGINE_CHROMIUM_FLAGS:+$QTWEBENGINE_CHROMIUM_FLAGS }--disable-features=BlockInsecurePrivateNetworkRequests --allow-insecure-localhost"
 exec "$HERE/usr/lib/catalyst/Catalyst" "$@"
 APPRUN
@@ -91,6 +94,9 @@ chmod +x "$deb_root/opt/catalyst/Catalyst"
 cat > "$deb_root/usr/bin/catalyst" <<'WRAPPER'
 #!/usr/bin/env sh
 set -eu
+if [ -f /etc/fonts/fonts.conf ]; then
+  export FONTCONFIG_FILE=/etc/fonts/fonts.conf
+fi
 export QTWEBENGINE_CHROMIUM_FLAGS="${QTWEBENGINE_CHROMIUM_FLAGS:+$QTWEBENGINE_CHROMIUM_FLAGS }--disable-features=BlockInsecurePrivateNetworkRequests --allow-insecure-localhost"
 exec /opt/catalyst/Catalyst "$@"
 WRAPPER

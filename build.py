@@ -218,6 +218,9 @@ def main():
 
     _ensure_pyinstaller()
 
+    print("\n  Verifying desktop loopback fix in source...")
+    _verify_linux_desktop_source()
+
     if not args.no_clean:
         print("\n  Cleaning previous build...")
         _clean()
