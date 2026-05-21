@@ -25,6 +25,7 @@ cat > "$appdir/AppRun" <<'APPRUN'
 #!/usr/bin/env sh
 set -eu
 HERE="$(dirname "$(readlink -f "$0")")"
+export QTWEBENGINE_CHROMIUM_FLAGS="${QTWEBENGINE_CHROMIUM_FLAGS:+$QTWEBENGINE_CHROMIUM_FLAGS }--disable-features=BlockInsecurePrivateNetworkRequests --allow-insecure-localhost"
 exec "$HERE/usr/lib/catalyst/Catalyst" "$@"
 APPRUN
 chmod +x "$appdir/AppRun"
@@ -90,6 +91,7 @@ chmod +x "$deb_root/opt/catalyst/Catalyst"
 cat > "$deb_root/usr/bin/catalyst" <<'WRAPPER'
 #!/usr/bin/env sh
 set -eu
+export QTWEBENGINE_CHROMIUM_FLAGS="${QTWEBENGINE_CHROMIUM_FLAGS:+$QTWEBENGINE_CHROMIUM_FLAGS }--disable-features=BlockInsecurePrivateNetworkRequests --allow-insecure-localhost"
 exec /opt/catalyst/Catalyst "$@"
 WRAPPER
 chmod +x "$deb_root/usr/bin/catalyst"
