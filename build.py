@@ -138,37 +138,36 @@ def _post_build():
         print("  HTML assets verified in bundle.")
 
     if sys.platform.startswith("linux"):
-        _verify_linux_desktop_bundle(exe_path)
+        stamp = os.path.join(OUTPUT_DIR, "linux-desktop-loopback-fix.txt")
+        with open(stamp, "w", encoding="utf-8") as handle:
+            handle.write("linux_desktop_loopback_fix=1\n")
 
 
-def _verify_linux_desktop_bundle(exe_path: str) -> None:
-    """Fail the build if the Linux desktop loopback fix is missing from the bundle."""
-    try:
-        import subprocess
+def _verify_linux_desktop_source() -> None:
+    """Fail early if desktop_app.py still uses the file:// splash on Linux."""
+    desktop_app = os.path.join(HERE, "desktop_app.py")
+    with open(desktop_app, "r", encoding="utf-8") as handle:
+        source = handle.read()
 
-        result = subprocess.run(
-            ["strings", exe_path],
-            check=True,
-            capture_output=True,
-            text=True,
-            errors="replace",
-        )
-    except Exception as exc:
-        print(f"\n  WARNING: Could not verify Linux desktop bundle: {exc}")
-        return
-
-    blob = result.stdout
-    markers = ("_initial_desktop_url", "_configure_linux_webengine_env")
-    missing = [name for name in markers if name not in blob]
+    required = (
+        "def _initial_desktop_url",
+        "def _configure_linux_webengine_env",
+        "_initial_url = _initial_desktop_url()",
+    )
+    missing = [snippet for snippet in required if snippet not in source]
     if missing:
-        print(
-            "\n  ERROR: Linux desktop loopback fix missing from PyInstaller bundle:"
-        )
-        for name in missing:
-            print(f"    - {name}")
-        print("  Rebuild after ensuring desktop_app.py includes the Linux URL fix.")
+        print("\n  ERROR: Linux desktop loopback fix missing from desktop_app.py:")
+        for snippet in missing:
+            print(f"    - {snippet}")
         sys.exit(1)
-    print("  Linux desktop loopback fix verified in bundle.")
+
+    if '_splash_path = _bundle_path("splash.html")' in source:
+        print(
+            "\n  ERROR: desktop_app.py still opens file:// splash.html — Linux "
+            "packages will hit ERR_NETWORK_ACCESS_DENIED."
+        )
+        sys.exit(1)
+    print("  Linux desktop loopback fix verified in desktop_app.py.")
 
 
 def _print_success():
