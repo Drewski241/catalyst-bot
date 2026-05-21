@@ -102,6 +102,12 @@ desktop.ini
 dist/
 build/
 
+# --- Local Linux release artifacts (published via GitHub Releases) ---
+/Catalyst-linux-*.AppImage
+/Catalyst-linux-*.AppImage.sha256
+/catalyst_v*_amd64.deb
+/catalyst_v*_amd64.deb.sha256
+
 # --- Compiled binaries (not suitable for source repo) ---
 # splash.exe ships as a separate download, not via git
 splash.exe
