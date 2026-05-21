@@ -65,11 +65,27 @@ VSVersionInfo(
 """
 
 
+def _bump_version_constant(version_file: Path, normalized: str) -> None:
+    text = version_file.read_text(encoding="utf-8")
+    updated, count = re.subn(
+        r'^__version__\s*=\s*["\'][^"\']+["\']',
+        f'__version__ = "{normalized}"',
+        text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    if count != 1:
+        raise ValueError(f"could not update __version__ in {version_file}")
+    version_file.write_text(updated, encoding="utf-8")
+
+
 def sync_release_metadata(root: Path, version: str) -> None:
     normalized, parts = _parse_version(version)
 
     version_file = root / "src" / "catalyst" / "_version.py"
-    version_file.write_text(f'__version__ = "{normalized}"\n', encoding="utf-8")
+    if not version_file.is_file():
+        raise FileNotFoundError(version_file)
+    _bump_version_constant(version_file, normalized)
 
     version_info = root / "version_info.txt"
     version_info.write_text(_version_info(normalized, parts), encoding="utf-8")
