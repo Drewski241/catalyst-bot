@@ -120,6 +120,21 @@ def log_dir() -> str:
     return data_dir()
 
 
+def coin_prep_status_file() -> str:
+    """Path to the coin prep worker progress JSON (GUI polls this)."""
+    return os.path.join(data_dir(), "coin_prep_status.json")
+
+
+def coin_prep_output_log() -> str:
+    """Path to the coin prep subprocess stdout log."""
+    return os.path.join(data_dir(), "coin_prep_output.log")
+
+
+def coin_prep_last_json() -> str:
+    """Path to the last successful coin prep settings snapshot."""
+    return os.path.join(data_dir(), "coin_prep_last.json")
+
+
 def backups_dir() -> str:
     """Directory where database backups are written."""
     path = os.path.join(data_dir(), "backups")

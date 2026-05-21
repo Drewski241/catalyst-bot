@@ -453,7 +453,7 @@ def api_coin_prep_status():
                 pass
 
         # Read live progress from the worker's status file (V1 parity)
-        status_file = os.path.join(_PACKAGE_DIR, "coin_prep_status.json")
+        status_file = coin_prep_status_file()
         if os.path.exists(status_file):
             try:
                 with open(status_file, "r") as f:
@@ -521,10 +521,7 @@ def api_coin_prep_status():
                         _target_xch = 0
                         _target_cat = 0
                         try:
-                            _prep_path = os.path.join(
-                                _PACKAGE_DIR,
-                                "coin_prep_last.json",
-                            )
+                            _prep_path = coin_prep_last_json()
                             if os.path.exists(_prep_path):
                                 with open(_prep_path, "r") as _pf:
                                     _last = json.load(_pf)
@@ -700,7 +697,7 @@ def api_coin_prep_status():
                 pass
 
         # Include last successful prep settings (for smart skip detection)
-        prep_json_path = os.path.join(_PACKAGE_DIR, "coin_prep_last.json")
+        prep_json_path = coin_prep_last_json()
         if os.path.exists(prep_json_path):
             try:
                 with open(prep_json_path, "r") as f:
@@ -1356,7 +1353,7 @@ def _api_coin_prep_trigger_locked():
         # Write a fresh "starting" status file immediately.
         # This prevents the GUI from reading stale COMPLETE status
         # from a previous run during the gap before the subprocess starts.
-        status_file = os.path.join(_PACKAGE_DIR, "coin_prep_status.json")
+        status_file = coin_prep_status_file()
         try:
             fresh_status = {
                 "phase": "idle",
@@ -1396,7 +1393,9 @@ def _api_coin_prep_trigger_locked():
                 worker_path = os.path.join(worker_dir, "coin_prep_worker.py")
                 worker_cmd = _coin_prep_worker_command(worker_path)
 
-                if not os.path.exists(worker_path):
+                if not getattr(sys, "frozen", False) and not os.path.exists(
+                    worker_path
+                ):
                     api_server._coin_prep_state["error"] = (
                         "coin_prep_worker.py not found"
                     )
@@ -1708,7 +1707,7 @@ def _api_coin_prep_trigger_locked():
                         f"XCH size {trade_xch} (+{getattr(cfg, 'COIN_PREP_HEADROOM_PCT', Decimal('10'))}% headroom)",
                     )
 
-                log_path = os.path.join(worker_dir, "coin_prep_output.log")
+                log_path = coin_prep_output_log()
                 log_file = open(log_path, "w", encoding="utf-8")
                 popen_kwargs = {
                     "stdout": log_file,
@@ -1830,7 +1829,7 @@ def _api_coin_prep_trigger_locked():
                     api_server._coin_prep_state["phase"] = "error"
                     error_msg = f"Worker exited with code {exit_code}"
                     # Try to read log file for error context (non-Windows)
-                    log_path = os.path.join(worker_dir, "coin_prep_output.log")
+                    log_path = coin_prep_output_log()
                     if os.path.exists(log_path):
                         try:
                             with open(log_path, "r", encoding="utf-8") as f:
