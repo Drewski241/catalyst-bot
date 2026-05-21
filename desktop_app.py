@@ -153,7 +153,9 @@ def _configure_linux_webengine_env() -> None:
 def _initial_desktop_url() -> str:
     """Pick the first URL shown in the native desktop window."""
     flask_url = f"http://{FLASK_HOST}:{FLASK_PORT}/"
-    if sys.platform == "linux":
+    if sys.platform == "linux" or (
+        getattr(sys, "frozen", False) and sys.platform.startswith("linux")
+    ):
         # Flask is already up before the window opens; skip file:// splash so
         # Qt WebEngine does not hit ERR_NETWORK_ACCESS_DENIED on redirect.
         return flask_url
@@ -911,6 +913,7 @@ def run_desktop_mode(dev_mode: bool = False):
     _win_y = _saved_state.get("y")
 
     _initial_url = _initial_desktop_url()
+    print(f"  Desktop window URL: {_initial_url}", flush=True)
 
     _create_window_kwargs = dict(
         title=APP_NAME,
@@ -1353,6 +1356,8 @@ def main(argv=None):
     # creation so that the taskbar and notifications use the user-facing
     # CATalyst identity regardless of how the process was launched.
     _set_windows_app_user_model_id()
+    if sys.platform.startswith("linux"):
+        _configure_linux_webengine_env()
 
     parser = argparse.ArgumentParser(description=f"{APP_NAME} v{APP_VERSION}")
     parser.add_argument(

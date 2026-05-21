@@ -137,6 +137,39 @@ def _post_build():
     else:
         print("  HTML assets verified in bundle.")
 
+    if sys.platform.startswith("linux"):
+        _verify_linux_desktop_bundle(exe_path)
+
+
+def _verify_linux_desktop_bundle(exe_path: str) -> None:
+    """Fail the build if the Linux desktop loopback fix is missing from the bundle."""
+    try:
+        import subprocess
+
+        result = subprocess.run(
+            ["strings", exe_path],
+            check=True,
+            capture_output=True,
+            text=True,
+            errors="replace",
+        )
+    except Exception as exc:
+        print(f"\n  WARNING: Could not verify Linux desktop bundle: {exc}")
+        return
+
+    blob = result.stdout
+    markers = ("_initial_desktop_url", "_configure_linux_webengine_env")
+    missing = [name for name in markers if name not in blob]
+    if missing:
+        print(
+            "\n  ERROR: Linux desktop loopback fix missing from PyInstaller bundle:"
+        )
+        for name in missing:
+            print(f"    - {name}")
+        print("  Rebuild after ensuring desktop_app.py includes the Linux URL fix.")
+        sys.exit(1)
+    print("  Linux desktop loopback fix verified in bundle.")
+
 
 def _print_success():
     exe_name = "Catalyst.exe" if sys.platform == "win32" else "Catalyst"
