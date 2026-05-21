@@ -90,6 +90,8 @@ chmod +x "$deb_root/opt/catalyst/Catalyst"
 cat > "$deb_root/usr/bin/catalyst" <<'WRAPPER'
 #!/usr/bin/env sh
 set -eu
+# Qt WebEngine: allow the desktop shell to reach loopback Flask (see desktop_app.py).
+export QTWEBENGINE_CHROMIUM_FLAGS="${QTWEBENGINE_CHROMIUM_FLAGS:+$QTWEBENGINE_CHROMIUM_FLAGS }--disable-features=BlockInsecurePrivateNetworkRequests --allow-insecure-localhost"
 exec /opt/catalyst/Catalyst "$@"
 WRAPPER
 chmod +x "$deb_root/usr/bin/catalyst"
@@ -114,7 +116,7 @@ Priority: optional
 Architecture: amd64
 Maintainer: MonkeyZoo <support@catalystxch.com>
 Installed-Size: ${installed_size}
-Depends: ca-certificates, fontconfig, libgtk-3-0, libwebkit2gtk-4.1-0 | libwebkit2gtk-4.0-37, libnotify4, libnotify-bin, gir1.2-ayatanaappindicator3-0.1 | gir1.2-appindicator3-0.1, libayatana-appindicator3-1 | libappindicator3-1, xdg-utils, libdbus-1-3, libegl1, libgl1, libgbm1, libnss3, libx11-xcb1, libxcb1, libxcb-cursor0, libxcb-icccm4, libxcb-image0, libxcb-keysyms1, libxcb-randr0, libxcb-render-util0, libxcb-shape0, libxcb-shm0, libxcb-sync1, libxcb-xfixes0, libxcb-xinerama0, libxcb-xkb1, libxcomposite1, libxdamage1, libxkbcommon-x11-0, libxrandr2
+Depends: ca-certificates, libgtk-3-0, libwebkit2gtk-4.1-0 | libwebkit2gtk-4.0-37, libnotify4, libnotify-bin, xdg-utils, libdbus-1-3, libegl1, libgl1, libgbm1, libnss3, libx11-xcb1, libxcb1, libxcb-cursor0, libxcb-icccm4, libxcb-image0, libxcb-keysyms1, libxcb-randr0, libxcb-render-util0, libxcb-shape0, libxcb-shm0, libxcb-sync1, libxcb-xfixes0, libxcb-xinerama0, libxcb-xkb1, libxcomposite1, libxdamage1, libxkbcommon-x11-0, libxrandr2
 Homepage: https://catalystxch.com/
 Description: CATalyst Chia CAT liquidity market maker
  CATalyst is a local desktop market-making app for Chia CAT tokens.

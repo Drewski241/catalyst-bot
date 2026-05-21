@@ -747,6 +747,7 @@ def start_flask_server():
 
 def run_desktop_mode(dev_mode: bool = False):
     """Main desktop app flow."""
+    _configure_linux_webengine_env()
     try:
         import webview
     except ImportError:
@@ -909,15 +910,7 @@ def run_desktop_mode(dev_mode: bool = False):
     _win_x = _saved_state.get("x")
     _win_y = _saved_state.get("y")
 
-    # Show a local splash page first (logo + "created by MonkeyZoo") so the
-    # window doesn't flash black while the WebView2 backend boots and Flask's
-    # first HTML render lands. The splash auto-redirects to the Flask URL
-    # after a brief delay (see splash.html).
-    _splash_path = _bundle_path("splash.html")
-    if os.path.exists(_splash_path):
-        _initial_url = "file:///" + _splash_path.replace("\\", "/")
-    else:
-        _initial_url = f"http://{FLASK_HOST}:{FLASK_PORT}/"
+    _initial_url = _initial_desktop_url()
 
     _create_window_kwargs = dict(
         title=APP_NAME,
