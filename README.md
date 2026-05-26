@@ -222,13 +222,29 @@ where CATalyst is running.
 
 #### Ubuntu 24.04 (Noble)
 
-Use the **v1.2.37** (or newer) `.deb` from the
-[releases page](https://github.com/catalystxch/catalyst-bot/releases/latest) — do
-not install mis-tagged older fork builds (for example `v1.2.6`).
+Use the latest `.deb` from the
+[releases page](https://github.com/Drewski241/catalyst-bot/releases/latest).
+
+**Use `apt install`, not `dpkg -i` alone** — only `apt` downloads GTK/Qt/XCB/tray
+dependencies. `dpkg -i` leaves the package unconfigured on a fresh machine.
 
 ```bash
-sudo apt install ./catalyst_v1.2.37_amd64.deb
+sudo apt update
+sudo apt install ./catalyst_v1.2.38.3_amd64.deb
 catalyst
+```
+
+Helper script (same as `apt install`, plus repair of broken `dpkg -i` state):
+
+```bash
+bash scripts/install-catalyst-deb.sh ~/Downloads/catalyst_v1.2.38.3_amd64.deb
+```
+
+If you already ran `dpkg -i` and see dependency errors / status `iU`:
+
+```bash
+sudo apt --fix-broken install
+sudo apt install ./catalyst_v1.2.38.3_amd64.deb
 ```
 
 For a portable install:

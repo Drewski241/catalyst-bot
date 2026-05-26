@@ -133,6 +133,54 @@ if command -v desktop-file-validate >/dev/null 2>&1; then
   desktop-file-validate "$deb_root/usr/share/applications/catalyst.desktop"
 fi
 
+install -d "$deb_root/usr/share/doc/catalyst"
+cat > "$deb_root/usr/share/doc/catalyst/README.Debian" <<'README'
+CATalyst (.deb) — quick install (Ubuntu 22.04+)
+
+IMPORTANT: use apt, not dpkg alone. apt downloads missing libraries; dpkg -i does not.
+
+  sudo apt update
+  sudo apt install ./catalyst_vVERSION_amd64.deb
+
+If a previous dpkg -i left the package broken (status iU / unconfigured):
+
+  sudo apt --fix-broken install
+  sudo apt install ./catalyst_vVERSION_amd64.deb
+
+Or use the install helper from the release page:
+
+  bash install-catalyst-deb.sh catalyst_vVERSION_amd64.deb
+
+Tray icon packages (if apt reports them missing):
+
+  sudo apt install gir1.2-ayatanaappindicator3-0.1 libxcb-cursor0 libxcb-xinerama0
+
+Run: catalyst   (or find CATalyst in the app menu)
+README
+
+cat > "$deb_root/DEBIAN/postinst" <<'POSTINST'
+#!/bin/sh
+set -e
+case "$1" in
+configure)
+  # When someone uses `dpkg -i`, dependencies are not pulled in. Try to
+  # finish configuration via apt if the package is not fully installed yet.
+  if command -v apt-get >/dev/null 2>&1; then
+    status="$(dpkg-query -W -f='${Status}' catalyst 2>/dev/null || true)"
+    case "$status" in
+      "install ok installed") ;;
+      *)
+        echo "CATalyst: resolving missing dependencies (use: sudo apt install ./catalyst_*.deb next time)..." >&2
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -f -qq 2>/dev/null || true
+        ;;
+    esac
+  fi
+  ;;
+esac
+exit 0
+POSTINST
+chmod 0755 "$deb_root/DEBIAN/postinst"
+
 dpkg-deb --build --root-owner-group "$deb_root" "$deb_path"
 deb_digest="$(sha256sum "$deb_path" | awk '{print $1}')"
 printf "%s  %s\n" "$deb_digest" "$(basename "$deb_path")" > "${deb_path}.sha256"

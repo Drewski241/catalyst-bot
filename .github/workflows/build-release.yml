@@ -322,6 +322,7 @@ jobs:
             Catalyst-linux-${{ github.ref_name }}-x86_64.AppImage.sha256
             catalyst_${{ github.ref_name }}_amd64.deb
             catalyst_${{ github.ref_name }}_amd64.deb.sha256
+            scripts/install-catalyst-deb.sh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
