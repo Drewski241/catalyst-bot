@@ -10226,7 +10226,7 @@
                         <div>
                             <div style="color: rgba(255,255,255,0.5); font-size: 11px;">Est. Slippage <span class="cc-help">?<span class="cc-tooltip">Estimated price impact if you traded your default size through TibetSwap. Calculated from the constant product formula (x×y=k).</span></span></div>
                             <div id="intelSlippage" style="font-size: 16px; font-weight: 600; color: var(--status-warning);">—</div>
-                            <div style="color: rgba(255,255,255,0.3); font-size: 10px;">For a 0.01 XCH test trade</div>
+                            <div style="color: rgba(255,255,255,0.3); font-size: 10px;">For a 1 XCH test trade</div>
                         </div>
                     </div>
                     <div id="intelTibetContext" style="margin-top: 10px; color: rgba(255,255,255,0.58); font-size: 11px;">Waiting for TibetSwap pool data...</div>
@@ -10779,12 +10779,6 @@
                                 </label>
                             </div>
                         </div>
-                        <div class="form-group" style="margin-bottom: 8px;">
-                            <label style="font-size: 0.85em;">Max Price Move (%) <span class="cc-help">?<span class="cc-tooltip">If the mid-price changes by more than this percentage in a single loop, the bot pauses. Protects against flash crashes or price manipulation.</span></span></label>
-                            <input type="number" id="configMaxMidMove" value="5" min="0" max="100" step="0.5" oninput="checkRiskWarnings()">
-                            <div class="v4-settings-hint">Emergency brake — stop if price jumps more than this in one loop</div>
-                            <div id="maxMidMoveWarning" style="display: none; margin-top: 4px; padding: 4px 8px; border-radius: 4px; font-size: 0.82em;"></div>
-                        </div>
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 8px;">
                             <div class="form-group" style="margin-bottom: 0;">
                                 <label style="font-size: 0.85em;">Dynamic Band (±%) <span class="cc-help">?<span class="cc-tooltip">The bot tracks the average price and rejects fetched prices that fall outside this band around the moving average. Higher values allow more volatility. Smart Settings sets this from 30-day price history. Set 0 to disable.</span></span></label>
@@ -11240,7 +11234,7 @@
                             </div>
                             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
                                 <div class="form-group" style="margin-bottom: 0;">
-                                    <label style="font-size: 0.85em;">Sniper Size (XCH) <span class="cc-help">?<span class="cc-tooltip">Size of each tiny discovery probe. Keep this small so a taken probe reveals the edge cheaply.</span></span></label>
+                                    <label style="font-size: 0.85em;">Sniper Size (XCH) <span class="cc-help">?<span class="cc-tooltip">Size of each discovery probe. Smart Settings derives this from wallet size, fill rate, visible orderbook depth, arb gap, and fee-coin size.</span></span></label>
                                     <input type="number" id="configSniperSizeXch" value="0.001" step="0.0001" min="0.00000001" oninput="updateCoinPrepPreview()">
                                 </div>
                                 <div class="form-group" style="margin-bottom: 0;">
@@ -11868,7 +11862,7 @@
                             </select>
                         </div>
                         <div class="v4-modal-field">
-                            <label for="gapSizeInput">Sniper probe size (XCH each) <span class="cc-help">?<span class="cc-tooltip">Uses your sniper pool coins. Size comes from SNIPER_SIZE_XCH in Settings.</span></span></label>
+                            <label for="gapSizeInput">Sniper probe size (XCH each) <span class="cc-help">?<span class="cc-tooltip">Uses your sniper pool coins. Smart Settings derives SNIPER_SIZE_XCH from current market and wallet conditions.</span></span></label>
                             <input type="number" id="gapSizeInput" step="0.001" min="0.001" max="5" value="0.001">
                         </div>
                     </div>
@@ -14230,8 +14224,8 @@
         }
 
         function v4ApplyOfferFilter() {
-            const buySec = document.querySelector('#activeTab .offers-section:first-child');
-            const sellSec = document.querySelector('#activeTab .offers-section:last-child');
+            const buySec = document.getElementById('buyOffersSection');
+            const sellSec = document.getElementById('sellOffersSection');
             if (!buySec || !sellSec) return;
 
             if (_v4OfferFilter === 'buy') {
@@ -15291,6 +15285,7 @@
                 'DYNAMIC_SPREAD_ENABLED',
                 'INVENTORY_ENABLED',
                 'COMPETITOR_AWARE_ENABLED',
+                'SNIPER_ENABLED',
             ]);
             const endpoint = quoteOnlyKeys.has(configKey) ? '/config/live' : '/config';
             const payload = quoteOnlyKeys.has(configKey)
@@ -17930,7 +17925,6 @@
                 // Price rails (30-day range derived)
                 'configMinMid',
                 'configMaxMid',
-                'configMaxMidMove',
                 'configTibetShockCancelPct',
                 'configArbThreshold',
                 // Requote (spread-derived)
@@ -19254,8 +19248,7 @@
                 // Auto-Requote — Batch Size
                 if (data.requote_batch_size) document.getElementById('configRequoteBatchSize').value = data.requote_batch_size;
 
-                // Safety & Limits — Emergency Brake
-                document.getElementById('configMaxMidMove').value = data.max_mid_move;
+                // Safety & Limits
                 if (data.dynamic_limit_pct > 0) document.getElementById('configDynamicLimitPct').value = data.dynamic_limit_pct;
                 if (data.max_step_change_pct >= 0) document.getElementById('configMaxStepChange').value = data.max_step_change_pct;
                 if (data.tibet_shock_cancel_trigger_pct !== undefined) document.getElementById('configTibetShockCancelPct').value = Number(data.tibet_shock_cancel_trigger_pct || 0).toFixed(2);
@@ -22450,28 +22443,7 @@
                 }
             }
 
-            // 2. Max Price Move disabled or very high.
-            // A BLANK field is the fresh-start state (before the user
-            // either enters a value or runs Smart Settings) and should
-            // stay neutral — no warning. The red "circuit breaker
-            // disabled" alarm only fires when the user has EXPLICITLY
-            // set the value to 0, which is a genuinely dangerous
-            // operator decision worth flagging. Matches the pattern
-            // used by every other warning in this function.
-            const maxMidMoveRaw = document.getElementById('configMaxMidMove')?.value;
-            const maxMidMove = parseFloat(maxMidMoveRaw);
-            if (maxMidMoveRaw === undefined || maxMidMoveRaw === '' || isNaN(maxMidMove)) {
-                // Field is blank / not yet configured — stay quiet.
-                setWarning('maxMidMoveWarning', null, null);
-            } else if (maxMidMove === 0) {
-                setWarning('maxMidMoveWarning', 'red', 'Circuit breaker disabled \u2014 bot will trade through flash crashes and oracle failures.');
-            } else if (maxMidMove > 30) {
-                setWarning('maxMidMoveWarning', 'amber', 'Very high \u2014 bot will continue trading through large price swings. Recommended: 10-20%.');
-            } else {
-                setWarning('maxMidMoveWarning', null, null);
-            }
-
-            // 3. Max Position vs wallet balance
+            // 2. Max Position vs wallet balance
             const maxPosition = parseFloat(document.getElementById('configMaxPositionXch')?.value) || 0;
             if (xchBalance > 0 && maxPosition > 0 && maxPosition > xchBalance * 0.5) {
                 setWarning('maxPositionWarning', 'amber', 'Max position exceeds 50% of your XCH balance \u2014 limits flexibility for emergency exits.');
@@ -22479,7 +22451,7 @@
                 setWarning('maxPositionWarning', null, null);
             }
 
-            // 4. Individual trade size warning (> 3 XCH)
+            // 3. Individual trade size warning (> 3 XCH)
             const tradeSize = parseFloat(document.getElementById('configTradeXch')?.value) || 0;
             const tradeSizeWarnEl = document.getElementById('tradeSizeWarning');
             // Only show trade size risk warning when the element is not already used by other logic
@@ -22496,7 +22468,7 @@
                 }
             }
 
-            // 5. Min Spread >= Base Spread warning
+            // 4. Min Spread >= Base Spread warning
             const minSpread = parseFloat(document.getElementById('configMinSpreadBps')?.value) || 0;
             const baseSpread = parseFloat(document.getElementById('configSpreadBps')?.value) || 0;
             if (minSpread > 0 && baseSpread > 0 && minSpread >= baseSpread) {
@@ -24666,12 +24638,13 @@
             if (!data || !el('intelCompSpread')) return;
 
             const compSpread = parseFloat(data.competitor_spread_bps || 0);
-            el('intelCompSpread').textContent = compSpread > 0 ? bps2pct(compSpread) : '-';
-
             const bestBid = parseFloat(data.overall_best_bid || data.best_bid || 0);
-            el('intelBestBid').textContent = bestBid > 0 ? bestBid.toFixed(8) : '-';
-
             const bestAsk = parseFloat(data.overall_best_ask || data.best_ask || 0);
+            const crossedPublicBook = bestBid > 0 && bestAsk > 0 && bestBid >= bestAsk;
+            el('intelCompSpread').textContent = compSpread > 0 ? bps2pct(compSpread) : crossedPublicBook ? 'Crossed' : '-';
+            el('intelCompSpread').style.color = crossedPublicBook ? 'var(--status-warning)' : 'var(--accent-secondary)';
+
+            el('intelBestBid').textContent = bestBid > 0 ? bestBid.toFixed(8) : '-';
             el('intelBestAsk').textContent = bestAsk > 0 ? bestAsk.toFixed(8) : '-';
 
             const thin = data.thin_side || '';
@@ -24852,7 +24825,7 @@
             refreshDbxPending();
 
             // Also fetch slippage data
-            apiFetch('/api/market/slippage?amount=0.01&side=buy')
+            apiFetch('/api/market/slippage?amount=1&side=buy')
                 .then(r => r.json())
                 .then(data => {
                     const el = id => document.getElementById(id);
@@ -24863,14 +24836,14 @@
                     }
                     if (data.pool_depth_xch) {
                         const depth = parseFloat(data.pool_depth_xch);
-                        const ratio = 0.01 / depth * 100;
+                        const ratio = 1 / depth * 100;
                         el('intelPoolRatio').textContent = ratio.toFixed(2) + '%';
                         el('intelPoolRatio').style.color = ratio < 1 ? 'var(--status-success)' : ratio < 5 ? 'var(--status-warning)' : 'var(--status-danger)';
                         if (el('intelTibetContext')) {
                             const slipBps = parseFloat(data.slippage_bps || 0) || 0;
                             const slipText = slipBps > 0 ? bps2pct(slipBps) + ' estimated slippage' : 'slippage unavailable';
                             el('intelTibetContext').textContent =
-                                'Pool depth ' + depth.toFixed(2) + ' XCH. A 0.01 XCH test trade is ' +
+                                'Pool depth ' + depth.toFixed(2) + ' XCH. A 1 XCH test trade is ' +
                                 ratio.toFixed(2) + '% of pool depth with ' + slipText + '.';
                         }
                     } else if (el('intelTibetContext')) {
@@ -32115,7 +32088,7 @@
             // User-facing trading-control toggles
             'configEnableBuy','configEnableSell',
             'configAutoRequote','configRequoteBps','configRequoteCooldown','configRequoteBatchSize',
-            'configMaxMidMove','configTibetShockCancelPct','configArbThreshold','configDynamicLimitPct','configMaxStepChange',
+            'configTibetShockCancelPct','configArbThreshold','configDynamicLimitPct','configMaxStepChange',
             'configMinMid','configMaxMid',
             'configDynamicSpreadEnabled','configBaseSpreadBps','configMinEdgeBps',
             'configMinSpreadBps','configMaxSpreadBps','configVolatilityWindow',
@@ -32123,6 +32096,8 @@
             'configToxicityMaxSpreadMultiplier','configToxicityThrottleSecs',
             'configInventoryEnabled','configSkewIntensity','configMaxPositionXch',
             'configTierEnabled','configBuyLadderReversed',
+            'configTopupPoolPct','configTopupPoolXch','configTopupPoolCat',
+            'configBuyInnerSizeXch','configBuyMidSizeXch','configBuyOuterSizeXch','configBuyExtremeSizeXch',
             'configInnerSizeXch','configMidSizeXch','configOuterSizeXch','configExtremeSizeXch',
             'configInnerTierCount','configMidTierCount','configOuterTierCount','configExtremeTierCount',
             'configInnerTierCountXch','configMidTierCountXch','configOuterTierCountXch','configExtremeTierCountXch',
@@ -33143,7 +33118,7 @@
                         if (preopenedCoinPrepLoading) dismissCoinPrepConfirmLoading();
                         debugLog(`[SAVE] Skipping coin prep check — ${activeOffers} active offers exist`);
                         setCoinPrepStatus('done');
-                        showToast(`Settings updated. ${activeOffers} offers still active — new spreads apply on next requote.`, 'success');
+                        showToast(`Settings saved. ${activeOffers} offers still active — restart the bot to apply Setup changes.`, 'warning', 6000);
                         setSaveConfigButtonState(false);
                         return;
                     }

@@ -21,7 +21,7 @@ import sys
 import threading
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlparse
-from dotenv import load_dotenv, set_key
+from dotenv import dotenv_values, load_dotenv, set_key
 
 
 def _find_env_example_path(install_dir: str) -> str:
@@ -200,6 +200,8 @@ class Config:
         # RLock so update() can hold the lock across set_key() + reload(),
         # and reload() can still re-acquire from the same thread.
         self._lock = threading.RLock()
+        self._pending_restart_changes = False
+        self._pending_restart_keys = set()
         self.reload()
 
     def reload(self):
@@ -226,9 +228,16 @@ class Config:
                 self._validation_report = validate_config(self)
             except Exception:
                 self._validation_report = None
+            self._pending_restart_changes = False
+            self._pending_restart_keys = set()
         finally:
             if lock:
                 lock.release()
+
+    def has_pending_restart_changes(self) -> bool:
+        """Return whether disk-only Setup saves need a bot restart/reload."""
+        with self._lock:
+            return bool(self._pending_restart_changes)
 
     def _reload_inner(self):
         """Internal reload — called under lock."""
@@ -648,17 +657,10 @@ class Config:
         # consume its own balance minus reserve. Fall back to the shared
         # legacy keys when per-side values are zero (upgrade path).
         #
-        # ⚠ F77 audit note (2026-04-17): the per-side size values are
-        # WRITTEN by Smart Settings and LOADED by the GUI but NOT actually
-        # consumed by the trading code path — the ladder planner and offer
-        # manager still read INNER_SIZE_XCH etc. (unified). This means
-        # editing a per-side value in the GUI has no runtime effect.
-        # F62 is incomplete; completing it requires threading the
-        # per-side resolution (see get_buy_tier_size_xch /
-        # get_sell_tier_size_xch helpers below) through ladder_planner
-        # and offer_manager's coin-selection path. Left in config for
-        # forward compatibility; Smart Settings still writes them so a
-        # future wire-up can light them up without schema migration.
+        # Per-side values are consumed through get_buy_tier_size_xch /
+        # get_sell_tier_size_xch below. Keep legacy INNER_* values populated
+        # for upgrade compatibility, but new runtime paths should use the
+        # helpers so buy/sell sizing stays independent.
         self.BUY_INNER_SIZE_XCH = _decimal("BUY_INNER_SIZE_XCH", "0")
         self.BUY_MID_SIZE_XCH = _decimal("BUY_MID_SIZE_XCH", "0")
         self.BUY_OUTER_SIZE_XCH = _decimal("BUY_OUTER_SIZE_XCH", "0")
@@ -1294,12 +1296,32 @@ class Config:
             with self._lock:
                 # Record old value for change tracking
                 old_value = str(getattr(self, key, ""))
+                pending_restart_keys = set(
+                    getattr(self, "_pending_restart_keys", set()) or set()
+                )
+                pending_live_values = {
+                    pending_key: getattr(self, pending_key)
+                    for pending_key in pending_restart_keys
+                    if pending_key != key and hasattr(self, pending_key)
+                }
 
                 # Write to .env file
                 set_key(_ENV_PATH, key, value)
 
                 # Reload all settings from disk (RLock re-entry is fine)
                 self.reload()
+                if pending_live_values:
+                    for pending_key, pending_live_value in pending_live_values.items():
+                        setattr(self, pending_key, pending_live_value)
+                    pending_restart_keys.difference_update({key})
+                    self._pending_restart_keys = pending_restart_keys
+                    self._pending_restart_changes = bool(pending_restart_keys)
+                    try:
+                        from config_validator import validate_config
+
+                        self._validation_report = validate_config(self)
+                    except Exception:
+                        self._validation_report = None
 
                 # Record the change (import here to avoid circular import)
                 try:
@@ -1339,6 +1361,73 @@ class Config:
                 _log_cfg("error", "config_error", f"Failed to update {key}: {e}")
             except Exception:
                 pass
+            return False
+
+    def update_persisted(
+        self, key: str, value: str, source: str = "api", note: str = ""
+    ) -> bool:
+        """Write a setting to .env without refreshing the running config.
+
+        Used for Setup-tab saves while the bot is already running. Those
+        changes should survive to disk but only affect trading after the next
+        bot restart, leaving the current live book governed by the config it
+        started with.
+        """
+        if key not in self._UPDATABLE_KEYS:
+            print(f"[CONFIG] Blocked update of non-updatable key: {key}")
+            return False
+
+        if any(c in str(value) for c in ("\n", "\r", "\x00")):
+            print(
+                f"[CONFIG] Blocked update of {key}: value contains control characters"
+            )
+            return False
+
+        try:
+            with self._lock:
+                try:
+                    disk_values = dotenv_values(_ENV_PATH)
+                except Exception:
+                    disk_values = {}
+                old_value = str(disk_values.get(key, getattr(self, key, "")))
+
+                set_key(_ENV_PATH, key, value)
+                self._pending_restart_changes = True
+                self._pending_restart_keys.add(key)
+
+                try:
+                    from database import record_config_change
+
+                    record_config_change(
+                        key, old_value, value, source=source, note=note
+                    )
+                except ImportError:
+                    pass  # Database audit table may not exist during early startup.
+
+                try:
+                    if key in ("TOPUP_POOL_XCH", "TOPUP_POOL_CAT"):
+                        from database import set_setting as _set_setting
+
+                        spend_key = (
+                            "topup_pool_cat_spent_mojos"
+                            if key == "TOPUP_POOL_CAT"
+                            else "topup_pool_xch_spent_mojos"
+                        )
+                        _set_setting(spend_key, "0")
+                except Exception as spend_exc:
+                    print(
+                        f"[CONFIG] Failed to reset topup spend counter for {key}: {spend_exc}"
+                    )
+
+            return True
+        except Exception as e:
+            print(f"[CONFIG] Failed to persist {key}: {e}")
+            try:
+                from database import log_event as _log_cfg
+
+                _log_cfg("error", "config_error", f"Failed to persist {key}: {e}")
+            except Exception as log_exc:
+                print(f"[CONFIG] Failed to log persist error for {key}: {log_exc}")
             return False
 
     def validate(self) -> dict:
