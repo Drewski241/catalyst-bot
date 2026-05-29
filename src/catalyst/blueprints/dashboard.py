@@ -16,6 +16,7 @@ from flask import Blueprint, jsonify, request
 
 import api_server
 from database import get_stats
+from super_log import slog
 
 
 bp = Blueprint("dashboard", __name__)
@@ -41,6 +42,8 @@ def _build_coin_recommendations(cfg, coins: dict, is_running: bool) -> list[dict
     if not is_running or not getattr(cfg, "TIER_ENABLED", False):
         return []
     if not getattr(cfg, "ENABLE_SELL", True):
+        return []
+    if (coins or {}).get("prep_running") or (coins or {}).get("topup_running"):
         return []
 
     tier_counts = (coins or {}).get("tier_counts") or {}
@@ -502,6 +505,19 @@ def api_dashboard():
                 tier_counts = get_live_tier_group_counts()
                 tier_counts["enabled"] = True
                 coins["tier_counts"] = tier_counts
+            try:
+                if bot and getattr(bot, "coin_manager", None):
+                    coin_status = bot.coin_manager.get_status() or {}
+                    coins["prep_running"] = bool(coin_status.get("prep_running"))
+                    coins["topup_running"] = bool(coin_status.get("topup_running"))
+            except Exception as e:
+                coins["prep_running"] = False
+                coins["topup_running"] = False
+                slog(
+                    "API_STATUS",
+                    f"Dashboard coin manager status fetch error: {e}",
+                    level="debug",
+                )
             try:
                 is_running = bool(bot and bot.is_running())
             except Exception:
