@@ -163,6 +163,38 @@ def _post_build():
     else:
         print("  HTML assets verified in bundle.")
 
+    if sys.platform.startswith("linux"):
+        stamp = os.path.join(OUTPUT_DIR, "linux-desktop-loopback-fix.txt")
+        with open(stamp, "w", encoding="utf-8") as handle:
+            handle.write("linux_desktop_loopback_fix=1\n")
+
+
+def _verify_linux_desktop_source() -> None:
+    """Fail early if desktop_app.py still uses the file:// splash on Linux."""
+    desktop_app = os.path.join(HERE, "desktop_app.py")
+    with open(desktop_app, "r", encoding="utf-8") as handle:
+        source = handle.read()
+
+    required = (
+        "def _initial_desktop_url",
+        "def _configure_linux_webengine_env",
+        "_initial_url = _initial_desktop_url()",
+    )
+    missing = [snippet for snippet in required if snippet not in source]
+    if missing:
+        print("\n  ERROR: Linux desktop loopback fix missing from desktop_app.py:")
+        for snippet in missing:
+            print(f"    - {snippet}")
+        sys.exit(1)
+
+    if '_splash_path = _bundle_path("splash.html")' in source:
+        print(
+            "\n  ERROR: desktop_app.py still opens file:// splash.html — Linux "
+            "packages will hit ERR_NETWORK_ACCESS_DENIED."
+        )
+        sys.exit(1)
+    print("  Linux desktop loopback fix verified in desktop_app.py.")
+
 
 def _purge_runtime_artifacts(root: str) -> int:
     """Remove user-writable runtime files that PyInstaller may collect.
@@ -236,6 +268,10 @@ def main():
         sys.exit(1)
 
     _ensure_pyinstaller()
+
+    if sys.platform.startswith("linux"):
+        print("\n  Verifying desktop loopback fix in source...")
+        _verify_linux_desktop_source()
 
     if not args.no_clean:
         print("\n  Cleaning previous build...")
