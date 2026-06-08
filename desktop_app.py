@@ -131,23 +131,36 @@ WINDOW_MIN_HEIGHT = 700
 
 
 def _configure_linux_webengine_env() -> None:
-    """Allow the Qt WebEngine shell to reach loopback Flask on Linux.
+    """Prepare Qt WebEngine for loopback Flask on Linux desktop builds.
 
-    Packaged Linux builds bundle PyQt6. Chromium Private Network Access blocks
-    file:// splash redirects to http://127.0.0.1:5000/ unless we load Flask
-    directly or relax the block for the embedded shell.
+    Packaged Linux builds bundle PyQt6. We load Flask on loopback directly, but
+    still need Chromium flags for Private Network Access and software rendering
+    flags so hybrid/NVIDIA setups do not crash with GBM/Vulkan/OpenGL errors.
     """
     if sys.platform != "linux":
         return
+    os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+    os.environ.setdefault("QT_OPENGL", "software")
+    os.environ.setdefault("QT_QUICK_BACKEND", "software")
+    os.environ.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
     existing = os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "").strip()
     flags = (
         "--disable-features=BlockInsecurePrivateNetworkRequests",
         "--allow-insecure-localhost",
+        "--no-sandbox",
+        "--disable-gpu",
+        "--disable-dev-shm-usage",
     )
     for flag in flags:
         if flag not in existing:
             existing = f"{existing} {flag}".strip()
     os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = existing
+
+
+def _linux_tray_enabled() -> bool:
+    """Return False when the Linux desktop should skip the pystray icon."""
+    override = os.environ.get("CATALYST_DISABLE_TRAY", "").strip().lower()
+    return override not in {"1", "true", "yes", "on"}
 
 
 def _initial_desktop_url() -> str:
@@ -1120,6 +1133,9 @@ def _detect_gui_backend():
 
 def _start_system_tray(settle_seconds: float = 0.35):
     """Start the optional tray and avoid claiming success after fast failures."""
+    if sys.platform == "linux" and not _linux_tray_enabled():
+        print("  System tray disabled (CATALYST_DISABLE_TRAY is set).")
+        return None, None
     try:
         from tray_manager import TrayManager
 

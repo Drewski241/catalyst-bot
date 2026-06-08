@@ -54,7 +54,11 @@ HERE="$(dirname "$(readlink -f "$0")")"
 if [ -f /etc/fonts/fonts.conf ]; then
   export FONTCONFIG_FILE=/etc/fonts/fonts.conf
 fi
-export QTWEBENGINE_CHROMIUM_FLAGS="${QTWEBENGINE_CHROMIUM_FLAGS:+$QTWEBENGINE_CHROMIUM_FLAGS }--disable-features=BlockInsecurePrivateNetworkRequests --allow-insecure-localhost"
+export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-xcb}"
+export QT_OPENGL="${QT_OPENGL:-software}"
+export QT_QUICK_BACKEND="${QT_QUICK_BACKEND:-software}"
+export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
+export QTWEBENGINE_CHROMIUM_FLAGS="${QTWEBENGINE_CHROMIUM_FLAGS:+$QTWEBENGINE_CHROMIUM_FLAGS }--disable-features=BlockInsecurePrivateNetworkRequests --allow-insecure-localhost --no-sandbox --disable-gpu --disable-dev-shm-usage"
 exec "$HERE/usr/lib/catalyst/Catalyst" "$@"
 APPRUN
 chmod +x "$appdir/AppRun"
@@ -124,7 +128,11 @@ set -eu
 if [ -f /etc/fonts/fonts.conf ]; then
   export FONTCONFIG_FILE=/etc/fonts/fonts.conf
 fi
-export QTWEBENGINE_CHROMIUM_FLAGS="${QTWEBENGINE_CHROMIUM_FLAGS:+$QTWEBENGINE_CHROMIUM_FLAGS }--disable-features=BlockInsecurePrivateNetworkRequests --allow-insecure-localhost"
+export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-xcb}"
+export QT_OPENGL="${QT_OPENGL:-software}"
+export QT_QUICK_BACKEND="${QT_QUICK_BACKEND:-software}"
+export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
+export QTWEBENGINE_CHROMIUM_FLAGS="${QTWEBENGINE_CHROMIUM_FLAGS:+$QTWEBENGINE_CHROMIUM_FLAGS }--disable-features=BlockInsecurePrivateNetworkRequests --allow-insecure-localhost --no-sandbox --disable-gpu --disable-dev-shm-usage"
 exec /opt/catalyst/Catalyst "$@"
 WRAPPER
 chmod +x "$deb_root/usr/bin/catalyst"

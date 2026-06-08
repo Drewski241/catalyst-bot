@@ -1,4 +1,5 @@
 import importlib
+import os
 import sys
 from pathlib import Path
 
@@ -154,6 +155,21 @@ def test_linux_package_launchers_export_qt_webengine_flags():
     package_script = (ROOT / "scripts" / "package_linux.sh").read_text(encoding="utf-8")
     assert "BlockInsecurePrivateNetworkRequests" in package_script
     assert "FONTCONFIG_FILE" in package_script
+    assert "QT_OPENGL" in package_script
+    assert "--disable-gpu" in package_script
+
+
+def test_linux_desktop_env_configures_software_rendering(monkeypatch):
+    sys.modules.pop("desktop_app", None)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.delenv("QT_OPENGL", raising=False)
+    monkeypatch.delenv("LIBGL_ALWAYS_SOFTWARE", raising=False)
+    monkeypatch.delenv("QTWEBENGINE_CHROMIUM_FLAGS", raising=False)
+    desktop_app = importlib.import_module("desktop_app")
+    desktop_app._configure_linux_webengine_env()
+    assert os.environ.get("QT_OPENGL") == "software"
+    assert os.environ.get("LIBGL_ALWAYS_SOFTWARE") == "1"
+    assert "--disable-gpu" in os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", "")
 
 
 def test_linux_desktop_smoke_requires_loopback_url():
@@ -196,23 +212,6 @@ def test_linux_initial_desktop_url_uses_loopback(monkeypatch):
     desktop_app = importlib.import_module("desktop_app")
 
     assert desktop_app._initial_desktop_url() == "http://127.0.0.1:5000/"
-
-
-def test_build_py_verifies_linux_desktop_source_before_pyinstaller():
-    build_py = (ROOT / "build.py").read_text(encoding="utf-8")
-    assert "def _verify_linux_desktop_source" in build_py
-    assert "_verify_linux_desktop_source()" in build_py
-
-
-def test_linux_package_launchers_export_qt_webengine_flags():
-    package_script = (ROOT / "scripts" / "package_linux.sh").read_text(encoding="utf-8")
-    assert "BlockInsecurePrivateNetworkRequests" in package_script
-    assert "FONTCONFIG_FILE" in package_script
-
-
-def test_linux_desktop_smoke_requires_loopback_url():
-    smoke = (ROOT / "scripts" / "linux_desktop_smoke.sh").read_text(encoding="utf-8")
-    assert "Desktop window URL: http://127.0.0.1:5000/" in smoke
 
 
 def test_linux_saved_window_position_is_not_restored_by_default(monkeypatch):
