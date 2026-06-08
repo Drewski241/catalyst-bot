@@ -31,11 +31,7 @@ from flask import Blueprint, Response, jsonify, request, send_file
 import api_server
 from config import cfg
 from database import log_event, get_stats, backup_database, get_connection
-from user_paths import (
-    coin_prep_last_json,
-    coin_prep_output_log,
-    coin_prep_status_file,
-)
+from pc_diagnostics import collect_pc_diagnostics as _collect_pc_diagnostics
 
 
 # Package directory — the parent of blueprints/ (i.e. src/catalyst/).
@@ -48,6 +44,222 @@ _PACKAGE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 bp = Blueprint("coin_prep", __name__)
 
 _coin_prep_trigger_lock = threading.Lock()
+
+
+def _read_text_tail(path: str, max_bytes: int = 400_000) -> str:
+    if not path or not os.path.exists(path):
+        return ""
+    with open(path, "rb") as fh:
+        size = fh.seek(0, os.SEEK_END)
+        if size > max_bytes:
+            fh.seek(-max_bytes, os.SEEK_END)
+        else:
+            fh.seek(0)
+        return fh.read().decode("utf-8", errors="replace")
+
+
+def _split_sage_path_list(raw: str) -> list[str]:
+    paths: list[str] = []
+    for chunk in str(raw or "").split(os.pathsep):
+        for part in chunk.split(","):
+            part = part.strip().strip('"').strip("'")
+            if part:
+                paths.append(part)
+    return paths
+
+
+def _dedupe_normalized_paths(paths: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for path in paths:
+        try:
+            expanded = os.path.abspath(os.path.expanduser(os.path.expandvars(path)))
+            key = os.path.normcase(os.path.realpath(expanded))
+        except Exception:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(expanded)
+    return result
+
+
+def _candidate_sage_data_dirs_for_bundle(
+    extra_dirs: list[str] | None = None,
+) -> list[str]:
+    roots: list[str] = []
+    try:
+        from sage_node import _candidate_sage_data_dirs as _sage_data_dirs
+
+        roots.extend(_sage_data_dirs(extra_dirs))
+    except Exception:
+        if extra_dirs:
+            roots.extend(extra_dirs)
+        roots.extend(_split_sage_path_list(getattr(cfg, "SAGE_DATA_DIR", "")))
+        roots.extend(_split_sage_path_list(os.environ.get("SAGE_DATA_DIR", "")))
+        roots.extend(_split_sage_path_list(os.environ.get("SAGE_HOME", "")))
+
+        if sys.platform == "win32":
+            appdata = os.environ.get("APPDATA", "")
+            localappdata = os.environ.get("LOCALAPPDATA", "")
+            userprofile = os.environ.get("USERPROFILE", "")
+            if appdata:
+                roots.append(os.path.join(appdata, "com.rigidnetwork.sage"))
+            if localappdata:
+                roots.append(os.path.join(localappdata, "com.rigidnetwork.sage"))
+                roots.append(os.path.join(localappdata, "Sage"))
+                roots.append(os.path.join(localappdata, "sage"))
+            if userprofile:
+                roots.append(
+                    os.path.join(
+                        userprofile, "AppData", "Roaming", "com.rigidnetwork.sage"
+                    )
+                )
+        elif sys.platform == "darwin":
+            roots.append(
+                os.path.expanduser(
+                    "~/Library/Application Support/com.rigidnetwork.sage"
+                )
+            )
+            roots.append(os.path.expanduser("~/Library/Application Support/Sage"))
+        else:
+            xdg_config = os.environ.get("XDG_CONFIG_HOME", "").strip()
+            xdg_data = os.environ.get("XDG_DATA_HOME", "").strip()
+            if xdg_config:
+                roots.append(os.path.join(xdg_config, "com.rigidnetwork.sage"))
+            if xdg_data:
+                roots.append(os.path.join(xdg_data, "com.rigidnetwork.sage"))
+            roots.append(os.path.expanduser("~/.config/com.rigidnetwork.sage"))
+            roots.append(os.path.expanduser("~/.local/share/com.rigidnetwork.sage"))
+
+    return _dedupe_normalized_paths(roots)
+
+
+def _candidate_sage_log_dirs(data_dir: str) -> list[str]:
+    if not data_dir:
+        return []
+    root = os.path.abspath(os.path.expanduser(os.path.expandvars(data_dir)))
+    if os.path.basename(os.path.normpath(root)).lower() == "ssl":
+        root = os.path.dirname(root)
+    return _dedupe_normalized_paths(
+        [
+            root,
+            os.path.join(root, "log"),
+            os.path.join(root, "logs"),
+        ]
+    )
+
+
+def _discover_sage_log_paths(
+    extra_data_dirs: list[str] | None = None,
+    max_files: int = 4,
+) -> list[str]:
+    candidates: list[str] = []
+    for data_dir in _candidate_sage_data_dirs_for_bundle(extra_data_dirs):
+        for log_dir in _candidate_sage_log_dirs(data_dir):
+            if not os.path.isdir(log_dir):
+                continue
+            for pattern in ("app.log*", "sage*.log*", "*.log"):
+                candidates.extend(glob.glob(os.path.join(log_dir, pattern)))
+
+    files: list[str] = []
+    seen: set[str] = set()
+    for path in candidates:
+        try:
+            if not os.path.isfile(path):
+                continue
+            key = os.path.normcase(os.path.realpath(path))
+        except Exception:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        files.append(path)
+
+    files.sort(key=lambda path: (os.path.getmtime(path), path), reverse=True)
+    return files[: max(0, int(max_files or 0))]
+
+
+def _safe_bundle_filename(filename: str) -> str:
+    safe = "".join(
+        ch if ch.isalnum() or ch in "._-" else "_" for ch in os.path.basename(filename)
+    )
+    return safe.strip("._") or "sage-log"
+
+
+def _collect_sage_log_tails(
+    max_files: int = 4,
+    max_bytes: int = 400_000,
+) -> tuple[dict[str, str], list[dict]]:
+    log_texts: dict[str, str] = {}
+    metadata: list[dict] = []
+
+    for idx, path in enumerate(_discover_sage_log_paths(max_files=max_files), start=1):
+        filename = os.path.basename(path)
+        bundle_path = f"logs/sage/{idx:02d}_{_safe_bundle_filename(filename)}_tail.log"
+        item = {
+            "filename": filename,
+            "bundle_path": bundle_path,
+            "tail_bytes": int(max_bytes),
+        }
+        try:
+            stat = os.stat(path)
+            item["size_bytes"] = int(stat.st_size)
+            item["modified_at"] = datetime.fromtimestamp(
+                stat.st_mtime, timezone.utc
+            ).isoformat()
+            text = _read_text_tail(path, max_bytes=max_bytes)
+        except Exception as exc:
+            item["error"] = str(exc)[:200]
+            metadata.append(item)
+            continue
+        if text:
+            log_texts[bundle_path] = text
+        metadata.append(item)
+
+    return log_texts, metadata
+
+
+def _coin_prep_runtime_dir() -> str:
+    try:
+        from user_paths import data_dir
+
+        return data_dir()
+    except Exception:
+        return _PACKAGE_DIR
+
+
+def _coin_prep_status_file() -> str:
+    try:
+        from user_paths import coin_prep_status_file
+
+        return coin_prep_status_file()
+    except Exception:
+        return os.path.join(_coin_prep_runtime_dir(), "coin_prep_status.json")
+
+
+def _coin_prep_last_file() -> str:
+    try:
+        from user_paths import coin_prep_last_file
+
+        path = coin_prep_last_file()
+        if os.path.exists(path):
+            return path
+        legacy_path = os.path.join(_PACKAGE_DIR, "coin_prep_last.json")
+        if os.path.exists(legacy_path):
+            return legacy_path
+        return path
+    except Exception:
+        return os.path.join(_coin_prep_runtime_dir(), "coin_prep_last.json")
+
+
+def _coin_prep_output_log_file() -> str:
+    try:
+        from user_paths import coin_prep_output_log_file
+
+        return coin_prep_output_log_file()
+    except Exception:
+        return os.path.join(_coin_prep_runtime_dir(), "coin_prep_output.log")
 
 
 def _safe_liquidity_mode(value: object) -> str:
@@ -458,7 +670,7 @@ def api_coin_prep_status():
                 pass
 
         # Read live progress from the worker's status file (V1 parity)
-        status_file = coin_prep_status_file()
+        status_file = _coin_prep_status_file()
         if os.path.exists(status_file):
             try:
                 with open(status_file, "r") as f:
@@ -526,7 +738,7 @@ def api_coin_prep_status():
                         _target_xch = 0
                         _target_cat = 0
                         try:
-                            _prep_path = coin_prep_last_json()
+                            _prep_path = _coin_prep_last_file()
                             if os.path.exists(_prep_path):
                                 with open(_prep_path, "r") as _pf:
                                     _last = json.load(_pf)
@@ -702,7 +914,7 @@ def api_coin_prep_status():
                 pass
 
         # Include last successful prep settings (for smart skip detection)
-        prep_json_path = coin_prep_last_json()
+        prep_json_path = _coin_prep_last_file()
         if os.path.exists(prep_json_path):
             try:
                 with open(prep_json_path, "r") as f:
@@ -1358,7 +1570,7 @@ def _api_coin_prep_trigger_locked():
         # Write a fresh "starting" status file immediately.
         # This prevents the GUI from reading stale COMPLETE status
         # from a previous run during the gap before the subprocess starts.
-        status_file = coin_prep_status_file()
+        status_file = _coin_prep_status_file()
         try:
             fresh_status = {
                 "phase": "idle",
@@ -1394,8 +1606,9 @@ def _api_coin_prep_trigger_locked():
                     _coin_prep_worker_environment,
                 )
 
-                worker_dir = _PACKAGE_DIR
-                worker_path = os.path.join(worker_dir, "coin_prep_worker.py")
+                worker_dir = _coin_prep_runtime_dir()
+                os.makedirs(worker_dir, exist_ok=True)
+                worker_path = os.path.join(_PACKAGE_DIR, "coin_prep_worker.py")
                 worker_cmd = _coin_prep_worker_command(worker_path)
 
                 if not os.path.exists(worker_path):
@@ -1710,7 +1923,8 @@ def _api_coin_prep_trigger_locked():
                         f"XCH size {trade_xch} (+{getattr(cfg, 'COIN_PREP_HEADROOM_PCT', Decimal('10'))}% headroom)",
                     )
 
-                log_path = coin_prep_output_log()
+                log_path = _coin_prep_output_log_file()
+                os.makedirs(os.path.dirname(log_path), exist_ok=True)
                 log_file = open(log_path, "w", encoding="utf-8")
                 popen_kwargs = {
                     "stdout": log_file,
@@ -1832,7 +2046,7 @@ def _api_coin_prep_trigger_locked():
                     api_server._coin_prep_state["phase"] = "error"
                     error_msg = f"Worker exited with code {exit_code}"
                     # Try to read log file for error context (non-Windows)
-                    log_path = coin_prep_output_log()
+                    log_path = _coin_prep_output_log_file()
                     if os.path.exists(log_path):
                         try:
                             with open(log_path, "r", encoding="utf-8") as f:
@@ -2471,6 +2685,11 @@ def api_logs_download():
         # Config snapshot — cfg.to_dict() already excludes secrets
         # (SPACESCAN_API_KEY, SAGE_FINGERPRINT, RPC TLS paths, etc.).
         try:
+            snapshots["pc_diagnostics"] = _collect_pc_diagnostics()
+        except Exception as e:
+            snapshots["pc_diagnostics"] = {"error": str(e)}
+
+        try:
             snapshots["config"] = cfg.to_dict() if hasattr(cfg, "to_dict") else {}
         except Exception as e:
             snapshots["config"] = {"error": str(e)}
@@ -2659,6 +2878,18 @@ def api_logs_download():
             )
             manifest["latest_run_log"] = os.path.basename(latest_run_log)
 
+        try:
+            sage_log_texts, sage_log_meta = _collect_sage_log_tails()
+            log_texts.update(sage_log_texts)
+            snapshots["sage_logs"] = {
+                "included_count": len(sage_log_texts),
+                "files": sage_log_meta,
+            }
+            manifest["sage_log_count"] = len(sage_log_texts)
+        except Exception as e:
+            snapshots["sage_logs"] = {"included_count": 0, "error": str(e)}
+            manifest["sage_log_count"] = 0
+
         bundle_name = (
             "bot_debug_bundle_"
             + datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -2683,6 +2914,7 @@ def api_logs_download():
                 "    config_history.json   recent settings changes (secrets stripped)",
                 "    bot_settings.json     persistent app state/settings",
                 "    system_info.json      Python / OS / platform",
+                "    pc_diagnostics.json   PC memory, disk, CPU, app process tree",
                 "    api_calls.json        external API call counters",
                 "    coin_inventory.json   tier-group counts + topup-pool totals",
                 "    open_offers.json      live open offers (with trade_ids)",
@@ -2694,12 +2926,14 @@ def api_logs_download():
                 "    market_toxicity.json  adverse-selection guard snapshot",
                 "    runtime_monitor.json  runtime monitor state",
                 "    splash.json           splash broadcast/node/receive",
+                "    sage_logs.json        native Sage wallet log index",
                 "    superlog_stats.json   superlog rotation stats",
                 "    superlog_archive.json recent superlog file list",
                 "    event_type_counts.json frequency of each event_type",
                 "  logs/",
                 "    current_superlog_tail.log    last ~400KB of running superlog",
                 "    latest_run_superlog_tail.log last ~400KB of most-recent run",
+                "    sage/*_tail.log             native Sage wallet log tails",
                 "",
                 "Privacy",
                 "-------",
@@ -2711,6 +2945,10 @@ def api_logs_download():
                 "  passwords, seed phrases, and private keys are redacted",
                 "  recursively.",
                 "* User-home path prefixes are redacted from log text.",
+                "* PC diagnostics include drive roots and CATalyst child",
+                "  process names, not full command lines or user paths.",
+                "* Native Sage wallet log tails are included only as text tails",
+                "  and pass through the same address/fingerprint/path redaction.",
                 "* Configuration excludes SPACESCAN_API_KEY, RPC TLS paths, and",
                 "  wallet fingerprints (filtered by cfg.to_dict()).",
                 "* The DB file, .env, user_secrets.json, and TLS keys are NOT",

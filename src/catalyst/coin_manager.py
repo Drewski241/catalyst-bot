@@ -31,6 +31,10 @@ import sys
 from decimal import Decimal
 from typing import Dict, List, Optional, Tuple
 
+from amount_utils import (
+    cat_display_amount_to_mojos_ceil,
+    round_cat_display_amount_up_to_mojo,
+)
 from config import cfg
 from database import log_event
 
@@ -156,6 +160,16 @@ def _coin_prep_worker_command(worker_path: str) -> list[str]:
     if getattr(sys, "frozen", False):
         return [sys.executable, "--coin-prep-worker"]
     return [sys.executable, worker_path]
+
+
+def _coin_prep_worker_cwd() -> str:
+    """Return the writable cwd used by coin_prep_worker sidecar files."""
+    try:
+        from user_paths import data_dir
+
+        return data_dir()
+    except Exception:
+        return os.path.dirname(os.path.abspath(__file__))
 
 
 def _set_sage_data_dir_from_cert_env(env: dict, cert_path: str) -> None:
@@ -996,11 +1010,10 @@ def get_tier_sizes_mojos_from_cfg(is_cat: bool = False) -> Dict[str, int]:
             # this produces wrong sizes that cause F70 misfit false
             # positives — avoid by keeping the price engine reachable.
             price = Decimal("0.0001")
-        cat_scale = Decimal(10) ** Decimal(cfg.CAT_DECIMALS)
         out = {}
         for tier, xch_size in result_xch.items():
-            cat_amount = (xch_size / price * prep_mult).quantize(Decimal("1"))
-            out[tier] = int(cat_amount * cat_scale)
+            cat_amount = xch_size / price * prep_mult
+            out[tier] = cat_display_amount_to_mojos_ceil(cat_amount, cfg.CAT_DECIMALS)
         return out
 
     xch_scale = Decimal("1000000000000")
@@ -3792,8 +3805,9 @@ class CoinManager:
                 )
                 self._xch_inventory = _classify_coins(xch_records, xch_trading_mojos)
 
-                cat_scale = Decimal(10) ** Decimal(cfg.CAT_DECIMALS)
-                cat_trading_mojos = int(self.get_target_cat_coin_size() * cat_scale)
+                cat_trading_mojos = cat_display_amount_to_mojos_ceil(
+                    self.get_target_cat_coin_size(), cfg.CAT_DECIMALS
+                )
                 self._cat_inventory = _classify_coins(cat_records, cat_trading_mojos)
 
             # ---- Locked coin tracking ----
@@ -6015,8 +6029,9 @@ class CoinManager:
                 xch_trading_mojos = int(
                     self.get_target_xch_coin_size() * Decimal("1000000000000")
                 )
-                cat_scale = Decimal(10) ** Decimal(cfg.CAT_DECIMALS)
-                cat_trading_mojos = int(self.get_target_cat_coin_size() * cat_scale)
+                cat_trading_mojos = cat_display_amount_to_mojos_ceil(
+                    self.get_target_cat_coin_size(), cfg.CAT_DECIMALS
+                )
                 xch_inv = _classify_coins(xch_records, xch_trading_mojos)
                 cat_inv = _classify_coins(cat_records, cat_trading_mojos)
 
@@ -6780,9 +6795,8 @@ class CoinManager:
                     if did_anything:
                         time.sleep(5)
                     needed = target_free_cat - free_cat_trading + 3
-                    cat_scale_val = Decimal(10) ** Decimal(cfg.CAT_DECIMALS)
-                    cat_trading_mojos = int(
-                        self.get_target_cat_coin_size() * cat_scale_val
+                    cat_trading_mojos = cat_display_amount_to_mojos_ceil(
+                        self.get_target_cat_coin_size(), cfg.CAT_DECIMALS
                     )
                     cat_result = self._smart_topup_wallet(
                         "CAT",
@@ -9513,7 +9527,7 @@ class CoinManager:
             split_tx_ids = []
             # Chia CLI split — needs display units
             if is_cat:
-                cli_coin_size = Decimal(str(int(self.get_target_cat_coin_size())))
+                cli_coin_size = self.get_target_cat_coin_size()
             else:
                 cli_coin_size = Decimal(trading_size_mojos) / Decimal("1000000000000")
 
@@ -10686,7 +10700,7 @@ class CoinManager:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,  # Merge into stdout to prevent pipe deadlock
                 stdin=subprocess.DEVNULL,
-                cwd=os.path.dirname(os.path.abspath(__file__)),
+                cwd=_coin_prep_worker_cwd(),
                 env=env,
                 **hidden_subprocess_kwargs(),
             )
@@ -10904,14 +10918,15 @@ class CoinManager:
         tier_sizes_xch = self._configured_tier_sizes_xch(side="sell")
         if is_cat:
             price = self._get_current_price()
-            cat_scale = Decimal(10) ** Decimal(cfg.CAT_DECIMALS)
             result = {}
             for tier, xch_size in tier_sizes_xch.items():
                 if price and price > 0:
-                    cat_amount = (xch_size / price * prep_mult).quantize(Decimal("1"))
+                    cat_amount = xch_size / price * prep_mult
                 else:
                     cat_amount = cfg.CAT_COIN_SIZE
-                result[tier] = int(cat_amount * cat_scale)
+                result[tier] = cat_display_amount_to_mojos_ceil(
+                    cat_amount, cfg.CAT_DECIMALS
+                )
             return result
 
     def get_target_xch_coin_size(self, side: str = "buy") -> Decimal:
@@ -10959,8 +10974,9 @@ class CoinManager:
             price = self._get_current_price()
             if price and price > 0:
                 cat_per_offer = xch_trade_size / price
-                cat_coin_size = cat_per_offer.quantize(Decimal("1"))
-                return cat_coin_size
+                return round_cat_display_amount_up_to_mojo(
+                    cat_per_offer, cfg.CAT_DECIMALS
+                )
         except Exception as e:
             log_event(
                 "debug",

@@ -75,6 +75,7 @@ from runtime_monitor import RuntimeMonitor
 from amm_monitor import AMMMonitor
 from splash_receive import classify_offer_for_asset
 from shock_protection import evaluate_tibet_shock
+from amount_utils import format_cat_display_amount, format_signed_cat_display_amount
 from wallet import get_all_offers, get_chia_health
 
 try:
@@ -109,6 +110,46 @@ def _format_sage_cleanup_skip_summary(total: int, new: int, repeated: int) -> st
         "They were not DB-verified as cancelled/expired, so CATalyst left "
         "them visible in Sage instead of deleting them."
     )
+
+
+def _normalize_coin_id_value(coin_id: object) -> str:
+    cid = str(coin_id or "").strip().lower()
+    if cid and not cid.startswith("0x"):
+        cid = "0x" + cid
+    return cid
+
+
+def _count_wallet_confirmed_external_locks(
+    locked_rows, active_trade_ids, wallet_confirmed_locked_ids
+) -> int:
+    """Count DB locks that are both non-book and wallet-confirmed locked."""
+    active_trade_ids = {str(tid or "") for tid in (active_trade_ids or set())}
+    wallet_locked_ids = {
+        _normalize_coin_id_value(cid) for cid in (wallet_confirmed_locked_ids or set())
+    }
+    count = 0
+    for row in locked_rows or []:
+        trade_id = str(row.get("trade_id") or "")
+        coin_id = _normalize_coin_id_value(row.get("coin_id"))
+        if trade_id in active_trade_ids:
+            continue
+        if coin_id and coin_id in wallet_locked_ids:
+            count += 1
+    return count
+
+
+def _get_wallet_confirmed_locked_coin_ids() -> set:
+    try:
+        from bot_health import _wallet_confirmed_locked_coin_ids
+
+        return _wallet_confirmed_locked_coin_ids()
+    except Exception as e:
+        slog(
+            "BOT_HEALTH",
+            f"Could not fetch wallet-confirmed locked coins for invariant check: {e}",
+            level="debug",
+        )
+        return set()
 
 
 def _find_cat_deposit_for_position_delta(delta_cat, scale, baseline_at=0):
@@ -3610,12 +3651,28 @@ class BotLoop:
         except Exception:
             return
 
-        # Count DB-locked coins per wallet type.
+        # Count DB-locked coins per wallet type. Locks tied to non-book trade
+        # ids can be legitimate external Sage activity, such as NFT offers
+        # made from the same wallet, but only subtract them from the
+        # active-book invariant when Sage still confirms the coin is
+        # offer-locked. Stale Catalyst DB locks must remain visible here.
         try:
-            xch_locked = len(get_locked_coins("xch") or [])
-            cat_locked = len(get_locked_coins("cat") or [])
+            xch_locked_rows = get_locked_coins("xch") or []
+            cat_locked_rows = get_locked_coins("cat") or []
+            xch_locked = len(xch_locked_rows)
+            cat_locked = len(cat_locked_rows)
+            buy_trade_ids = {o.get("trade_id") for o in db_buys if o.get("trade_id")}
+            sell_trade_ids = {o.get("trade_id") for o in db_sells if o.get("trade_id")}
+            wallet_confirmed_locked_ids = _get_wallet_confirmed_locked_coin_ids()
+            xch_external_locked = _count_wallet_confirmed_external_locks(
+                xch_locked_rows, buy_trade_ids, wallet_confirmed_locked_ids
+            )
+            cat_external_locked = _count_wallet_confirmed_external_locks(
+                cat_locked_rows, sell_trade_ids, wallet_confirmed_locked_ids
+            )
         except Exception:
             xch_locked = cat_locked = 0
+            xch_external_locked = cat_external_locked = 0
 
         # Per-side layout detection. The watchdog's "reversed" mode expects
         # inner to be the LARGEST tier; "standard" expects inner SMALLEST.
@@ -3684,6 +3741,10 @@ class BotLoop:
             wallet_totals=wallet_totals,
             inventory=inventory_dict,
             db_locked_count={"xch": xch_locked, "cat": cat_locked},
+            external_locked_count={
+                "xch": xch_external_locked,
+                "cat": cat_external_locked,
+            },
         )
 
         # Persistence: track (side, code) → consecutive-pass streak.
@@ -9212,7 +9273,10 @@ class BotLoop:
                 launch_reason = None  # existing guard below uses this to no-op
             dexie_p = Decimal(str(price_data.get("dexie_price", 0) or 0))
             tibet_p = Decimal(str(price_data.get("tibet_price", 0) or 0))
-            if dexie_p > 0 and tibet_p > 0:
+            startup_probe = bool(
+                launch_reason and launch_reason.startswith("startup_empty_book")
+            )
+            if tibet_p > 0 and (dexie_p > 0 or startup_probe):
                 if self.sniper._active_snipe_ids:
                     retired = _retire_probe_offers("probe_rearm")
                     if not retired:
@@ -11867,7 +11931,10 @@ class BotLoop:
                     scale = Decimal(10) ** Decimal(
                         int(getattr(cfg, "CAT_DECIMALS", 3) or 3)
                     )
-                    amount_str = f"{Decimal(amount) / scale:.2f} CAT"
+                    amount_str = (
+                        f"{format_cat_display_amount(Decimal(amount) / scale, cfg.CAT_DECIMALS)} "
+                        "CAT"
+                    )
                 previews.append(
                     f"{str(row.get('trade_id'))[:12]}... {row.get('side')}/{row.get('tier')} "
                     f"{amount_str} ratio={row.get('ratio')} reason={row.get('reason')}"
@@ -13452,8 +13519,11 @@ class BotLoop:
                     log_event(
                         "debug",
                         "position_baseline_set",
-                        f"Position sanity baseline: wallet={_baseline:.2f} CAT, "
-                        f"bot_net={self._position_baseline_net_cat:+.2f} CAT "
+                        "Position sanity baseline: wallet="
+                        f"{format_cat_display_amount(_baseline, cfg.CAT_DECIMALS)} CAT, "
+                        "bot_net="
+                        f"{format_signed_cat_display_amount(self._position_baseline_net_cat, cfg.CAT_DECIMALS)} "
+                        "CAT "
                         f"at session start",
                     )
             except Exception:
@@ -13563,9 +13633,11 @@ class BotLoop:
                 log_event(
                     "info",
                     "position_sanity_external_deposit",
-                    f"Wallet CAT balance changed by {delta:+.2f} CAT, "
+                    "Wallet CAT balance changed by "
+                    f"{format_signed_cat_display_amount(delta, cfg.CAT_DECIMALS)} CAT, "
                     f"matching external deposit {short_id} "
-                    f"({amount_cat:.3f} CAT). Re-snapped position sanity "
+                    f"({format_cat_display_amount(amount_cat, cfg.CAT_DECIMALS)} CAT). "
+                    "Re-snapped position sanity "
                     f"baseline instead of treating it as missing PnL.",
                 )
                 try:
@@ -13578,8 +13650,11 @@ class BotLoop:
                 "info",
                 "position_sanity_drift",
                 f"Position sanity check: bot estimate since baseline "
-                f"{net_position_since_baseline:+.2f} CAT (all-time "
-                f"{net_position_cat:+.2f}), wallet delta {delta:+.2f} CAT "
+                f"{format_signed_cat_display_amount(net_position_since_baseline, cfg.CAT_DECIMALS)} "
+                "CAT "
+                f"(all-time {format_signed_cat_display_amount(net_position_cat, cfg.CAT_DECIMALS)}), "
+                "wallet delta "
+                f"{format_signed_cat_display_amount(delta, cfg.CAT_DECIMALS)} CAT "
                 f"(tolerance ±{tolerance:.0f}). This usually means the bot "
                 f"silently missed a fill (likely a Spacescan-deferred fill "
                 f"that never confirmed) or a phantom fill was recorded. "
@@ -13591,7 +13666,9 @@ class BotLoop:
                     "warning",
                     "Position drift detected",
                     f"The bot's tracked position differs from your wallet's actual "
-                    f"CAT balance change by {delta:+.0f} CAT. Some fills may be "
+                    "CAT balance change by "
+                    f"{format_signed_cat_display_amount(delta, cfg.CAT_DECIMALS)} CAT. "
+                    "Some fills may be "
                     f"missing from PnL. Run a manual reconciliation.",
                     action="run_doctor",
                     action_label="Run Doctor",

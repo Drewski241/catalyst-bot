@@ -188,7 +188,9 @@ fill detector and toxicity guard can react before the next normal cycle.
 
 ## Requirements
 
-- Windows 10/11 (64-bit), macOS, or Linux.
+- Windows 10/11 (64-bit) or Linux for packaged releases.
+- macOS can run from source from the GitHub repository, but packaged macOS
+  releases are not currently published.
 - [Sage wallet](https://sagewallet.net/) installed with RPC enabled
   (Settings -> Advanced -> Enable RPC).
 - XCH for fees and inventory, plus the CAT token you want to trade.
@@ -216,8 +218,9 @@ where CATalyst is running.
 
 1. Download the package for your operating system from the
    [latest release](https://github.com/catalystxch/catalyst-bot/releases/latest).
-   Windows uses `Catalyst-Setup-v*.exe`, macOS uses the `.dmg`, and Linux users
-   can use either the `.AppImage` or the `.deb` package.
+   Windows uses `Catalyst-Setup-v*.exe`, and Linux users can use either the
+   `.AppImage` or the `.deb` package. macOS packages are not currently
+   published.
 2. Install or open the package using the normal flow for your operating system.
 
 #### Ubuntu 24.04 (Noble)
@@ -251,6 +254,9 @@ bundled inside the package.
 3. Launch CATalyst on the same computer as Sage wallet. On first run it checks
    the Sage connection, asks you to choose a wallet fingerprint, and guides you
    through Smart Settings.
+
+Mac users can use the GitHub source code path below. We do not currently publish
+a signed/notarized macOS installer or DMG.
 
 ### From Source on Windows
 
@@ -288,9 +294,8 @@ python desktop_app.py --flask
 
 Then open `http://127.0.0.1:5000/` in a browser on that same machine.
 
-#### macOS Note
-
-On macOS port 5000 might be in use by Control Center. If you see an error about port 5000, choose a different port by setting `CATALYST_FLASK_PORT` before starting. For example:
+On macOS, port `5000` might already be used by Control Center. If startup says
+the port is in use, choose another port:
 
 ```bash
 CATALYST_FLASK_PORT=5010 python desktop_app.py --flask
@@ -478,9 +483,10 @@ python build.py --no-clean   # skip cleaning for faster iteration
 
 The local build output stays on the machine that ran `python build.py`. To share
 builds with users, publish a GitHub Release or push a `v*` tag. The release
-workflow builds Windows installers, macOS DMGs, Linux AppImages and `.deb`
-packages, archive fallbacks, `.sha256` checksum sidecars, and signed update
-manifests.
+workflow builds Windows installers, Linux AppImages and `.deb` packages,
+archive fallbacks, `.sha256` checksum sidecars, and signed update manifests.
+macOS users can run from source, but macOS release builds are currently not
+published.
 
 The in-app updater does not need the source repo to be public. It reads only the
 public release-channel manifest at

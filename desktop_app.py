@@ -133,9 +133,9 @@ WINDOW_MIN_HEIGHT = 700
 def _configure_linux_webengine_env() -> None:
     """Allow the Qt WebEngine shell to reach loopback Flask on Linux.
 
-    Packaged Linux builds show splash.html via file:// first. Its redirect to
-    http://127.0.0.1:5000/ is blocked by Chromium Private Network Access unless
-    we either load Flask directly or relax the block for the embedded shell.
+    Packaged Linux builds bundle PyQt6. Chromium Private Network Access blocks
+    file:// splash redirects to http://127.0.0.1:5000/ unless we load Flask
+    directly or relax the block for the embedded shell.
     """
     if sys.platform != "linux":
         return
@@ -161,7 +161,9 @@ def _initial_desktop_url() -> str:
         return flask_url
     splash_path = _bundle_path("splash.html")
     if os.path.exists(splash_path):
-        return "file:///" + splash_path.replace("\\", "/")
+        import pathlib
+
+        return pathlib.Path(splash_path).as_uri()
     return flask_url
 
 
@@ -240,6 +242,16 @@ def _save_window_state(window) -> None:
             _json.dump(state, fh)
     except Exception as e:
         print(f"[WINDOW] Could not save window state: {e}", flush=True)
+
+
+def _should_restore_saved_window_position() -> bool:
+    """Return True when saved x/y coordinates should be passed to PyWebView."""
+    override = os.environ.get("CATALYST_RESTORE_WINDOW_POSITION", "").strip().lower()
+    if override in {"1", "true", "yes", "on"}:
+        return True
+    if override in {"0", "false", "no", "off"}:
+        return False
+    return sys.platform in {"win32", "darwin"}
 
 
 def _apply_window_icon_win32(ico_path: str) -> None:
@@ -749,7 +761,13 @@ def start_flask_server():
 
 def run_desktop_mode(dev_mode: bool = False):
     """Main desktop app flow."""
-    _configure_linux_webengine_env()
+    # WebKit2GTK 4.1+ runs the WebProcess inside a bubblewrap sandbox that
+    # puts it in a separate network namespace, blocking access to the host's
+    # loopback interface (127.0.0.1). Setting this env var before the first
+    # import of webview disables that sandbox so localhost works.
+    if sys.platform.startswith("linux"):
+        _configure_linux_webengine_env()
+        os.environ.setdefault("WEBKIT_DISABLE_SANDBOX", "1")
     try:
         import webview
     except ImportError:
@@ -795,20 +813,7 @@ def run_desktop_mode(dev_mode: bool = False):
     print("  Flask is ready.")
 
     # Start system tray in background
-    tray_thread = None
-    try:
-        from tray_manager import TrayManager
-
-        tray = TrayManager(app_name=APP_NAME, app_version=APP_VERSION)
-        tray_thread = threading.Thread(target=tray.run, daemon=True, name="SystemTray")
-        tray_thread.start()
-        print("  System tray icon active.")
-    except ImportError:
-        print("  System tray disabled (pystray not installed).")
-        tray = None
-    except Exception as e:
-        print(f"  System tray failed: {e}")
-        tray = None
+    tray, tray_thread = _start_system_tray()
 
     # Start notification manager
     try:
@@ -909,8 +914,12 @@ def run_desktop_mode(dev_mode: bool = False):
     _saved_state = _load_window_state()
     _win_width = _saved_state.get("width", WINDOW_WIDTH)
     _win_height = _saved_state.get("height", WINDOW_HEIGHT)
-    _win_x = _saved_state.get("x")
-    _win_y = _saved_state.get("y")
+    if _should_restore_saved_window_position():
+        _win_x = _saved_state.get("x")
+        _win_y = _saved_state.get("y")
+    else:
+        _win_x = None
+        _win_y = None
 
     _initial_url = _initial_desktop_url()
     print(f"  Desktop window URL: {_initial_url}", flush=True)
@@ -1107,6 +1116,29 @@ def _detect_gui_backend():
         if importlib.util.find_spec("qtpy") is not None:
             return "qt"
         return None  # Default GTK WebKit on Linux when Qt is not bundled
+
+
+def _start_system_tray(settle_seconds: float = 0.35):
+    """Start the optional tray and avoid claiming success after fast failures."""
+    try:
+        from tray_manager import TrayManager
+
+        tray = TrayManager(app_name=APP_NAME, app_version=APP_VERSION)
+        tray_thread = threading.Thread(target=tray.run, daemon=True, name="SystemTray")
+        tray_thread.start()
+        if settle_seconds > 0:
+            time.sleep(settle_seconds)
+        if not getattr(tray, "is_running", False) and not tray_thread.is_alive():
+            print("  System tray disabled (desktop tray unavailable).")
+            return None, tray_thread
+        print("  System tray icon active.")
+        return tray, tray_thread
+    except ImportError:
+        print("  System tray disabled (pystray not installed).")
+        return None, None
+    except Exception as e:
+        print(f"  System tray failed: {e}")
+        return None, None
 
 
 def _show_window(webview_module):
@@ -1362,6 +1394,7 @@ def main(argv=None):
     _set_windows_app_user_model_id()
     if sys.platform.startswith("linux"):
         _configure_linux_webengine_env()
+        os.environ.setdefault("WEBKIT_DISABLE_SANDBOX", "1")
 
     parser = argparse.ArgumentParser(description=f"{APP_NAME} v{APP_VERSION}")
     parser.add_argument(
