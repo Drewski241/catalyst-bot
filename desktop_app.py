@@ -159,8 +159,27 @@ def _configure_linux_webengine_env() -> None:
 
 def _linux_tray_enabled() -> bool:
     """Return False when the Linux desktop should skip the pystray icon."""
-    override = os.environ.get("CATALYST_DISABLE_TRAY", "").strip().lower()
-    return override not in {"1", "true", "yes", "on"}
+    if sys.platform != "linux":
+        return True
+    if os.environ.get("CATALYST_DISABLE_TRAY", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return False
+    if os.environ.get("CATALYST_ENABLE_TRAY", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return True
+    # pystray uses GTK/AppIndicator on Linux, which conflicts with the bundled
+    # PyQt6 WebEngine event loop (QObject::killTimer / g_main_context crashes).
+    if _detect_gui_backend() == "qt":
+        return False
+    return True
 
 
 def _initial_desktop_url() -> str:
@@ -1134,7 +1153,13 @@ def _detect_gui_backend():
 def _start_system_tray(settle_seconds: float = 0.35):
     """Start the optional tray and avoid claiming success after fast failures."""
     if sys.platform == "linux" and not _linux_tray_enabled():
-        print("  System tray disabled (CATALYST_DISABLE_TRAY is set).")
+        if _detect_gui_backend() == "qt":
+            print(
+                "  System tray disabled on Linux (Qt desktop; "
+                "set CATALYST_ENABLE_TRAY=1 to force it)."
+            )
+        else:
+            print("  System tray disabled (CATALYST_DISABLE_TRAY is set).")
         return None, None
     try:
         from tray_manager import TrayManager

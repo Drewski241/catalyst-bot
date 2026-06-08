@@ -159,6 +159,25 @@ def test_linux_package_launchers_export_qt_webengine_flags():
     assert "--disable-gpu" in package_script
 
 
+def test_linux_qt_backend_disables_tray_by_default(monkeypatch):
+    sys.modules.pop("desktop_app", None)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.delenv("CATALYST_DISABLE_TRAY", raising=False)
+    monkeypatch.delenv("CATALYST_ENABLE_TRAY", raising=False)
+    desktop_app = importlib.import_module("desktop_app")
+    assert desktop_app._linux_tray_enabled() is False
+
+
+def test_linux_qt_backend_allows_tray_when_forced(monkeypatch):
+    sys.modules.pop("desktop_app", None)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setenv("CATALYST_ENABLE_TRAY", "1")
+    desktop_app = importlib.import_module("desktop_app")
+    assert desktop_app._linux_tray_enabled() is True
+
+
 def test_linux_desktop_env_configures_software_rendering(monkeypatch):
     sys.modules.pop("desktop_app", None)
     monkeypatch.setattr(sys, "platform", "linux")
