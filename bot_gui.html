@@ -10538,7 +10538,7 @@
                             <div class="v4-settings-pair-card" id="settingsPairDisplayCard">
                                 <div class="v4-settings-pair-copy">
                                     <div class="v4-settings-pair-name" id="settingsPairDisplayName">No Trading Pair Selected</div>
-                                    <div class="v4-settings-pair-meta" id="settingsPairDisplayMeta">Trading pair is chosen once for the whole app. Pick it from the dashboard, then configure this run here.</div>
+                                    <div class="v4-settings-pair-meta" id="settingsPairDisplayMeta">Pick a trading pair from the dashboard, then configure it here. Settings are remembered per CAT when you save.</div>
                                     <div class="v4-settings-pair-status" id="settingsPairDisplayStatus">Waiting for pair selection</div>
                                 </div>
                                 <button type="button" class="btn btn-config v4-settings-pair-trigger" id="settingsPairChangeBtn" onclick="beginSettingsPairChange()">Choose Trading Pair</button>
@@ -17732,15 +17732,15 @@
                 if (!hasPair) {
                     metaEl.textContent = 'Choose the CAT token on the dashboard first. Settings, balances, pricing, and coin prep will then prepare for that token.';
                 } else if (!pairReady) {
-                    metaEl.textContent = `${pairName} has been selected for this run. Waiting for fresh balances and market data before settings can be saved.`;
+                    metaEl.textContent = `${pairName} is focused. Waiting for fresh balances and market data before settings can be saved.`;
                 } else {
-                    metaEl.textContent = `${pairName} is the active trading pair for this run. All settings on this page apply to that token against XCH.`;
+                    metaEl.textContent = `${pairName} is the focused trading pair. Settings on this page apply to that token against XCH and are remembered when you save.`;
                 }
             }
             if (statusEl) {
                 statusEl.textContent = !hasPair
                     ? 'Waiting for pair selection'
-                    : (pairReady ? 'App-wide trading pair confirmed' : 'Refreshing pair data');
+                    : (pairReady ? 'Focused trading pair ready' : 'Refreshing pair data');
             }
             if (btn) {
                 btn.disabled = locked;
@@ -17749,7 +17749,7 @@
                     : (hasPair ? 'Change Trading Pair' : 'Choose Trading Pair');
                 btn.title = locked
                     ? 'Stop the bot before changing the trading pair for this run.'
-                    : 'Trading pair is chosen once for the whole app.';
+                    : 'Switch focus to another CAT. Saved settings are restored per pair.';
             }
         }
 
@@ -22776,14 +22776,23 @@
                     updateStartupChecklist(bot_state);
                     clearPairScopedDashboardState(name);
 
-                    // New pair selected — reset session state for the new pair.
-                    // This ensures trading-size fields (Smart Defaults output) are blank
-                    // on next settings open rather than showing the previous pair's values.
-                    // Also clears coin prep so the check runs for the new pair's coin sizes.
-                    setFreshStartTemplateState(true);
-                    setSettingsReviewedState(false);
+                    // Phase 1 multi-pair: if the server restored a saved profile for
+                    // this CAT, keep those economics and reload Settings from /api/config.
+                    // First visit to a CAT still uses the fresh-start blank template.
+                    const profileLoaded = !!result.pair_profile_loaded;
+                    if (profileLoaded) {
+                        setFreshStartTemplateState(false);
+                        setSettingsReviewedState(true);
+                        userHasSavedSettings = true;
+                        try { _settingsSnapshot = null; } catch (_) {}
+                    } else {
+                        // New pair — blank market-derived fields so previous pair
+                        // values do not show until Smart Settings / save.
+                        setFreshStartTemplateState(true);
+                        setSettingsReviewedState(false);
+                        userHasSavedSettings = false;
+                    }
                     setCoinPrepStatus('none');
-                    userHasSavedSettings = false;
                     resetSmartDefaultsPanel();
                     
                     // Update labels
@@ -22796,7 +22805,12 @@
                     if (catRows) catRows.style.display = 'block';
                     if (catPlaceholder) catPlaceholder.style.display = 'none';
                     
-                    showToast(`Switched to ${name}!`, 'success');
+                    showToast(
+                        profileLoaded
+                            ? `Switched to ${name} — restored saved settings`
+                            : `Switched to ${name}! Run Smart Settings to configure.`,
+                        'success'
+                    );
                     
                     // Sync settings modal selector if open
                     const settingsSelector = document.getElementById('configCatSelector');

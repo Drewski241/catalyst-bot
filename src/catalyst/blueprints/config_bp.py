@@ -423,6 +423,12 @@ def api_config_update():
                 event_payload["apply_mode"] = notice["apply_mode"]
                 event_payload["warning"] = notice["warning"]
             api_server.events.emit("config_changed", event_payload)
+            try:
+                import pair_store as _pair_store
+
+                _pair_store.persist_current_pair_overlay(cfg)
+            except Exception:
+                pass
             return jsonify(response)
         return jsonify({"success": False, "error": f"Failed to update {key}"}), 500
 
@@ -557,6 +563,13 @@ def api_config_update():
         extra = _apply_sage_change_address_setting()
 
     response["change_address_result"] = extra
+    if updated:
+        try:
+            import pair_store as _pair_store
+
+            _pair_store.persist_current_pair_overlay(cfg)
+        except Exception:
+            pass
     return jsonify(response)
 
 

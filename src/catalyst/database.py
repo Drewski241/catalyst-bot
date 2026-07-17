@@ -564,6 +564,20 @@ CREATE TABLE IF NOT EXISTS market_analysis_cache (
 
 CREATE INDEX IF NOT EXISTS idx_market_cache_asset ON market_analysis_cache(asset_id);
 CREATE INDEX IF NOT EXISTS idx_market_cache_type ON market_analysis_cache(analysis_type);
+
+-- Multi-pair Phase 1: per-CAT trading profile overlays
+CREATE TABLE IF NOT EXISTS pair_configs (
+    cat_asset_id    TEXT PRIMARY KEY,
+    ticker_id       TEXT,
+    name            TEXT,
+    decimals        INTEGER NOT NULL DEFAULT 3,
+    tibet_pair_id   TEXT,
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    auto_start      INTEGER NOT NULL DEFAULT 0,
+    config_json     TEXT NOT NULL DEFAULT '{}',
+    updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pair_configs_updated ON pair_configs(updated_at);
 """
 
 

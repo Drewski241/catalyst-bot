@@ -539,6 +539,36 @@ def api_cat_select():
     except Exception:
         pass
 
+    # Phase 1 multi-pair: persist the outgoing pair's economics before focus changes.
+    pair_profile_loaded = False
+    try:
+        import pair_store as _pair_store
+
+        with api_server._active_cat_lock:
+            _old_asset = (
+                api_server._active_cat.get("asset_id")
+                or getattr(cfg, "CAT_ASSET_ID", None)
+                or ""
+            )
+        _old_norm = str(_old_asset or "").strip().lower().replace("0x", "")
+        if _old_norm and len(_old_norm) == 64 and _old_norm != asset_id:
+            _pair_store.save_pair_overlay(
+                _old_norm, _pair_store.capture_pair_overlay_from_cfg(cfg)
+            )
+            _pair_store.upsert_pair_identity(
+                _old_norm,
+                name=getattr(cfg, "CAT_NAME", None) or None,
+                ticker_id=getattr(cfg, "CAT_TICKER_ID", None) or None,
+                decimals=getattr(cfg, "CAT_DECIMALS", None),
+                tibet_pair_id=getattr(cfg, "TIBET_PAIR_ID", None) or None,
+            )
+    except Exception as _pair_save_err:
+        log_event(
+            "warning",
+            "pair_profile_save_failed",
+            f"Could not save outgoing pair profile: {_pair_save_err}",
+        )
+
     with api_server._active_cat_lock:
         api_server._active_cat["asset_id"] = asset_id
         api_server._active_cat["name"] = name
@@ -557,6 +587,31 @@ def api_cat_select():
         cfg.update("CAT_DECIMALS", str(int(decimals)))
     if ticker_id:
         cfg.update("CAT_TICKER_ID", ticker_id)
+
+    # Restore this pair's saved economics (if any) into the active cfg slot.
+    if asset_id:
+        try:
+            import pair_store as _pair_store
+
+            _pair_store.upsert_pair_identity(
+                asset_id,
+                name=name or None,
+                ticker_id=ticker_id or None,
+                decimals=int(decimals) if decimals is not None else None,
+            )
+            _row = _pair_store.get_pair_config(asset_id)
+            _overlay = (_row or {}).get("config") or {}
+            if _overlay:
+                _applied = _pair_store.apply_pair_overlay_to_cfg(
+                    cfg, _overlay, source="pair_switch"
+                )
+                pair_profile_loaded = bool(_applied)
+        except Exception as _pair_load_err:
+            log_event(
+                "warning",
+                "pair_profile_load_failed",
+                f"Could not load pair profile for {asset_id[:12]}...: {_pair_load_err}",
+            )
 
     # Reset risk manager so stale inventory/CB state doesn't leak into the new CAT.
     if bot is not None:
@@ -581,6 +636,7 @@ def api_cat_select():
         def _resolve_new_cat_tibet():
             try:
                 import cat_resolver as _cr
+                import pair_store as _pair_store
 
                 _cr._cache = None
                 _cr._last_resolve_at = 0
@@ -596,6 +652,12 @@ def api_cat_select():
                     print(
                         f"[CAT SELECT] TIBET_PAIR_ID resolved: {meta['pair_id'][:20]}..."
                     )
+                    try:
+                        _pair_store.upsert_pair_identity(
+                            asset_id, tibet_pair_id=meta.get("pair_id")
+                        )
+                    except Exception:
+                        pass
                 else:
                     log_event(
                         "info",
@@ -627,7 +689,14 @@ def api_cat_select():
     log_event(
         "info", "cat_selected", f"Trading pair selected: {name} (wallet {wallet_id})"
     )
-    return jsonify({"success": True, "asset_id": asset_id, "wallet_id": wallet_id})
+    return jsonify(
+        {
+            "success": True,
+            "asset_id": asset_id,
+            "wallet_id": wallet_id,
+            "pair_profile_loaded": pair_profile_loaded,
+        }
+    )
 
 
 @bp.route("/api/cat/refresh", methods=["POST"])

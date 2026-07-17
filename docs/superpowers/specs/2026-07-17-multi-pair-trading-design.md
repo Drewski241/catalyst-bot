@@ -1,7 +1,7 @@
 # Multi-Pair Trading Design
 
 Date: 2026-07-17  
-Status: Draft for review  
+Status: Approved direction — Phase 1 in progress  
 Goal: Run multiple CAT/XCH trading pairs concurrently in **one CATalyst process on one machine** (one Sage wallet), without requiring multiple computers or multiple app instances.
 
 ---
@@ -204,7 +204,7 @@ Lowest risk; immediate value.
 - Shared XCH ledger + fee allocator + wallet mutex.
 - Per-pair start/stop; shared coin-prep queue.
 - Basic multi-pair UI (status + start/stop + budgets).
-- Caps: start with a small N (e.g. 2–3 pairs) and conservative fee buffer.
+- Caps: start with up to **4** concurrent pairs and a conservative fee buffer.
 
 ### Phase 4 — Full ops polish
 
@@ -239,17 +239,22 @@ Lowest risk; immediate value.
 
 ---
 
-## Open product questions
+## Product decisions (2026-07-17)
 
-1. **Default XCH split:** equal split, manual only, or Smart Settings proposes slices?
-2. **Max concurrent pairs** for MVP (recommend **3**)?
-3. **Should “Start Bot” start all enabled pairs, or only the focused pair?**  
-   Recommendation: focused pair by default; explicit “Start all enabled.”
-4. **When a pair is disabled with open offers:** auto-cancel, or leave resting until manual cancel?  
-   Recommendation: leave resting + clear banner; require explicit cancel (safer, matches current cancel discipline).
+1. **XCH / settings allocation:** Smart Settings proposes per-pair settings and XCH slices (allocation-aware once concurrent trading lands).
+2. **Max concurrent pairs:** **4**.
+3. **Start model:** Incremental / opt-in. Start one pair, watch how it runs, then start the next when ready. Not “start all at once” as the primary control. (A later convenience “start all enabled” can exist, but the default UX is per-pair start.)
+4. **Stopping / disabling a pair that still has live Dexie offers:**  
+   **Meaning:** when you stop trading for pair A, its buy/sell offers may still be sitting on the market.  
+   **Decision:** leave those offers resting and show a clear banner; require an explicit cancel. Do **not** auto-cancel on stop/disable. (Matches current cancel discipline and avoids surprising the operator.)
 
 ---
 
 ## Recommended next step
 
-Approve this design, then implement **Phase 1 (pair profiles)** on a feature branch. That unlocks remembered per-pair setups immediately and lays the persistence foundation for Phase 3 concurrent loops with a shared XCH ledger — true multi-pair on one machine.
+Implement phases in order on this branch:
+
+1. **Phase 1** — persisted pair profiles (remember economics per CAT; still one active loop)
+2. **Phase 2** — multi-pair visibility + `coins.asset_id` schema prep
+3. **Phase 3** — concurrent loops (up to 4), shared XCH ledger, per-pair start/stop
+4. **Phase 4** — allocation-aware Smart Settings + polish
