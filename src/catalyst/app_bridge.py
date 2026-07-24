@@ -1030,6 +1030,15 @@ class AppBridge:
         return _unwrap_flask_response(resp)
 
     @_safe
+    def get_pairs(self):
+        """Multi-pair overview. Maps to GET /api/pairs."""
+        import api_server
+
+        with api_server.app.test_request_context("/api/pairs"):
+            resp = api_server.api_pairs()
+        return _unwrap_flask_response(resp)
+
+    @_safe
     def select_cat(self, body=None):
         """Select active CAT. Maps to POST /api/cat/select."""
         import api_server

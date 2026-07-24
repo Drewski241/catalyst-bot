@@ -192,11 +192,12 @@ Lowest risk; immediate value.
 
 **First code touchpoints:** new `pair_store.py` + `pair_configs` table; save/load on `api_cat_select`; GUI messaging update; tests that A→B→A restores A’s spreads/tier sizes.
 
-### Phase 2 — Multi-pair visibility + schema prep
+### Phase 2 — Multi-pair visibility + schema prep ✅
 
-- Balances and open-offer history for multiple CATs on the dashboard.
-- Focus pair for controls; background pairs read-only.
-- Schema: `coins.asset_id`, pair-scoped settings migration.
+- Balances and open-offer counts for multiple CATs on the dashboard (`GET /api/pairs` + Pairs panel).
+- Focus pair for controls; background pairs read-only (click to focus when bot stopped).
+- Schema: `coins.asset_id` + write-path tagging; offer counts via `count_open_offers_by_cat()`.
+- Pair economics remain in `pair_configs` (Phase 1); process-global `bot_settings` unchanged.
 
 ### Phase 3 — Concurrent trading (MVP)
 

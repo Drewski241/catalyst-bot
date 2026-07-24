@@ -3043,6 +3043,7 @@ from blueprints.cat import (
     api_token_overview,
     api_dexie_v3_pairs,
     api_cats,
+    api_pairs,
     api_cat_select,
     api_cat_refresh,
     api_balances_refresh,

@@ -3207,7 +3207,16 @@ class CoinManager:
                         cid = _coin_id_from_record(rec)
                         if cid and cid in new_coins:
                             amt = _coin_amount(rec)
-                            upsert_coin(cid, wt, amt)
+                            upsert_coin(
+                                cid,
+                                wt,
+                                amt,
+                                asset_id=(
+                                    "xch"
+                                    if wt == "xch"
+                                    else str(getattr(cfg, "CAT_ASSET_ID", "") or "")
+                                ),
+                            )
 
                 # Check if reserve disappeared
                 if selectable_records is not None:
@@ -3872,7 +3881,12 @@ class CoinManager:
                     continue
                 amt = _coin_amount(rec)
                 tier = coin_tier_map.get(cid, "unknown")
-                upsert_coin(cid, wallet_type, amt, tier)
+                _asset_id = (
+                    "xch"
+                    if wallet_type == "xch"
+                    else str(getattr(cfg, "CAT_ASSET_ID", "") or "")
+                )
+                upsert_coin(cid, wallet_type, amt, tier, asset_id=_asset_id)
                 seen_ids.add(cid)
 
             # Mark coins that vanished — were 'free' in DB but not in current snapshot
@@ -8225,6 +8239,11 @@ class CoinManager:
                     tier=tier_name,
                     designation="tier_spare",
                     assigned_tier=tier_name,
+                    asset_id=(
+                        "xch"
+                        if wallet_type == "xch"
+                        else str(getattr(cfg, "CAT_ASSET_ID", "") or "")
+                    ),
                 )
                 set_coin_designation(cid, "tier_spare", tier_name)
                 stamped += 1

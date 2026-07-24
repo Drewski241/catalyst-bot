@@ -6,6 +6,7 @@ Routes:
   * `/api/token_overview` — Dexie asset description + website lookup.
   * `/api/dexie/v3-pairs` — exposed Dexie v3 pairs with summary stats.
   * `/api/cats` — discover wallet CATs and match against Dexie pairs.
+  * `/api/pairs` — multi-pair overview (profiles + balances + open offers).
   * `/api/cat/select` — persist active-CAT choice to .env and _active_cat.
   * `/api/cat/refresh` — force a config reload.
   * `/api/balances/refresh` — fetch fresh wallet balances.
@@ -449,6 +450,25 @@ def api_cats():
             )
 
     return jsonify({"success": True, "cats": cats})
+
+
+@bp.route("/api/pairs", methods=["GET"])
+def api_pairs():
+    """Phase 2 multi-pair overview: saved profiles, balances, open offers.
+
+    Focus pair remains the only editable/trading target until Phase 3.
+    Background pairs are read-only in the UI.
+    """
+    try:
+        import pair_store as _pair_store
+
+        with api_server._active_cat_lock:
+            active = dict(api_server._active_cat)
+        payload = _pair_store.build_pairs_overview(active_cat=active)
+        return jsonify(payload)
+    except Exception as exc:
+        log_event("error", "pairs_overview_failed", f"GET /api/pairs failed: {exc}")
+        return jsonify({"success": False, "error": str(exc), "pairs": []}), 500
 
 
 @bp.route("/api/cat/select", methods=["POST"])

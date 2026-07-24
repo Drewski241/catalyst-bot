@@ -493,7 +493,9 @@ CREATE TABLE IF NOT EXISTS coins (
                     CHECK(status IN ('free', 'locked', 'spent', 'gone')),
     trade_id        TEXT,
     first_seen      TEXT NOT NULL,
-    last_seen       TEXT NOT NULL
+    last_seen       TEXT NOT NULL,
+    -- Multi-pair Phase 2: 'xch' for native, 64-hex CAT asset id for CATs
+    asset_id        TEXT
 );
 
 -- Indexes for common queries
@@ -513,6 +515,8 @@ CREATE INDEX IF NOT EXISTS idx_events_time ON events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_coins_status ON coins(status);
 CREATE INDEX IF NOT EXISTS idx_coins_wallet ON coins(wallet_type);
 CREATE INDEX IF NOT EXISTS idx_coins_trade ON coins(trade_id);
+CREATE INDEX IF NOT EXISTS idx_coins_wallet_asset_status
+    ON coins(wallet_type, asset_id, status);
 
 -- Simple key-value settings table (persists across restarts)
 CREATE TABLE IF NOT EXISTS bot_settings (
@@ -663,6 +667,55 @@ def init_database():
         conn.execute("ALTER TABLE coins ADD COLUMN assigned_tier TEXT DEFAULT 'none'")
         conn.commit()
         log_event("info", "db_migration", "Added 'assigned_tier' column to coins table")
+
+    # Migration: multi-pair Phase 2 — tag coins with asset_id so CAT rows
+    # from different tokens do not collide under wallet_type='cat'.
+    try:
+        conn.execute("SELECT asset_id FROM coins LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE coins ADD COLUMN asset_id TEXT")
+        conn.commit()
+        log_event("info", "db_migration", "Added 'asset_id' column to coins table")
+    try:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_coins_wallet_asset_status "
+            "ON coins(wallet_type, asset_id, status)"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+    try:
+        # Backfill XCH rows.
+        conn.execute(
+            "UPDATE coins SET asset_id = 'xch' "
+            "WHERE wallet_type = 'xch' AND (asset_id IS NULL OR asset_id = '')"
+        )
+        # Backfill untagged CAT rows to the current focus CAT (best effort).
+        _focus_cat = ""
+        try:
+            from config import cfg as _cfg_for_coins
+
+            _focus_cat = (
+                str(getattr(_cfg_for_coins, "CAT_ASSET_ID", "") or "")
+                .strip()
+                .lower()
+                .replace("0x", "")
+            )
+        except Exception:
+            _focus_cat = ""
+        if len(_focus_cat) == 64:
+            conn.execute(
+                "UPDATE coins SET asset_id = ? "
+                "WHERE wallet_type = 'cat' AND (asset_id IS NULL OR asset_id = '')",
+                (_focus_cat,),
+            )
+        conn.commit()
+    except Exception as _asset_backfill_err:
+        log_event(
+            "warning",
+            "db_migration",
+            f"coins.asset_id backfill skipped: {_asset_backfill_err}",
+        )
 
     # Migration: create trading_pace table for adaptive replenishment
     conn.executescript("""
@@ -2295,6 +2348,30 @@ def get_trade_dexie_map(cat_asset_id: str = None) -> Dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
+def _normalize_coin_asset_id(wallet_type: str, asset_id: str = None) -> str:
+    """Resolve asset_id for a coin row ('xch' or 64-hex CAT id)."""
+    wt = str(wallet_type or "").strip().lower()
+    if wt == "xch":
+        return "xch"
+    raw = str(asset_id or "").strip().lower().replace("0x", "")
+    if len(raw) == 64 and all(c in "0123456789abcdef" for c in raw):
+        return raw
+    try:
+        from config import cfg as _cfg
+
+        fallback = (
+            str(getattr(_cfg, "CAT_ASSET_ID", "") or "")
+            .strip()
+            .lower()
+            .replace("0x", "")
+        )
+        if len(fallback) == 64:
+            return fallback
+    except Exception:
+        pass
+    return raw or ""
+
+
 def upsert_coin(
     coin_id: str,
     wallet_type: str,
@@ -2302,6 +2379,7 @@ def upsert_coin(
     tier: str = None,
     designation: str = None,
     assigned_tier: str = None,
+    asset_id: str = None,
     **kwargs,
 ) -> bool:
     """Insert a new coin or update last_seen if it already exists.
@@ -2321,6 +2399,7 @@ def upsert_coin(
         tier: Classification tier (inner/mid/outer/extreme/reserve/small/unknown)
         designation: Role designation (reserve/tier_spare/tier_active/dust/unknown)
         assigned_tier: Which tier this coin serves (inner/mid/outer/extreme/none)
+        asset_id: 'xch' for native, or 64-hex CAT asset id (multi-pair Phase 2)
     """
     try:
         conn = get_connection()
@@ -2328,6 +2407,7 @@ def upsert_coin(
         # Default designation for new coins
         desig = designation or "unknown"
         atier = assigned_tier or "none"
+        resolved_asset = _normalize_coin_asset_id(wallet_type, asset_id)
         # Normalize coin_id before any DB operation — ensures consistency
         # with reconcile_coins_with_wallet() which also normalizes.
         coin_id = norm_coin_id(coin_id)
@@ -2342,10 +2422,12 @@ def upsert_coin(
         # - NEW coins: get the provided designation (or 'unknown')
         # - EXISTING coins: keep their current designation (COALESCE preserves it)
         # - REAPPEARING coins (was 'gone'): reset designation to 'unknown'
+        # - asset_id: fill when missing; refresh when a non-empty value is provided
         conn.execute(
             """INSERT INTO coins (coin_id, wallet_type, amount_mojos, tier, status,
-                                  first_seen, last_seen, designation, assigned_tier)
-               VALUES (?, ?, ?, ?, 'free', ?, ?, ?, ?)
+                                  first_seen, last_seen, designation, assigned_tier,
+                                  asset_id)
+               VALUES (?, ?, ?, ?, 'free', ?, ?, ?, ?, ?)
                ON CONFLICT(coin_id) DO UPDATE SET
                    last_seen = ?,
                    tier = COALESCE(?, tier),
@@ -2361,6 +2443,10 @@ def upsert_coin(
                    assigned_tier = CASE
                        WHEN coins.status = 'gone' THEN 'none'
                        ELSE COALESCE(coins.assigned_tier, 'none')
+                   END,
+                   asset_id = CASE
+                       WHEN ? != '' THEN ?
+                       ELSE COALESCE(coins.asset_id, ?)
                    END""",
             (
                 coin_id,
@@ -2371,9 +2457,13 @@ def upsert_coin(
                 now,
                 desig,
                 atier,
+                resolved_asset or None,
                 now,
                 tier,
                 amount_mojos,
+                resolved_asset,
+                resolved_asset,
+                resolved_asset or None,
             ),
         )
         if not kwargs.get("_skip_commit"):
@@ -2422,12 +2512,15 @@ def upsert_coin(
         return False
 
 
-def batch_upsert_coins(coins: list, wallet_type: str = "xch") -> int:
+def batch_upsert_coins(
+    coins: list, wallet_type: str = "xch", asset_id: str = None
+) -> int:
     """Batch upsert multiple coins with a single commit.
 
     Args:
         coins: List of dicts with keys: coin_id, amount_mojos, tier
         wallet_type: 'xch' or 'cat'
+        asset_id: Optional shared asset id for the batch (per-coin asset_id wins)
 
     Returns number of coins successfully upserted.
     """
@@ -2442,6 +2535,7 @@ def batch_upsert_coins(coins: list, wallet_type: str = "xch") -> int:
                 wallet_type,
                 c["amount_mojos"],
                 tier=c.get("tier", "unknown"),
+                asset_id=c.get("asset_id", asset_id),
                 _skip_commit=True,
             )
             count += 1
@@ -2722,7 +2816,7 @@ def mark_coins_gone(coin_ids: List[str]) -> int:
         return 0
 
 
-def get_free_coins(wallet_type: str) -> List[Dict]:
+def get_free_coins(wallet_type: str, asset_id: str = None) -> List[Dict]:
     """Get all free (available) coins for a wallet type.
 
     Returns every row from `coins` where status='free', largest first. Callers
@@ -2730,14 +2824,64 @@ def get_free_coins(wallet_type: str) -> List[Dict]:
     `designation` and `assigned_tier` fields — the legacy `tier` column is
     always 'unknown' in current writes (see upsert_coin) and is retained only
     for schema compatibility with older DBs.
+
+    When ``asset_id`` is provided, only coins tagged with that asset (or still
+    untagged, for pre-migration rows) are returned.
+    """
+    conn = get_connection()
+    resolved = _normalize_coin_asset_id(wallet_type, asset_id) if asset_id else ""
+    if resolved:
+        rows = conn.execute(
+            "SELECT * FROM coins WHERE status='free' AND wallet_type=? "
+            "AND (asset_id = ? OR asset_id IS NULL OR asset_id = '') "
+            "ORDER BY amount_mojos DESC",
+            [wallet_type, resolved],
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM coins WHERE status='free' AND wallet_type=? "
+            "ORDER BY amount_mojos DESC",
+            [wallet_type],
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def count_open_offers_by_cat() -> Dict[str, Dict[str, int]]:
+    """Return open-offer counts grouped by cat_asset_id.
+
+    Shape: ``{asset_id: {"buy": n, "sell": n, "total": n}}``.
+    Excludes cancel_requested / cancel_sent / mempool_observed lifecycle states
+    (same default filter as get_open_offers).
     """
     conn = get_connection()
     rows = conn.execute(
-        "SELECT * FROM coins WHERE status='free' AND wallet_type=? "
-        "ORDER BY amount_mojos DESC",
-        [wallet_type],
+        """
+        SELECT lower(coalesce(cat_asset_id, '')) AS asset_id,
+               side,
+               COUNT(*) AS cnt
+        FROM offers
+        WHERE status = 'open'
+          AND (
+              lifecycle_state IS NULL
+              OR lifecycle_state NOT IN (
+                  'cancel_requested', 'cancel_sent', 'mempool_observed'
+              )
+          )
+        GROUP BY lower(coalesce(cat_asset_id, '')), side
+        """
     ).fetchall()
-    return [dict(row) for row in rows]
+    out: Dict[str, Dict[str, int]] = {}
+    for row in rows:
+        asset_id = str(row["asset_id"] or "").replace("0x", "")
+        if not asset_id:
+            continue
+        bucket = out.setdefault(asset_id, {"buy": 0, "sell": 0, "total": 0})
+        side = str(row["side"] or "").lower()
+        cnt = int(row["cnt"] or 0)
+        if side in ("buy", "sell"):
+            bucket[side] += cnt
+        bucket["total"] += cnt
+    return out
 
 
 def get_smallest_free_tier_spare(wallet_type: str) -> Optional[Dict]:

@@ -5083,6 +5083,117 @@
         .live-activity-panel:hover {
             border-color: var(--border-default);
         }
+        /* Phase 2 multi-pair overview */
+        .pairs-overview-panel {
+            background: var(--bg-surface);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-lg);
+            margin: 0 0 16px 0;
+            overflow: hidden;
+        }
+        .pairs-overview-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 10px 14px;
+            border-bottom: 1px solid var(--border-subtle);
+            background: rgba(255,255,255,0.02);
+        }
+        .pairs-overview-title {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-secondary);
+            font-weight: 600;
+        }
+        .pairs-overview-meta {
+            font-size: 11px;
+            color: var(--text-tertiary);
+        }
+        .pairs-overview-list {
+            display: flex;
+            flex-direction: column;
+        }
+        .pairs-overview-row {
+            display: grid;
+            grid-template-columns: minmax(120px, 1.4fr) minmax(90px, 1fr) minmax(90px, 0.9fr) auto;
+            gap: 10px;
+            align-items: center;
+            padding: 10px 14px;
+            border-bottom: 1px solid var(--border-subtle);
+            cursor: pointer;
+            text-align: left;
+            background: transparent;
+            color: inherit;
+            font: inherit;
+            width: 100%;
+        }
+        .pairs-overview-row:last-child { border-bottom: none; }
+        .pairs-overview-row:hover { background: rgba(255,255,255,0.03); }
+        .pairs-overview-row.is-focus {
+            background: rgba(255,255,255,0.04);
+        }
+        .pairs-overview-row.is-focus:hover { background: rgba(255,255,255,0.055); }
+        .pairs-overview-row:disabled {
+            cursor: default;
+            opacity: 0.85;
+        }
+        .pairs-overview-name {
+            font-weight: 600;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 0;
+        }
+        .pairs-overview-name span {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .pairs-overview-badge {
+            flex-shrink: 0;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: var(--accent-primary);
+            border: 1px solid color-mix(in srgb, var(--accent-primary) 45%, transparent);
+            border-radius: 4px;
+            padding: 1px 6px;
+        }
+        .pairs-overview-metric {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+        .pairs-overview-metric strong {
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+        .pairs-overview-note {
+            font-size: 11px;
+            color: var(--text-tertiary);
+            white-space: nowrap;
+        }
+        .pairs-overview-empty {
+            padding: 14px;
+            font-size: 12px;
+            color: var(--text-tertiary);
+        }
+        @media (max-width: 720px) {
+            .pairs-overview-row {
+                grid-template-columns: 1fr 1fr;
+                grid-template-areas:
+                    "name name"
+                    "bal offers"
+                    "note note";
+            }
+            .pairs-overview-name { grid-area: name; }
+            .pairs-overview-row .pairs-overview-metric:nth-of-type(1) { grid-area: bal; }
+            .pairs-overview-row .pairs-overview-metric:nth-of-type(2) { grid-area: offers; }
+            .pairs-overview-note { grid-area: note; white-space: normal; }
+        }
         .la-header {
             display: flex;
             align-items: center;
@@ -9186,6 +9297,17 @@
                          (sidebar → Logs), which avoids the footgun where
                          closing the console window killed the bot. -->
                     <div id="consoleWarningBanner" style="display:none;" aria-hidden="true"></div>
+
+                    <!-- Phase 2: multi-pair overview (focus editable; others read-only) -->
+                    <div class="pairs-overview-panel" id="pairsOverviewPanel" style="display:none;">
+                        <div class="pairs-overview-header">
+                            <div class="pairs-overview-title">Trading Pairs</div>
+                            <div class="pairs-overview-meta" id="pairsOverviewMeta">Up to 4 pairs · focus one to configure</div>
+                        </div>
+                        <div class="pairs-overview-list" id="pairsOverviewList">
+                            <div class="pairs-overview-empty" id="pairsOverviewEmpty">Saved and wallet pairs will show here after you choose a CAT.</div>
+                        </div>
+                    </div>
 
                     <!-- ===== SPLIT PANEL: merged Guidance (Recommendations+Advisor) on the left, Activity on the right ===== -->
                     <div id="dashboardActivityRow" class="v4-dashboard-panels-row">
@@ -15017,6 +15139,7 @@
             // --- Wallet / CAT ---
             if (m === 'GET'  && clean === 'fingerprint')        return 'get_fingerprint';
             if (m === 'GET'  && clean === 'cats')               return 'get_cats';
+            if (m === 'GET'  && clean === 'pairs')              return 'get_pairs';
             if (m === 'POST' && clean === 'cat/select')         return 'select_cat';
             if (m === 'POST' && clean === 'cat/refresh')        return 'refresh_cat';
             if (m === 'POST' && clean === 'balances/refresh')   return 'refresh_balances';
@@ -22811,6 +22934,7 @@
                             : `Switched to ${name}! Run Smart Settings to configure.`,
                         'success'
                     );
+                    try { refreshPairsOverview(true); } catch (_) {}
                     
                     // Sync settings modal selector if open
                     const settingsSelector = document.getElementById('configCatSelector');
@@ -23256,6 +23380,123 @@
             }
         }
 
+        let _pairsOverviewCache = null;
+        let _pairsOverviewLastFetch = 0;
+        let _pairsOverviewInFlight = null;
+
+        function _fmtPairAmount(value, digits = 3) {
+            const n = Number(value);
+            if (!Number.isFinite(n)) return '—';
+            if (Math.abs(n) >= 1000) return n.toLocaleString(undefined, { maximumFractionDigits: 1 });
+            return n.toLocaleString(undefined, { maximumFractionDigits: digits });
+        }
+
+        function renderPairsOverview(payload) {
+            const panel = document.getElementById('pairsOverviewPanel');
+            const list = document.getElementById('pairsOverviewList');
+            const meta = document.getElementById('pairsOverviewMeta');
+            if (!panel || !list) return;
+
+            const pairs = Array.isArray(payload?.pairs) ? payload.pairs : [];
+            const maxPairs = Number(payload?.max_concurrent_pairs || 4);
+            const xchSpendable = payload?.xch?.spendable;
+            if (meta) {
+                const xchBit = Number.isFinite(Number(xchSpendable))
+                    ? ` · ${_fmtPairAmount(xchSpendable, 4)} XCH spendable`
+                    : '';
+                meta.textContent = `Up to ${maxPairs} pairs · focus one to configure${xchBit}`;
+            }
+
+            if (!pairs.length) {
+                panel.style.display = 'none';
+                list.innerHTML = '<div class="pairs-overview-empty">Saved and wallet pairs will show here after you choose a CAT.</div>';
+                return;
+            }
+
+            panel.style.display = '';
+            const botRunning = !!(bot_state && bot_state.running);
+            list.innerHTML = pairs.map((pair) => {
+                const name = escapeHtml(pair.name || pair.ticker_id || 'CAT');
+                const ticker = pair.ticker_id ? escapeHtml(pair.ticker_id) : '';
+                const label = ticker && ticker !== name ? `${name} <span style="color:var(--text-tertiary);font-weight:500;">/${ticker}</span>` : name;
+                const bal = _fmtPairAmount(pair.balances?.spendable ?? pair.balances?.total, 3);
+                const buys = Number(pair.open_offers?.buy || 0);
+                const sells = Number(pair.open_offers?.sell || 0);
+                const focus = !!pair.is_focus;
+                const profile = pair.has_saved_profile ? 'Saved profile' : 'No saved profile';
+                const note = focus
+                    ? (botRunning ? 'Focus · trading' : 'Focus · configure here')
+                    : (botRunning ? 'Read-only while bot runs' : 'Click to focus');
+                const disabled = focus || botRunning ? 'disabled' : '';
+                const assetAttr = escapeHtml(pair.asset_id || '');
+                return (
+                    `<button type="button" class="pairs-overview-row${focus ? ' is-focus' : ''}" ` +
+                    `data-asset-id="${assetAttr}" ${disabled} ` +
+                    `title="${focus ? 'Currently focused pair' : (botRunning ? 'Stop the bot to change focus' : 'Switch focus to this pair')}">` +
+                    `<div class="pairs-overview-name"><span>${label}</span>` +
+                    `${focus ? '<span class="pairs-overview-badge">Focus</span>' : ''}</div>` +
+                    `<div class="pairs-overview-metric"><strong>${bal}</strong> CAT</div>` +
+                    `<div class="pairs-overview-metric"><strong>${buys}</strong> buy · <strong>${sells}</strong> sell</div>` +
+                    `<div class="pairs-overview-note">${escapeHtml(note)}${pair.has_saved_profile ? '' : ' · ' + profile}</div>` +
+                    `</button>`
+                );
+            }).join('');
+
+            list.querySelectorAll('.pairs-overview-row[data-asset-id]').forEach((btn) => {
+                btn.addEventListener('click', () => focusPairFromOverview(btn.getAttribute('data-asset-id')));
+            });
+        }
+
+        async function focusPairFromOverview(assetId) {
+            if (!assetId) return;
+            if (bot_state && bot_state.running) {
+                showToast('Stop the bot before changing the focused pair.', 'warning');
+                return;
+            }
+            const selector = document.getElementById('catSelector');
+            if (!selector) return;
+            if (!selectorHasAssetId(selector, assetId)) {
+                try { await (typeof loadCATs === 'function' ? loadCATs() : Promise.resolve()); } catch (_) {}
+            }
+            if (!selectorHasAssetId(selector, assetId)) {
+                showToast('That CAT is not in the wallet list yet. Refresh pairs and try again.', 'warning');
+                return;
+            }
+            selector.value = assetId;
+            try {
+                await selectCAT();
+            } catch (e) {
+                debugWarn('[pairs overview] focus switch failed:', e);
+            }
+        }
+
+        async function refreshPairsOverview(force = false) {
+            const now = Date.now();
+            if (!force && now - _pairsOverviewLastFetch < 8000 && _pairsOverviewCache) {
+                renderPairsOverview(_pairsOverviewCache);
+                return _pairsOverviewCache;
+            }
+            if (_pairsOverviewInFlight) return _pairsOverviewInFlight;
+            _pairsOverviewInFlight = (async () => {
+                try {
+                    const resp = await apiFetch(`${API_URL}/pairs`);
+                    if (!resp.ok) return null;
+                    const payload = await resp.json();
+                    if (!payload || payload.success === false) return null;
+                    _pairsOverviewCache = payload;
+                    _pairsOverviewLastFetch = Date.now();
+                    renderPairsOverview(payload);
+                    return payload;
+                } catch (e) {
+                    debugWarn('[pairs overview] fetch failed:', e?.message || e);
+                    return null;
+                } finally {
+                    _pairsOverviewInFlight = null;
+                }
+            })();
+            return _pairsOverviewInFlight;
+        }
+
         async function fetchStatus() {
             if (isWalletSwitchBusy()) return null;
             try {
@@ -23290,6 +23531,7 @@
             updateWalletPickerAvailability();
                 updateUI(data);
                 syncCommandCentreFromStatus(data);
+                try { refreshPairsOverview(false); } catch (_) {}
                 
                 let appliedStatusCatAssetId = currentCAT?.asset_id || '';
                 if (data.current_cat && data.current_cat.name) {

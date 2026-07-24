@@ -509,3 +509,171 @@ def persist_current_pair_overlay(cfg: Any) -> bool:
             tibet_pair_id=getattr(cfg, "TIBET_PAIR_ID", None) or None,
         )
     return ok
+
+
+def build_pairs_overview(
+    *,
+    focus_asset_id: Optional[str] = None,
+    active_cat: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build the Phase 2 multi-pair overview payload.
+
+    Merges saved ``pair_configs`` with wallet CAT balances and open-offer
+    counts. Safe when the wallet RPC is unreachable — balances simply come
+    back empty / zero.
+    """
+    cfg_focus = None
+    try:
+        from config import cfg as _cfg
+
+        cfg_focus = getattr(_cfg, "CAT_ASSET_ID", None)
+    except Exception:
+        cfg_focus = None
+    focus = _normalize_asset_id(
+        focus_asset_id or (active_cat or {}).get("asset_id") or cfg_focus
+    )
+
+    profiles = {row["cat_asset_id"]: row for row in list_pair_configs()}
+    offer_counts: Dict[str, Dict[str, int]] = {}
+    try:
+        from database import count_open_offers_by_cat
+
+        offer_counts = count_open_offers_by_cat() or {}
+    except Exception as exc:
+        slog("PAIR_STORE", f"open-offer counts unavailable: {exc}", level="warning")
+
+    wallet_cats: Dict[str, Dict[str, Any]] = {}
+    xch_balances = {"spendable": 0.0, "total": 0.0}
+    try:
+        from wallet import get_wallets, get_wallet_balance, WALLET_ID_XCH
+
+        try:
+            xch_result = get_wallet_balance(WALLET_ID_XCH)
+            if xch_result and xch_result.get("success") is not False:
+                wb = xch_result.get("wallet_balance") or xch_result
+                xch_balances = {
+                    "spendable": float(wb.get("spendable_balance", 0) or 0) / 1e12,
+                    "total": float(
+                        wb.get("confirmed_wallet_balance", wb.get("balance", 0)) or 0
+                    )
+                    / 1e12,
+                }
+        except Exception:
+            pass
+
+        wallets_resp = get_wallets() or {}
+        wallets = wallets_resp.get("wallets") or []
+        if isinstance(wallets_resp, list):
+            wallets = wallets_resp
+        for w in wallets:
+            wtype = w.get("type", 0)
+            is_cat = wtype == 6 or str(wtype) == "6" or str(wtype).upper() == "CAT"
+            if not is_cat:
+                continue
+            aid = _normalize_asset_id(
+                w.get("asset_id") or w.get("data") or w.get("assetId")
+            )
+            if not aid:
+                continue
+            decimals = int(w.get("decimals") or 3)
+            scale = 10**decimals
+            spendable = 0.0
+            total = 0.0
+            try:
+                bal = get_wallet_balance(int(w.get("id") or w.get("wallet_id") or 0))
+                if bal and bal.get("success") is not False:
+                    wb = bal.get("wallet_balance") or bal
+                    spendable = float(wb.get("spendable_balance", 0) or 0) / scale
+                    total = (
+                        float(
+                            wb.get("confirmed_wallet_balance", wb.get("balance", 0))
+                            or 0
+                        )
+                        / scale
+                    )
+            except Exception:
+                pass
+            wallet_cats[aid] = {
+                "asset_id": aid,
+                "wallet_id": int(w.get("id") or w.get("wallet_id") or 0),
+                "name": w.get("name") or aid[:8],
+                "ticker_id": w.get("ticker_id") or w.get("ticker") or "",
+                "decimals": decimals,
+                "balances": {"spendable": spendable, "total": total},
+                "in_wallet": True,
+            }
+    except Exception as exc:
+        slog("PAIR_STORE", f"wallet CAT scan unavailable: {exc}", level="warning")
+
+    # Union of profile keys + wallet keys + any asset with open offers.
+    asset_ids = set(profiles.keys()) | set(wallet_cats.keys()) | set(offer_counts.keys())
+    if focus:
+        asset_ids.add(focus)
+
+    pairs: List[Dict[str, Any]] = []
+    for aid in asset_ids:
+        if not aid or len(aid) != 64:
+            continue
+        profile = profiles.get(aid) or {}
+        wallet = wallet_cats.get(aid) or {}
+        counts = offer_counts.get(aid) or {"buy": 0, "sell": 0, "total": 0}
+        overlay = profile.get("config") or {}
+        has_profile = bool(overlay)
+        name = (
+            profile.get("name")
+            or wallet.get("name")
+            or (active_cat or {}).get("name")
+            or aid[:8]
+        )
+        ticker = (
+            profile.get("ticker_id")
+            or wallet.get("ticker_id")
+            or (active_cat or {}).get("ticker_id")
+            or ""
+        )
+        decimals = (
+            profile.get("decimals")
+            if profile.get("decimals") is not None
+            else wallet.get("decimals", 3)
+        )
+        pairs.append(
+            {
+                "asset_id": aid,
+                "name": name,
+                "ticker_id": ticker,
+                "decimals": int(decimals) if decimals is not None else 3,
+                "wallet_id": wallet.get("wallet_id")
+                or (active_cat or {}).get("wallet_id"),
+                "enabled": int(profile.get("enabled", 1) if profile else 1),
+                "auto_start": int(profile.get("auto_start", 0) if profile else 0),
+                "has_saved_profile": has_profile,
+                "is_focus": aid == focus,
+                "in_wallet": bool(wallet.get("in_wallet")),
+                "balances": wallet.get("balances")
+                or {"spendable": 0.0, "total": 0.0},
+                "open_offers": {
+                    "buy": int(counts.get("buy", 0)),
+                    "sell": int(counts.get("sell", 0)),
+                    "total": int(counts.get("total", 0)),
+                },
+                "updated_at": profile.get("updated_at"),
+            }
+        )
+
+    # Focus first, then profiles with offers, then name.
+    def _sort_key(p: Dict[str, Any]):
+        return (
+            0 if p.get("is_focus") else 1,
+            0 if p.get("open_offers", {}).get("total", 0) else 1,
+            0 if p.get("has_saved_profile") else 1,
+            str(p.get("name") or "").lower(),
+        )
+
+    pairs.sort(key=_sort_key)
+    return {
+        "success": True,
+        "focus_asset_id": focus or None,
+        "xch": xch_balances,
+        "pairs": pairs,
+        "max_concurrent_pairs": 4,
+    }
