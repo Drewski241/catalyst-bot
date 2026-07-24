@@ -1,8 +1,11 @@
-"""Per-pair trading profile persistence (Phase 1 of multi-pair).
+"""Per-pair trading profile persistence and multi-pair overview.
 
-Stores a cfg-key overlay keyed by ``cat_asset_id`` so switching the active
-CAT restores that pair's economics instead of leaking the previous pair's
-spreads / tiers / reserves into the new focus.
+Phase 1: stores a cfg-key overlay keyed by ``cat_asset_id`` so switching the
+active CAT restores that pair's economics instead of leaking the previous
+pair's spreads / tiers / reserves into the new focus.
+
+Phase 2: ``build_pairs_overview`` merges saved profiles with wallet balances
+and open-offer counts for the dashboard Pairs panel.
 
 Process-global keys (Sage, ``XCH_RESERVE``, ``LOOP_SECONDS``, ``DRY_RUN``,
 fee pool, shared API endpoints) are never swapped by this module.
