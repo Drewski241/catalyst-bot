@@ -1278,6 +1278,12 @@ def _get_live_mid_price_str() -> Optional[str]:
 def create_bot() -> BotLoop:
     """Create and return the bot loop instance."""
     global bot
+    try:
+        from pair_context import install_config_overlay_hook
+
+        install_config_overlay_hook()
+    except Exception:
+        pass
     bot = BotLoop()
     # Wire up event bus to bot loop for push updates
     bot._event_bus = events
@@ -3044,6 +3050,9 @@ from blueprints.cat import (
     api_dexie_v3_pairs,
     api_cats,
     api_pairs,
+    api_pair_budget,
+    api_pair_start,
+    api_pair_stop,
     api_cat_select,
     api_cat_refresh,
     api_balances_refresh,

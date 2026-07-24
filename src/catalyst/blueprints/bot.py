@@ -297,7 +297,58 @@ def api_bot_start():
 
     server._reset_runtime_session_stats()
 
-    # Start with warnings
+    # Multi-pair Phase 3: start the focused pair via the registry so XCH
+    # budget checks and concurrent-pair caps apply. Falls back to legacy
+    # singleton start if the registry path fails unexpectedly.
+    focus_asset = str(getattr(cfg, "CAT_ASSET_ID", "") or "").strip().lower()
+    try:
+        from pair_registry import get_registry
+        import pair_store as _pair_store
+
+        with server._active_cat_lock:
+            active = dict(server._active_cat)
+        try:
+            _pair_store.persist_current_pair_overlay(cfg)
+        except Exception:
+            pass
+        reg_result = get_registry().start_pair(
+            focus_asset, cfg=cfg, active_cat=active
+        )
+        if not reg_result.get("success"):
+            return jsonify(
+                {
+                    "success": False,
+                    "status": "error",
+                    "errors": [reg_result.get("error") or "Failed to start pair"],
+                    "warnings": warnings,
+                    "bot_status": reg_result.get("bot_status") or "blocked",
+                }
+            ), 400
+        rt = get_registry().get_runtime(focus_asset)
+        if rt and rt.bot is not None:
+            server.bot = rt.bot
+        server._fresh_start_clear()
+        server.events.emit(
+            "bot_control",
+            {"action": "started", "asset_id": focus_asset, "multi_pair": True},
+        )
+        result = {
+            "success": True,
+            "status": "started",
+            "asset_id": focus_asset,
+            "running_pairs": reg_result.get("running_pairs") or [],
+        }
+        if warnings:
+            result["warnings"] = warnings
+        return jsonify(result)
+    except Exception as reg_err:
+        log_event(
+            "warning",
+            "pair_registry_start_fallback",
+            f"Registry start failed, falling back to singleton: {reg_err}",
+        )
+
+    # Legacy singleton start
     started = bot.start()
     if not started:
         state = {}
@@ -330,10 +381,38 @@ def api_bot_start():
 
 @bp.route("/api/bot/stop", methods=["POST"])
 def api_bot_stop():
-    """Stop the bot loop."""
+    """Stop the focused bot loop (or all if only one is running).
+
+    Multi-pair: stops the focused pair only. Other running pairs continue.
+    Open offers are left resting.
+    """
     server = _api_server()
     bot = server.bot
     slog("GUI_ACTION", ">>> BUTTON: Stop Bot")
+
+    # Prefer registry stop for the focused asset.
+    try:
+        from pair_registry import get_registry
+
+        focus = str(getattr(server.cfg, "CAT_ASSET_ID", "") or "").strip().lower()
+        registry = get_registry()
+        if focus and registry.is_running(focus):
+            result = registry.stop_pair(focus)
+            focus_bot = registry.get_focus_bot(focus)
+            if focus_bot is not None:
+                server.bot = focus_bot
+            server.events.emit(
+                "bot_control",
+                {"action": "stopped", "asset_id": focus, "multi_pair": True},
+            )
+            return jsonify(result)
+    except Exception as reg_err:
+        log_event(
+            "warning",
+            "pair_registry_stop_fallback",
+            f"Registry stop failed, falling back to singleton: {reg_err}",
+        )
+
     if not bot:
         return jsonify({"error": "Bot not initialised"}), 500
 

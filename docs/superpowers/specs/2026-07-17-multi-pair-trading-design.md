@@ -199,13 +199,13 @@ Lowest risk; immediate value.
 - Schema: `coins.asset_id` + write-path tagging; offer counts via `count_open_offers_by_cat()`.
 - Pair economics remain in `pair_configs` (Phase 1); process-global `bot_settings` unchanged.
 
-### Phase 3 — Concurrent trading (MVP)
+### Phase 3 — Concurrent trading (MVP) ✅
 
-- Multiple `PairRuntime`s with injected pair identity.
-- Shared XCH ledger + fee allocator + wallet mutex.
-- Per-pair start/stop; shared coin-prep queue.
-- Basic multi-pair UI (status + start/stop + budgets).
-- Caps: start with up to **4** concurrent pairs and a conservative fee buffer.
+- `PairRegistry` hosts up to **4** `BotLoop`s with frozen `PairSnapshot` + `pair_context` overlays.
+- `SharedXchLedger` hard-gates per-pair `xch_budget_mojos` (shared wallet capital); buy creates blocked when budget exhausted.
+- Process-wide `wallet_op_lock` on mutating Sage RPCs; shared fee pool across pair managers.
+- Per-pair start/stop API + Pairs panel controls; incremental start; stop leaves offers resting.
+- Focus may change while other pairs keep running so the next pair can be configured/started.
 
 ### Phase 4 — Full ops polish
 

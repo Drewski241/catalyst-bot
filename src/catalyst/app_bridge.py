@@ -1039,6 +1039,49 @@ class AppBridge:
         return _unwrap_flask_response(resp)
 
     @_safe
+    def set_pair_budget(self, asset_id, body=None):
+        """Set per-pair XCH budget. Maps to PATCH /api/pairs/<id>/budget."""
+        import api_server
+
+        body_json = json.dumps(body or {})
+        with api_server.app.test_request_context(
+            f"/api/pairs/{asset_id}/budget",
+            method="PATCH",
+            content_type="application/json",
+            data=body_json,
+        ):
+            resp = api_server.api_pair_budget(asset_id)
+        return _unwrap_flask_response(resp)
+
+    @_safe
+    def start_pair(self, asset_id, _body=None):
+        """Start one trading pair. Maps to POST /api/pairs/<id>/start."""
+        import api_server
+
+        with api_server.app.test_request_context(
+            f"/api/pairs/{asset_id}/start",
+            method="POST",
+            content_type="application/json",
+            data="{}",
+        ):
+            resp = api_server.api_pair_start(asset_id)
+        return _unwrap_flask_response(resp)
+
+    @_safe
+    def stop_pair(self, asset_id, _body=None):
+        """Stop one trading pair. Maps to POST /api/pairs/<id>/stop."""
+        import api_server
+
+        with api_server.app.test_request_context(
+            f"/api/pairs/{asset_id}/stop",
+            method="POST",
+            content_type="application/json",
+            data="{}",
+        ):
+            resp = api_server.api_pair_stop(asset_id)
+        return _unwrap_flask_response(resp)
+
+    @_safe
     def select_cat(self, body=None):
         """Select active CAT. Maps to POST /api/cat/select."""
         import api_server

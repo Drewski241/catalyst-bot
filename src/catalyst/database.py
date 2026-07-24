@@ -569,7 +569,7 @@ CREATE TABLE IF NOT EXISTS market_analysis_cache (
 CREATE INDEX IF NOT EXISTS idx_market_cache_asset ON market_analysis_cache(asset_id);
 CREATE INDEX IF NOT EXISTS idx_market_cache_type ON market_analysis_cache(analysis_type);
 
--- Multi-pair Phase 1: per-CAT trading profile overlays
+-- Multi-pair: per-CAT trading profile overlays + XCH budget
 CREATE TABLE IF NOT EXISTS pair_configs (
     cat_asset_id    TEXT PRIMARY KEY,
     ticker_id       TEXT,
@@ -578,6 +578,7 @@ CREATE TABLE IF NOT EXISTS pair_configs (
     tibet_pair_id   TEXT,
     enabled         INTEGER NOT NULL DEFAULT 1,
     auto_start      INTEGER NOT NULL DEFAULT 0,
+    xch_budget_mojos INTEGER NOT NULL DEFAULT 0,
     config_json     TEXT NOT NULL DEFAULT '{}',
     updated_at      TEXT NOT NULL
 );
@@ -600,6 +601,12 @@ def init_database():
         _db_initialized_path = DB_PATH
     conn = get_connection()
     conn.executescript(SCHEMA_SQL)
+    try:
+        from pair_store import ensure_pair_configs_schema
+
+        ensure_pair_configs_schema(conn)
+    except Exception:
+        pass
 
     # The boost tier CHECK migration runs AFTER all ADD COLUMN migrations
     # (see _migrate_offers_tier_check_for_boost below). Older revisions of

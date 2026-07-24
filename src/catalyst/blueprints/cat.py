@@ -454,11 +454,7 @@ def api_cats():
 
 @bp.route("/api/pairs", methods=["GET"])
 def api_pairs():
-    """Phase 2 multi-pair overview: saved profiles, balances, open offers.
-
-    Focus pair remains the only editable/trading target until Phase 3.
-    Background pairs are read-only in the UI.
-    """
+    """Multi-pair overview: profiles, balances, open offers, budgets, running."""
     try:
         import pair_store as _pair_store
 
@@ -469,6 +465,136 @@ def api_pairs():
     except Exception as exc:
         log_event("error", "pairs_overview_failed", f"GET /api/pairs failed: {exc}")
         return jsonify({"success": False, "error": str(exc), "pairs": []}), 500
+
+
+@bp.route("/api/pairs/<asset_id>/budget", methods=["PATCH", "POST"])
+def api_pair_budget(asset_id: str):
+    """Set the hard XCH budget for a pair (shared-wallet capital slice)."""
+    import pair_store as _pair_store
+    from shared_xch_ledger import ledger as _ledger
+    from decimal import Decimal
+
+    data = request.get_json(silent=True) or {}
+    budget_mojos = data.get("xch_budget_mojos")
+    if budget_mojos is None and data.get("xch_budget") is not None:
+        try:
+            budget_mojos = _ledger.xch_to_mojos(Decimal(str(data.get("xch_budget"))))
+        except Exception:
+            return jsonify({"success": False, "error": "Invalid xch_budget"}), 400
+    try:
+        budget_mojos = int(budget_mojos or 0)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Invalid xch_budget_mojos"}), 400
+    if budget_mojos < 0:
+        return jsonify({"success": False, "error": "Budget cannot be negative"}), 400
+
+    aid = _pair_store._normalize_asset_id(asset_id)
+    if not aid:
+        return jsonify({"success": False, "error": "Invalid asset_id"}), 400
+
+    # Validate against shared capital (exclude this pair's old budget).
+    try:
+        from pair_registry import get_registry
+
+        running = get_registry().list_running()
+    except Exception:
+        running = []
+    ok, reason = _ledger.can_allocate(
+        aid, budget_mojos, cfg=api_server.cfg, running_asset_ids=running
+    )
+    # Allow saving a budget even when wallet spendable is temporarily 0
+    # (offline), but reject clearly impossible over-allocation when we can
+    # see spendable capital.
+    if not ok and _ledger.spendable_xch_mojos() > 0:
+        return jsonify({"success": False, "error": reason}), 400
+
+    if not _pair_store.set_xch_budget_mojos(aid, budget_mojos):
+        return jsonify({"success": False, "error": "Failed to save budget"}), 500
+
+    # Keep running snapshot in sync if this pair is live.
+    try:
+        from pair_registry import get_registry
+
+        rt = get_registry().get_runtime(aid)
+        if rt is not None:
+            rt.snapshot.xch_budget_mojos = budget_mojos
+    except Exception:
+        pass
+
+    log_event(
+        "info",
+        "pair_budget_set",
+        f"XCH budget for {aid[:12]}... set to {_ledger.mojos_to_xch(budget_mojos)} XCH",
+    )
+    return jsonify(
+        {
+            "success": True,
+            "asset_id": aid,
+            "xch_budget_mojos": budget_mojos,
+            "xch_budget": float(_ledger.mojos_to_xch(budget_mojos)),
+        }
+    )
+
+
+@bp.route("/api/pairs/<asset_id>/start", methods=["POST"])
+def api_pair_start(asset_id: str):
+    """Start trading one pair (incremental multi-pair start)."""
+    from pair_registry import get_registry
+    import pair_store as _pair_store
+
+    aid = _pair_store._normalize_asset_id(asset_id)
+    if not aid:
+        return jsonify({"success": False, "error": "Invalid asset_id"}), 400
+
+    with api_server._active_cat_lock:
+        active = dict(api_server._active_cat)
+
+    # Persist current focus economics before starting so the snapshot is fresh.
+    try:
+        if _pair_store._normalize_asset_id(getattr(api_server.cfg, "CAT_ASSET_ID", None)) == aid:
+            _pair_store.persist_current_pair_overlay(api_server.cfg)
+    except Exception:
+        pass
+
+    result = get_registry().start_pair(
+        aid, cfg=api_server.cfg, active_cat=active
+    )
+    if result.get("success"):
+        # Keep legacy api_server.bot pointing at a live bot for status/SSE.
+        rt = get_registry().get_runtime(aid)
+        if rt and rt.bot is not None:
+            api_server.bot = rt.bot
+        api_server._fresh_start_clear()
+        api_server.events.emit(
+            "bot_control", {"action": "started", "asset_id": aid, "multi_pair": True}
+        )
+        return jsonify(result)
+    return jsonify(result), 400
+
+
+@bp.route("/api/pairs/<asset_id>/stop", methods=["POST"])
+def api_pair_stop(asset_id: str):
+    """Stop one pair. Open offers are left resting (no auto-cancel)."""
+    from pair_registry import get_registry
+    import pair_store as _pair_store
+
+    aid = _pair_store._normalize_asset_id(asset_id)
+    if not aid:
+        return jsonify({"success": False, "error": "Invalid asset_id"}), 400
+
+    result = get_registry().stop_pair(aid)
+    # Point legacy bot handle at another running pair if available.
+    focus_bot = get_registry().get_focus_bot(
+        api_server._active_cat.get("asset_id")
+        if isinstance(api_server._active_cat, dict)
+        else None
+    )
+    if focus_bot is not None:
+        api_server.bot = focus_bot
+    api_server.events.emit(
+        "bot_control", {"action": "stopped", "asset_id": aid, "multi_pair": True}
+    )
+    return jsonify(result)
 
 
 @bp.route("/api/cat/select", methods=["POST"])
@@ -546,9 +672,21 @@ def api_cat_select():
         except (ValueError, TypeError):
             return jsonify({"success": False, "error": "Invalid decimals"}), 400
 
-    # Safety: never change the trading pair while the bot is running.
+    # Safety: do not change focus onto a different CAT while THAT focused
+    # bot is the only legacy singleton running without a registry. With the
+    # multi-pair registry, focus may change so the operator can configure /
+    # start the next pair while others keep running.
     try:
-        if bot is not None and bot.is_running():
+        from pair_registry import get_registry
+
+        registry = get_registry()
+        multi_pair_mode = registry.any_running()
+    except Exception:
+        registry = None
+        multi_pair_mode = False
+
+    try:
+        if (not multi_pair_mode) and bot is not None and bot.is_running():
             return jsonify(
                 {
                     "success": False,
@@ -556,6 +694,10 @@ def api_cat_select():
                     "Switching CAT mid-run would cause offers for the wrong token.",
                 }
             ), 409
+        # Still block changing the asset identity of a pair that is itself running
+        # if the request tries to select a different asset while that pair runs —
+        # allowed: select B while A runs. Blocked: no-op. Running pairs use frozen
+        # snapshots so focus overlay swaps are safe for the GUI.
     except Exception:
         pass
 

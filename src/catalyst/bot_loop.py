@@ -382,6 +382,13 @@ class BotLoop:
     """
 
     def __init__(self):
+        # Multi-pair Phase 3: optional frozen pair identity/economics.
+        # When set, _run_loop installs pair_context so cfg reads resolve to
+        # this pair instead of the GUI focus slot.
+        self._pair_snapshot = None
+        self._pair_asset_id = None
+        self._pair_registry = None
+        self._pair_stop_shared_services = True
         # ---- Module instances ----
         self.price_engine = PriceEngine()
         self.market_intel = MarketIntel(price_engine=self.price_engine)
@@ -4605,8 +4612,8 @@ class BotLoop:
                 f"AMM Monitor stop raised during shutdown: {e}",
             )
 
-        # Stop mempool watcher
-        if _mempool_watcher_mod:
+        # Stop mempool watcher only when no other pair still needs it.
+        if getattr(self, "_pair_stop_shared_services", True) and _mempool_watcher_mod:
             try:
                 _mempool_watcher_mod.stop_watcher()
             except Exception as e:
@@ -4640,8 +4647,8 @@ class BotLoop:
                         f"{_t_name} thread did not exit within 10s",
                     )
 
-        # V3: Stop Splash node
-        if self.splash_node.is_running():
+        # V3: Stop Splash node only when this pair owns shared services.
+        if getattr(self, "_pair_stop_shared_services", True) and self.splash_node.is_running():
             try:
                 self.splash_node.stop()
             except Exception as e:
@@ -4880,6 +4887,13 @@ class BotLoop:
 
     def _run_loop(self):
         """The main trading loop — runs forever until stopped."""
+        from pair_context import pair_context
+
+        with pair_context(getattr(self, "_pair_snapshot", None)):
+            self._run_loop_inner()
+
+    def _run_loop_inner(self):
+        """Inner loop body (runs under optional pair_context)."""
         log_event("info", "bot_loop_init", "Initialising bot loop...")
 
         # Startup: sync state from wallet
@@ -4897,7 +4911,10 @@ class BotLoop:
             loop_start = time.time()
 
             try:
-                self._run_one_cycle()
+                from pair_context import pair_context
+
+                with pair_context(getattr(self, "_pair_snapshot", None)):
+                    self._run_one_cycle()
             except Exception as e:
                 log_event(
                     "error",

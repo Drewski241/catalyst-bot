@@ -1432,6 +1432,39 @@ class OfferManager:
                         _xch_spend += abs(int(_amt))
                     elif int(_wid) == _cat_wid:
                         _cat_spend += abs(int(_amt))
+
+            # Multi-pair Phase 3: hard XCH budget gate for buy offers.
+            if _xch_spend > 0:
+                try:
+                    from shared_xch_ledger import ledger as _ledger
+                    from pair_context import get_pair_context
+
+                    _ctx = get_pair_context()
+                    _aid = (
+                        _ctx.normalized_asset_id()
+                        if _ctx is not None
+                        else str(getattr(cfg, "CAT_ASSET_ID", "") or "")
+                    )
+                    _ok, _reason = _ledger.can_spend_buy(_aid, _xch_spend)
+                    if not _ok:
+                        try:
+                            from database import log_event as _le
+
+                            _le(
+                                "warning",
+                                "xch_budget_blocked",
+                                _reason,
+                                data={
+                                    "asset_id": _aid,
+                                    "spend_mojos": _xch_spend,
+                                },
+                            )
+                        except Exception:
+                            pass
+                        return None
+                except Exception:
+                    pass  # fail-open if ledger unavailable
+
             if _xch_spend > 0 or _cat_spend > 0:
                 _rm = _RM()
                 _res = _rm.try_acquire(

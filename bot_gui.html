@@ -5117,16 +5117,14 @@
         }
         .pairs-overview-row {
             display: grid;
-            grid-template-columns: minmax(120px, 1.4fr) minmax(90px, 1fr) minmax(90px, 0.9fr) auto;
+            grid-template-columns: minmax(140px, 1.3fr) minmax(120px, 1fr) minmax(110px, 0.9fr) auto;
             gap: 10px;
             align-items: center;
             padding: 10px 14px;
             border-bottom: 1px solid var(--border-subtle);
-            cursor: pointer;
             text-align: left;
             background: transparent;
             color: inherit;
-            font: inherit;
             width: 100%;
         }
         .pairs-overview-row:last-child { border-bottom: none; }
@@ -5134,10 +5132,18 @@
         .pairs-overview-row.is-focus {
             background: rgba(255,255,255,0.04);
         }
-        .pairs-overview-row.is-focus:hover { background: rgba(255,255,255,0.055); }
-        .pairs-overview-row:disabled {
-            cursor: default;
-            opacity: 0.85;
+        .pairs-overview-row.is-running {
+            box-shadow: inset 3px 0 0 var(--status-success);
+        }
+        .pairs-overview-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            justify-content: flex-end;
+        }
+        .pairs-overview-action {
+            padding: 4px 10px !important;
+            font-size: 11px !important;
         }
         .pairs-overview-name {
             font-weight: 600;
@@ -15140,6 +15146,9 @@
             if (m === 'GET'  && clean === 'fingerprint')        return 'get_fingerprint';
             if (m === 'GET'  && clean === 'cats')               return 'get_cats';
             if (m === 'GET'  && clean === 'pairs')              return 'get_pairs';
+            if (m === 'POST' && /^pairs\/[^/]+\/start$/.test(clean)) return 'start_pair';
+            if (m === 'POST' && /^pairs\/[^/]+\/stop$/.test(clean))  return 'stop_pair';
+            if ((m === 'POST' || m === 'PATCH') && /^pairs\/[^/]+\/budget$/.test(clean)) return 'set_pair_budget';
             if (m === 'POST' && clean === 'cat/select')         return 'select_cat';
             if (m === 'POST' && clean === 'cat/refresh')        return 'refresh_cat';
             if (m === 'POST' && clean === 'balances/refresh')   return 'refresh_balances';
@@ -15229,6 +15238,15 @@
                             bodyArg = params;
                         }
 
+                        // Multi-pair routes carry the asset id in the path.
+                        // Bridge methods expect (asset_id, body?) so extract it.
+                        let pathAssetId = null;
+                        try {
+                            const bare = String(path || '').replace(/^\/?api\//, '').split('?')[0];
+                            const m = bare.match(/^pairs\/([0-9a-fA-F]{64})\/(start|stop|budget)$/);
+                            if (m) pathAssetId = m[1].toLowerCase();
+                        } catch (_) {}
+
                         // Call the bridge method.
                         // IMPORTANT: do NOT pass bodyArg when it's undefined —
                         // PyWebView serialises undefined to a positional Python
@@ -15236,11 +15254,20 @@
                         // Python side (TypeError: takes 1 positional argument
                         // but 2 were given). Only forward an argument when we
                         // actually have one to forward.
-                        const result = await (
-                            bodyArg === undefined
-                                ? window.pywebview.api[bridgeMethod]()
-                                : window.pywebview.api[bridgeMethod](bodyArg)
-                        );
+                        let result;
+                        if (pathAssetId && (bridgeMethod === 'start_pair' || bridgeMethod === 'stop_pair' || bridgeMethod === 'set_pair_budget')) {
+                            result = await (
+                                bodyArg === undefined
+                                    ? window.pywebview.api[bridgeMethod](pathAssetId)
+                                    : window.pywebview.api[bridgeMethod](pathAssetId, bodyArg)
+                            );
+                        } else {
+                            result = await (
+                                bodyArg === undefined
+                                    ? window.pywebview.api[bridgeMethod]()
+                                    : window.pywebview.api[bridgeMethod](bodyArg)
+                            );
+                        }
 
                         // Return a fetch-compatible response.
                         // null/undefined bridge results are treated as errors
@@ -23414,7 +23441,7 @@
             }
 
             panel.style.display = '';
-            const botRunning = !!(bot_state && bot_state.running);
+            const anyRunning = pairs.some((p) => !!p.running) || !!(bot_state && bot_state.running);
             list.innerHTML = pairs.map((pair) => {
                 const name = escapeHtml(pair.name || pair.ticker_id || 'CAT');
                 const ticker = pair.ticker_id ? escapeHtml(pair.ticker_id) : '';
@@ -23423,36 +23450,127 @@
                 const buys = Number(pair.open_offers?.buy || 0);
                 const sells = Number(pair.open_offers?.sell || 0);
                 const focus = !!pair.is_focus;
-                const profile = pair.has_saved_profile ? 'Saved profile' : 'No saved profile';
-                const note = focus
-                    ? (botRunning ? 'Focus · trading' : 'Focus · configure here')
-                    : (botRunning ? 'Read-only while bot runs' : 'Click to focus');
-                const disabled = focus || botRunning ? 'disabled' : '';
+                const running = !!pair.running;
+                const budget = Number(pair.xch_budget || 0);
+                const remaining = Number(pair.xch_budget_remaining || 0);
+                const budgetLabel = budget > 0
+                    ? `${_fmtPairAmount(remaining, 4)} / ${_fmtPairAmount(budget, 4)} XCH`
+                    : 'No XCH budget';
                 const assetAttr = escapeHtml(pair.asset_id || '');
+                const startStopBtn = running
+                    ? `<button type="button" class="btn btn-secondary pairs-overview-action" data-action="stop" data-asset-id="${assetAttr}">Stop</button>`
+                    : `<button type="button" class="btn btn-primary pairs-overview-action" data-action="start" data-asset-id="${assetAttr}">Start</button>`;
+                const budgetBtn = `<button type="button" class="btn btn-secondary pairs-overview-action" data-action="budget" data-asset-id="${assetAttr}" data-budget="${budget}">Budget</button>`;
+                const focusBtn = focus
+                    ? ''
+                    : `<button type="button" class="btn btn-secondary pairs-overview-action" data-action="focus" data-asset-id="${assetAttr}">Focus</button>`;
                 return (
-                    `<button type="button" class="pairs-overview-row${focus ? ' is-focus' : ''}" ` +
-                    `data-asset-id="${assetAttr}" ${disabled} ` +
-                    `title="${focus ? 'Currently focused pair' : (botRunning ? 'Stop the bot to change focus' : 'Switch focus to this pair')}">` +
+                    `<div class="pairs-overview-row${focus ? ' is-focus' : ''}${running ? ' is-running' : ''}" data-asset-id="${assetAttr}">` +
                     `<div class="pairs-overview-name"><span>${label}</span>` +
-                    `${focus ? '<span class="pairs-overview-badge">Focus</span>' : ''}</div>` +
-                    `<div class="pairs-overview-metric"><strong>${bal}</strong> CAT</div>` +
-                    `<div class="pairs-overview-metric"><strong>${buys}</strong> buy · <strong>${sells}</strong> sell</div>` +
-                    `<div class="pairs-overview-note">${escapeHtml(note)}${pair.has_saved_profile ? '' : ' · ' + profile}</div>` +
-                    `</button>`
+                    `${focus ? '<span class="pairs-overview-badge">Focus</span>' : ''}` +
+                    `${running ? '<span class="pairs-overview-badge">Running</span>' : ''}</div>` +
+                    `<div class="pairs-overview-metric"><strong>${bal}</strong> CAT · <strong>${buys}</strong>/<strong>${sells}</strong> offers</div>` +
+                    `<div class="pairs-overview-metric" title="Remaining / allocated XCH budget for this pair">${escapeHtml(budgetLabel)}</div>` +
+                    `<div class="pairs-overview-actions">${budgetBtn}${focusBtn}${startStopBtn}</div>` +
+                    `</div>`
                 );
             }).join('');
 
-            list.querySelectorAll('.pairs-overview-row[data-asset-id]').forEach((btn) => {
-                btn.addEventListener('click', () => focusPairFromOverview(btn.getAttribute('data-asset-id')));
+            list.querySelectorAll('.pairs-overview-action').forEach((btn) => {
+                btn.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    const action = btn.getAttribute('data-action');
+                    const assetId = btn.getAttribute('data-asset-id');
+                    if (action === 'focus') focusPairFromOverview(assetId);
+                    else if (action === 'start') startPairFromOverview(assetId);
+                    else if (action === 'stop') stopPairFromOverview(assetId);
+                    else if (action === 'budget') editPairBudgetFromOverview(assetId, btn.getAttribute('data-budget'));
+                });
             });
+            if (meta) {
+                const runningCount = pairs.filter((p) => p.running).length;
+                meta.textContent = anyRunning
+                    ? `${runningCount} running · up to ${Number(payload?.max_concurrent_pairs || 4)} · shared XCH budgets`
+                    : `Up to ${Number(payload?.max_concurrent_pairs || 4)} pairs · set XCH budget, then Start`;
+            }
+        }
+
+        async function startPairFromOverview(assetId) {
+            if (!assetId) return;
+            try {
+                const resp = await apiFetch(`${API_URL}/pairs/${assetId}/start`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({}),
+                });
+                const result = await resp.json();
+                if (!resp.ok || result.success === false) {
+                    showToast(result.error || result.errors?.[0] || 'Could not start pair', 'error');
+                    return;
+                }
+                showToast('Pair started', 'success');
+                await refreshPairsOverview(true);
+                try { await fetchStatus(); } catch (_) {}
+            } catch (e) {
+                showToast('Could not start pair', 'error');
+            }
+        }
+
+        async function stopPairFromOverview(assetId) {
+            if (!assetId) return;
+            try {
+                const resp = await apiFetch(`${API_URL}/pairs/${assetId}/stop`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({}),
+                });
+                const result = await resp.json();
+                if (!resp.ok || result.success === false) {
+                    showToast(result.error || 'Could not stop pair', 'error');
+                    return;
+                }
+                showToast('Pair stopped — open offers left resting', 'success');
+                await refreshPairsOverview(true);
+                try { await fetchStatus(); } catch (_) {}
+            } catch (e) {
+                showToast('Could not stop pair', 'error');
+            }
+        }
+
+        async function editPairBudgetFromOverview(assetId, currentBudget) {
+            if (!assetId) return;
+            const current = Number(currentBudget || 0);
+            const raw = window.prompt(
+                'XCH budget for this pair (shared wallet capital). Other pairs cannot use this slice.',
+                Number.isFinite(current) && current > 0 ? String(current) : ''
+            );
+            if (raw === null) return;
+            const value = Number(raw);
+            if (!Number.isFinite(value) || value < 0) {
+                showToast('Enter a valid XCH budget', 'warning');
+                return;
+            }
+            try {
+                const resp = await apiFetch(`${API_URL}/pairs/${assetId}/budget`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ xch_budget: value }),
+                });
+                const result = await resp.json();
+                if (!resp.ok || result.success === false) {
+                    showToast(result.error || 'Could not save budget', 'error');
+                    return;
+                }
+                showToast(`Budget set to ${_fmtPairAmount(value, 4)} XCH`, 'success');
+                await refreshPairsOverview(true);
+            } catch (e) {
+                showToast('Could not save budget', 'error');
+            }
         }
 
         async function focusPairFromOverview(assetId) {
             if (!assetId) return;
-            if (bot_state && bot_state.running) {
-                showToast('Stop the bot before changing the focused pair.', 'warning');
-                return;
-            }
             const selector = document.getElementById('catSelector');
             if (!selector) return;
             if (!selectorHasAssetId(selector, assetId)) {
@@ -23465,6 +23583,7 @@
             selector.value = assetId;
             try {
                 await selectCAT();
+                await refreshPairsOverview(true);
             } catch (e) {
                 debugWarn('[pairs overview] focus switch failed:', e);
             }

@@ -219,6 +219,7 @@ CREATE TABLE IF NOT EXISTS pair_configs (
     tibet_pair_id   TEXT,
     enabled         INTEGER NOT NULL DEFAULT 1,
     auto_start      INTEGER NOT NULL DEFAULT 0,
+    xch_budget_mojos INTEGER NOT NULL DEFAULT 0,
     config_json     TEXT NOT NULL DEFAULT '{}',
     updated_at      TEXT NOT NULL
 );
@@ -248,6 +249,13 @@ def _cfg_value_to_str(value: Any) -> str:
 def ensure_pair_configs_schema(conn: sqlite3.Connection) -> None:
     """Create pair_configs if missing. Safe to call repeatedly."""
     conn.executescript(PAIR_CONFIGS_SCHEMA_SQL)
+    try:
+        conn.execute("SELECT xch_budget_mojos FROM pair_configs LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute(
+            "ALTER TABLE pair_configs ADD COLUMN xch_budget_mojos INTEGER NOT NULL DEFAULT 0"
+        )
+        conn.commit()
 
 
 def capture_pair_overlay_from_cfg(cfg: Any) -> Dict[str, str]:
@@ -328,15 +336,28 @@ def get_pair_config(asset_id: str) -> Optional[Dict[str, Any]]:
     from database import get_connection
 
     conn = get_connection()
-    row = conn.execute(
-        """
-        SELECT cat_asset_id, ticker_id, name, decimals, tibet_pair_id,
-               enabled, auto_start, config_json, updated_at
-        FROM pair_configs
-        WHERE cat_asset_id = ?
-        """,
-        (asset_id,),
-    ).fetchone()
+    try:
+        row = conn.execute(
+            """
+            SELECT cat_asset_id, ticker_id, name, decimals, tibet_pair_id,
+                   enabled, auto_start, xch_budget_mojos, config_json, updated_at
+            FROM pair_configs
+            WHERE cat_asset_id = ?
+            """,
+            (asset_id,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        # Pre-migration DBs mid-upgrade.
+        ensure_pair_configs_schema(conn)
+        row = conn.execute(
+            """
+            SELECT cat_asset_id, ticker_id, name, decimals, tibet_pair_id,
+                   enabled, auto_start, xch_budget_mojos, config_json, updated_at
+            FROM pair_configs
+            WHERE cat_asset_id = ?
+            """,
+            (asset_id,),
+        ).fetchone()
     if not row:
         return None
     data = dict(row)
@@ -355,14 +376,25 @@ def list_pair_configs() -> List[Dict[str, Any]]:
     from database import get_connection
 
     conn = get_connection()
-    rows = conn.execute(
-        """
-        SELECT cat_asset_id, ticker_id, name, decimals, tibet_pair_id,
-               enabled, auto_start, config_json, updated_at
-        FROM pair_configs
-        ORDER BY updated_at DESC
-        """
-    ).fetchall()
+    try:
+        rows = conn.execute(
+            """
+            SELECT cat_asset_id, ticker_id, name, decimals, tibet_pair_id,
+                   enabled, auto_start, xch_budget_mojos, config_json, updated_at
+            FROM pair_configs
+            ORDER BY updated_at DESC
+            """
+        ).fetchall()
+    except sqlite3.OperationalError:
+        ensure_pair_configs_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT cat_asset_id, ticker_id, name, decimals, tibet_pair_id,
+                   enabled, auto_start, xch_budget_mojos, config_json, updated_at
+            FROM pair_configs
+            ORDER BY updated_at DESC
+            """
+        ).fetchall()
     out: List[Dict[str, Any]] = []
     for row in rows:
         data = dict(row)
@@ -423,8 +455,8 @@ def upsert_pair_identity(
             """
             INSERT INTO pair_configs (
                 cat_asset_id, ticker_id, name, decimals, tibet_pair_id,
-                enabled, auto_start, config_json, updated_at
-            ) VALUES (?, ?, ?, ?, ?, 1, 0, '{}', ?)
+                enabled, auto_start, xch_budget_mojos, config_json, updated_at
+            ) VALUES (?, ?, ?, ?, ?, 1, 0, 0, '{}', ?)
             """,
             (
                 asset_id,
@@ -480,8 +512,8 @@ def save_pair_overlay(asset_id: str, overlay: Dict[str, Any]) -> bool:
                 """
                 INSERT INTO pair_configs (
                     cat_asset_id, ticker_id, name, decimals, tibet_pair_id,
-                    enabled, auto_start, config_json, updated_at
-                ) VALUES (?, '', '', 3, NULL, 1, 0, ?, ?)
+                    enabled, auto_start, xch_budget_mojos, config_json, updated_at
+                ) VALUES (?, '', '', 3, NULL, 1, 0, 0, ?, ?)
                 """,
                 (asset_id, payload, now),
             )
@@ -494,6 +526,63 @@ def save_pair_overlay(asset_id: str, overlay: Dict[str, Any]) -> bool:
         )
         return False
     return True
+
+
+def get_xch_budget_mojos(asset_id: str) -> int:
+    """Return the hard XCH budget (mojos) for a pair."""
+    row = get_pair_config(asset_id)
+    if not row:
+        return 0
+    try:
+        return max(0, int(row.get("xch_budget_mojos") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def set_xch_budget_mojos(asset_id: str, budget_mojos: int) -> bool:
+    """Persist a hard XCH budget for a pair (mojos)."""
+    asset_id = _normalize_asset_id(asset_id)
+    if not asset_id:
+        return False
+    budget_mojos = max(0, int(budget_mojos or 0))
+    from database import get_connection
+
+    conn = get_connection()
+    ensure_pair_configs_schema(conn)
+    now = _now()
+    existing = conn.execute(
+        "SELECT cat_asset_id FROM pair_configs WHERE cat_asset_id = ?",
+        (asset_id,),
+    ).fetchone()
+    try:
+        if existing:
+            conn.execute(
+                """
+                UPDATE pair_configs
+                SET xch_budget_mojos = ?, updated_at = ?
+                WHERE cat_asset_id = ?
+                """,
+                (budget_mojos, now, asset_id),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO pair_configs (
+                    cat_asset_id, ticker_id, name, decimals, tibet_pair_id,
+                    enabled, auto_start, xch_budget_mojos, config_json, updated_at
+                ) VALUES (?, '', '', 3, NULL, 1, 0, ?, '{}', ?)
+                """,
+                (asset_id, budget_mojos, now),
+            )
+        conn.commit()
+        return True
+    except Exception as exc:
+        slog(
+            "PAIR_STORE",
+            f"Failed to set XCH budget for {asset_id[:12]}...: {exc}",
+            level="error",
+        )
+        return False
 
 
 def persist_current_pair_overlay(cfg: Any) -> bool:
@@ -639,6 +728,34 @@ def build_pairs_overview(
             if profile.get("decimals") is not None
             else wallet.get("decimals", 3)
         )
+        budget_mojos = 0
+        try:
+            budget_mojos = int(profile.get("xch_budget_mojos") or 0)
+        except (TypeError, ValueError):
+            budget_mojos = 0
+        used_mojos = 0
+        remaining_mojos = budget_mojos
+        try:
+            from shared_xch_ledger import ledger as _ledger
+
+            used_mojos = _ledger.open_buy_xch_mojos(aid)
+            remaining_mojos = max(0, budget_mojos - used_mojos)
+            budget_xch = float(_ledger.mojos_to_xch(budget_mojos))
+            used_xch = float(_ledger.mojos_to_xch(used_mojos))
+            remaining_xch = float(_ledger.mojos_to_xch(remaining_mojos))
+        except Exception:
+            budget_xch = budget_mojos / 1e12
+            used_xch = 0.0
+            remaining_xch = budget_xch
+
+        running = False
+        try:
+            from pair_registry import get_registry
+
+            running = get_registry().is_running(aid)
+        except Exception:
+            running = False
+
         pairs.append(
             {
                 "asset_id": aid,
@@ -652,6 +769,7 @@ def build_pairs_overview(
                 "has_saved_profile": has_profile,
                 "is_focus": aid == focus,
                 "in_wallet": bool(wallet.get("in_wallet")),
+                "running": running,
                 "balances": wallet.get("balances")
                 or {"spendable": 0.0, "total": 0.0},
                 "open_offers": {
@@ -659,13 +777,18 @@ def build_pairs_overview(
                     "sell": int(counts.get("sell", 0)),
                     "total": int(counts.get("total", 0)),
                 },
+                "xch_budget_mojos": budget_mojos,
+                "xch_budget": budget_xch,
+                "xch_budget_used": used_xch,
+                "xch_budget_remaining": remaining_xch,
                 "updated_at": profile.get("updated_at"),
             }
         )
 
-    # Focus first, then profiles with offers, then name.
+    # Running first, then focus, then profiles with offers, then name.
     def _sort_key(p: Dict[str, Any]):
         return (
+            0 if p.get("running") else 1,
             0 if p.get("is_focus") else 1,
             0 if p.get("open_offers", {}).get("total", 0) else 1,
             0 if p.get("has_saved_profile") else 1,
@@ -673,10 +796,20 @@ def build_pairs_overview(
         )
 
     pairs.sort(key=_sort_key)
+
+    ledger_snap = {}
+    try:
+        from shared_xch_ledger import ledger as _ledger
+
+        ledger_snap = _ledger.snapshot([p["asset_id"] for p in pairs])
+    except Exception:
+        ledger_snap = {}
+
     return {
         "success": True,
         "focus_asset_id": focus or None,
         "xch": xch_balances,
         "pairs": pairs,
         "max_concurrent_pairs": 4,
+        "xch_ledger": ledger_snap,
     }

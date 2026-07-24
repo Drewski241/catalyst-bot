@@ -568,6 +568,9 @@ def rpc(endpoint: str, payload: dict, timeout: int = 10):
     Uses direct http.client + ssl (bypasses requests/urllib3 SSL issues).
     Client certs loaded from: SAGE_CERT_PATH → CHIA_WALLET_CERT → ~/.chia defaults.
 
+    Mutating endpoints are serialized under a process-wide wallet_op_lock so
+    concurrent multi-pair BotLoops cannot race the same Sage wallet.
+
     Returns:
         dict on success, None on error.
         For MEMPOOL_CONFLICT, returns {"error": "MEMPOOL_CONFLICT", ...} so callers
@@ -579,6 +582,19 @@ def rpc(endpoint: str, payload: dict, timeout: int = 10):
         if aid is not None and (not aid or not str(aid).strip()):
             return None
 
+    try:
+        from wallet_ops import is_mutating_endpoint, WALLET_OP_LOCK
+
+        if is_mutating_endpoint(endpoint):
+            with WALLET_OP_LOCK:
+                return _rpc_unlocked(endpoint, payload, timeout=timeout)
+    except Exception:
+        pass
+    return _rpc_unlocked(endpoint, payload, timeout=timeout)
+
+
+def _rpc_unlocked(endpoint: str, payload: dict, timeout: int = 10):
+    """Inner Sage RPC helper (caller holds wallet_op_lock when mutating)."""
     start = time.time()
 
     try:
@@ -1000,10 +1016,20 @@ def get_chia_health() -> dict:
 def _get_cat_asset_id() -> Optional[str]:
     """Get the active CAT asset ID. Always returns the most-recent value.
 
-    Callers: use notify_cat_asset_id_changed() when the active CAT changes
-    rather than relying on os.getenv(), because os.environ is only updated
-    when cfg.update() flushes to disk and load_dotenv() is re-run.
+    Prefer the multi-pair ContextVar snapshot when a BotLoop cycle is running,
+    otherwise fall back to the module singleton updated by
+    notify_cat_asset_id_changed().
     """
+    try:
+        from pair_context import get_pair_context
+
+        ctx = get_pair_context()
+        if ctx is not None:
+            aid = ctx.normalized_asset_id()
+            if aid:
+                return aid
+    except Exception:
+        pass
     global _CAT_ASSET_ID
     return _CAT_ASSET_ID or None
 
