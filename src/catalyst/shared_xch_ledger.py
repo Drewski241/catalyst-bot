@@ -145,6 +145,79 @@ class SharedXchLedger:
                 continue
         return total
 
+    def remaining_allocatable_mojos(
+        self,
+        asset_id: Optional[str] = None,
+        *,
+        cfg: Any = None,
+        running_asset_ids: Optional[List[str]] = None,
+    ) -> int:
+        """XCH mojos still free to assign to ``asset_id``.
+
+        Subtracts other pairs' budgets from process allocatable capital.
+        When ``running_asset_ids`` is provided, only those pairs' budgets
+        count as reserved (plus any saved budget for non-running pairs is
+        ignored) — matching the start-gate semantics in ``can_allocate``.
+        """
+        aid = str(asset_id or "").strip().lower().replace("0x", "")
+        available = self.allocatable_mojos(cfg)
+        if running_asset_ids is not None:
+            others = 0
+            for running_id in running_asset_ids:
+                rid = str(running_id or "").strip().lower().replace("0x", "")
+                if rid and rid != aid:
+                    others += self.get_budget_mojos(rid)
+        else:
+            others = self.sum_budgets_mojos(exclude_asset_id=aid or None)
+        return max(0, available - others)
+
+    def portfolio_open_buy_mojos(self) -> int:
+        """Sum open buy XCH across all pairs with a saved budget."""
+        import pair_store
+
+        total = 0
+        for row in pair_store.list_pair_configs():
+            aid = str(row.get("cat_asset_id") or "")
+            if len(aid) == 64:
+                total += self.open_buy_xch_mojos(aid)
+        return total
+
+    def portfolio_cap_mojos(self, cfg: Any = None) -> int:
+        """Process-global portfolio exposure cap in mojos (0 = disabled)."""
+        if cfg is None:
+            try:
+                from config import cfg as _cfg
+
+                cfg = _cfg
+            except Exception:
+                return 0
+        try:
+            return self.xch_to_mojos(
+                getattr(cfg, "PORTFOLIO_MAX_XCH_EXPOSURE", 0) or 0
+            )
+        except Exception:
+            return 0
+
+    def can_spend_portfolio(
+        self, spend_xch_mojos: int, *, cfg: Any = None
+    ) -> Tuple[bool, str]:
+        """Optional hard cap on aggregate open buy XCH across all pairs."""
+        spend = max(0, int(spend_xch_mojos or 0))
+        if spend <= 0:
+            return True, ""
+        cap = self.portfolio_cap_mojos(cfg)
+        if cap <= 0:
+            return True, ""
+        used = self.portfolio_open_buy_mojos()
+        if used + spend > cap:
+            return (
+                False,
+                f"Portfolio exposure cap: open buys would reach "
+                f"{self.mojos_to_xch(used + spend)} XCH but "
+                f"PORTFOLIO_MAX_XCH_EXPOSURE is {self.mojos_to_xch(cap)} XCH",
+            )
+        return True, ""
+
     def can_allocate(
         self,
         asset_id: str,
@@ -220,9 +293,24 @@ class SharedXchLedger:
                 }
             )
         available = self.allocatable_mojos()
+        allocated = self.sum_budgets_mojos()
+        open_buys = self.portfolio_open_buy_mojos()
+        portfolio_cap = self.portfolio_cap_mojos()
         return {
             "available_mojos": available,
             "available_xch": str(self.mojos_to_xch(available)),
+            "allocated_mojos": allocated,
+            "allocated_xch": str(self.mojos_to_xch(allocated)),
+            "remaining_allocatable_mojos": max(0, available - allocated),
+            "remaining_allocatable_xch": str(
+                self.mojos_to_xch(max(0, available - allocated))
+            ),
+            "portfolio_open_buy_mojos": open_buys,
+            "portfolio_open_buy_xch": str(self.mojos_to_xch(open_buys)),
+            "portfolio_cap_mojos": portfolio_cap,
+            "portfolio_cap_xch": str(self.mojos_to_xch(portfolio_cap))
+            if portfolio_cap > 0
+            else None,
             "reserve_mojos": self.wallet_reserve_mojos(),
             "fee_buffer_mojos": self.fee_buffer_mojos(),
             "max_concurrent_pairs": MAX_CONCURRENT_PAIRS,

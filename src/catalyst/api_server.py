@@ -1145,6 +1145,9 @@ class EventBus:
         action: str = None,
         action_label: str = None,
         action_value: str = None,
+        asset_id: str = None,
+        pair_name: str = None,
+        pair_ticker: str = None,
     ):
         """Convenience: set a persistent alert and emit it.
 
@@ -1154,7 +1157,16 @@ class EventBus:
         """
         if hasattr(self, "_alert_store"):
             self._alert_store.set_alert(
-                alert_id, severity, title, message, action, action_label, action_value
+                alert_id,
+                severity,
+                title,
+                message,
+                action,
+                action_label,
+                action_value,
+                asset_id=asset_id,
+                pair_name=pair_name,
+                pair_ticker=pair_ticker,
             )
 
     @property
@@ -1183,12 +1195,16 @@ class AlertStore:
         action: str = None,
         action_label: str = None,
         action_value: str = None,
+        asset_id: str = None,
+        pair_name: str = None,
+        pair_ticker: str = None,
     ):
         """Create or update an alert. Severity: 'error', 'warning', 'info', 'success'.
 
         ``action_value`` is an opaque payload passed to the action handler
         (e.g. a comma-separated list of trade_ids). Optional.
         """
+        aid = str(asset_id or "").strip().lower().replace("0x", "")
         with self._lock:
             self._alerts[alert_id] = {
                 "id": alert_id,
@@ -1198,6 +1214,10 @@ class AlertStore:
                 "action": action,  # optional action ID handled client-side
                 "action_label": action_label,  # button text
                 "action_value": action_value,  # optional payload for the action
+                "asset_id": aid or None,
+                "cat_asset_id": aid or None,
+                "pair_name": pair_name or None,
+                "pair_ticker": pair_ticker or None,
                 "created_at": time.time(),
                 "dismissed": False,
             }

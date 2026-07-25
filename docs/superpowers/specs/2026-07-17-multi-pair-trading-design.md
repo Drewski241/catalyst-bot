@@ -207,12 +207,21 @@ Lowest risk; immediate value.
 - Per-pair start/stop API + Pairs panel controls; incremental start; stop leaves offers resting.
 - Focus may change while other pairs keep running so the next pair can be configured/started.
 
-### Phase 4 — Full ops polish
+### Phase 4 — Full ops polish (in progress)
 
-- Allocation-aware Smart Settings.
-- Portfolio risk cap and better toxicity isolation.
-- SSE namespacing, alerts per pair, richer aggregate P&amp;L.
+Done in this branch:
+
+- Allocation-aware Smart Settings: clamps capital to remaining shared XCH after other pairs' budgets; proposes + auto-applies `xch_budget` for the focus pair.
+- Optional portfolio exposure cap (`PORTFOLIO_MAX_XCH_EXPOSURE`, 0 = off) on buy create.
+- SSE/`alert` payloads stamped with `asset_id`; alert ids namespaced per pair; GUI filters focus-pair dashboard/price updates.
+- Watcher threads (price/coin/health) re-enter `pair_context` so ambient `cfg.CAT_*` resolves to the owning pair.
+
+Still open:
+
+- Richer aggregate P&amp;L across pairs.
+- Coin ownership planner / shared prep fairness.
 - Raise pair limit once stable.
+- Deeper toxicity isolation polish.
 
 ---
 

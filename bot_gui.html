@@ -19785,6 +19785,24 @@
                         const tradeXch = (cp.trading_xch || 0);
                         const pct = (v) => totalXch > 0 ? (v / totalXch * 100).toFixed(1) : '0';
                         const catLimited = cp.n_sell_limited_by_cat ? ' <span style="color:var(--orange-400);">⚠ CAT limited</span>' : '';
+                        const shared = cp.shared_allocation || {};
+                        const proposedBudget = Number(
+                            data.proposed_xch_budget_xch != null
+                                ? data.proposed_xch_budget_xch
+                                : (cp.proposed_xch_budget_xch != null ? cp.proposed_xch_budget_xch : cp.available_xch)
+                        ) || 0;
+                        let sharedRow = '';
+                        if (shared && (shared.clamped || Number(shared.other_budgets_xch) > 0 || proposedBudget > 0)) {
+                            const otherBudgets = Number(shared.other_budgets_xch) || 0;
+                            const sharedRemain = Number(shared.shared_remaining_xch);
+                            sharedRow = `<div style="margin-top:6px;padding:6px 8px;border-radius:4px;background:rgba(56,189,248,0.08);border:1px solid rgba(56,189,248,0.22);">
+                                <div style="color:var(--info-300);font-size:0.78em;text-transform:uppercase;letter-spacing:0.04em;">Shared wallet budget</div>
+                                <div style="margin-top:3px;">Pair budget <strong>${proposedBudget.toFixed(4)} XCH</strong>`
+                                + (otherBudgets > 0 ? ` · other pairs hold <strong>${otherBudgets.toFixed(4)} XCH</strong>` : '')
+                                + (Number.isFinite(sharedRemain) ? ` · <strong>${sharedRemain.toFixed(4)} XCH</strong> free to allocate` : '')
+                                + (shared.clamped ? ` <span style="color:var(--orange-400);">· clamped to leftover capital</span>` : '')
+                                + `</div></div>`;
+                        }
                         _lastSmartCapitalPlan = Object.assign({}, cp);
                         capitalRow = `<div data-smart-capital style="margin-bottom:6px;">
                             <span style="color:var(--slate-400);font-size:0.8em;text-transform:uppercase;letter-spacing:0.05em;">Capital  <span style="font-weight:normal;color:var(--slate-500);text-transform:none;letter-spacing:0;">${totalXch.toFixed(3)} XCH total</span></span>
@@ -19814,7 +19832,7 @@
                                     <div style="font-weight:600;color:var(--success-200);">${tradeXch.toFixed(3)} XCH</div>
                                     <div style="color:var(--slate-500);font-size:0.78em;">${pct(tradeXch)}%</div>
                                 </div>
-                            </div>${catLimited}
+                            </div>${catLimited}${sharedRow}
                         </div>`;
                     } else if (cp.insufficient) {
                         capitalRow = `<div style="color:var(--sell-color);margin-bottom:6px;">⚠ Insufficient capital after reserve — lower reserve % or add funds</div>`;
@@ -19899,6 +19917,35 @@
                 // "settings changed since Smart Settings" banner and snapshots
                 // current input values so subsequent edits can be detected.
                 markSmartSettingsApplied();
+
+                // Multi-pair: apply the proposed shared XCH budget for this pair.
+                try {
+                    const _budgetAsset = selectedCAT?.asset_id || '';
+                    const _proposedBudget = Number(
+                        data.proposed_xch_budget_xch != null
+                            ? data.proposed_xch_budget_xch
+                            : (data._capital_plan && data._capital_plan.proposed_xch_budget_xch)
+                    );
+                    if (_budgetAsset && Number.isFinite(_proposedBudget) && _proposedBudget > 0) {
+                        const budgetResp = await apiFetch(`${API_URL}/pairs/${_budgetAsset}/budget`, {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ xch_budget: _proposedBudget }),
+                        });
+                        const budgetResult = await budgetResp.json().catch(() => ({}));
+                        if (!budgetResp.ok || budgetResult.success === false) {
+                            showToast(
+                                budgetResult.error || 'Smart Settings applied, but pair XCH budget was not saved',
+                                'warning'
+                            );
+                        } else {
+                            try { await refreshPairsOverview(true); } catch (_) {}
+                        }
+                    }
+                } catch (_budgetErr) {
+                    debugWarn('[SmartDefaults] pair budget apply failed:', _budgetErr);
+                    showToast('Smart Settings applied, but pair XCH budget was not saved', 'warning');
+                }
 
             } catch (error) {
                 debugError('Failed to get smart settings:', error);
@@ -27021,9 +27068,33 @@
             return (icon ? icon + ' ' : '') + String(message || '');
         }
 
+        function _normalizeSseAssetId(value) {
+            return String(value || '').trim().toLowerCase().replace(/^0x/, '');
+        }
+
+        function _sseEventAssetId(data) {
+            if (!data || typeof data !== 'object') return '';
+            return _normalizeSseAssetId(data.asset_id || data.cat_asset_id || '');
+        }
+
+        function _isFocusPairSseEvent(data) {
+            // Process-wide events (no asset) always apply. Pair-scoped events
+            // only update focus-pair dashboard widgets so concurrent pairs
+            // don't clobber each other's mid/ladder/health panels.
+            const eventAid = _sseEventAssetId(data);
+            if (!eventAid) return true;
+            const focusAid = _normalizeSseAssetId(currentCAT && currentCAT.asset_id);
+            if (!focusAid) return true;
+            return eventAid === focusAid;
+        }
+
         function handleSSEEvent(msg) {
             const type = msg.type;
             const data = msg.data;
+
+            if ((type === 'price_update' || type === 'dashboard_update') && data && !_isFocusPairSseEvent(data)) {
+                return;
+            }
 
             if (type === 'price_update' && data) {
                 // Update price display instantly
@@ -29262,9 +29333,14 @@
             const rotatorHint = (list.length > 1)
                 ? `<span class="la-rotator-hint">${idx + 1} / ${list.length} &#9656;</span>`
                 : '';
+            const pairLabel = String(a.pair_ticker || a.pair_name || '').trim();
+            const titleAlreadyTagged = pairLabel && String(a.title || '').indexOf('[' + pairLabel + ']') >= 0;
+            const pairBadge = (pairLabel && !titleAlreadyTagged)
+                ? `<span class="la-rotator-hint" style="opacity:1;color:var(--info-300);">[${escapeHtml(pairLabel)}]</span>`
+                : '';
             body.innerHTML = `<div class="alert-item alert-${escapeHtml(a.severity)}" data-alert-id="${alertId}">
                 <div class="alert-content">
-                    <div class="alert-title">${escapeHtml(a.title)} ${sevLabel} ${rotatorHint}</div>
+                    <div class="alert-title">${pairBadge} ${escapeHtml(a.title)} ${sevLabel} ${rotatorHint}</div>
                     <div class="alert-msg">${escapeHtml(a.message)}</div>
                     <div class="alert-actions-row">
                         ${actionBtn}

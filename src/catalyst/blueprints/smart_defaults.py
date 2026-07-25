@@ -1967,6 +1967,52 @@ def _calculate_smart_defaults(
     _avail_xch = max(0.0, xch_spendable - _xch_reserve)
     _avail_cat = max(0.0, cat_spendable - _cat_reserve)
 
+    # Multi-pair Phase 4: XCH is shared. Size this pair from whatever remains
+    # after other pairs' saved budgets (this pair's own budget is excluded so
+    # Smart Settings can re-propose a full slice for the focus pair).
+    _shared_alloc = {}
+    _focus_aid = (
+        str(asset_id or getattr(cfg, "CAT_ASSET_ID", "") or "")
+        .strip()
+        .lower()
+        .replace("0x", "")
+    )
+    try:
+        from shared_xch_ledger import ledger as _xch_ledger
+
+        _remaining_mojos = _xch_ledger.remaining_allocatable_mojos(
+            _focus_aid or None, cfg=cfg, running_asset_ids=None
+        )
+        _shared_avail_xch = float(_xch_ledger.mojos_to_xch(_remaining_mojos))
+        _wallet_avail_xch = _avail_xch
+        _other_budgets_xch = float(
+            _xch_ledger.mojos_to_xch(
+                _xch_ledger.sum_budgets_mojos(exclude_asset_id=_focus_aid or None)
+            )
+        )
+        if _shared_avail_xch < _avail_xch:
+            messages.append(
+                f"Shared XCH: sizing this pair from {_shared_avail_xch:.4f} XCH "
+                f"(wallet had {_wallet_avail_xch:.4f} after reserve; "
+                f"other pairs hold {_other_budgets_xch:.4f} XCH in budgets)"
+            )
+            _avail_xch = max(0.0, _shared_avail_xch)
+        _shared_alloc = {
+            "wallet_available_xch": round(_wallet_avail_xch, 4),
+            "shared_remaining_xch": round(_shared_avail_xch, 4),
+            "other_budgets_xch": round(_other_budgets_xch, 4),
+            "clamped": bool(_shared_avail_xch < _wallet_avail_xch),
+            "focus_asset_id": _focus_aid or None,
+        }
+    except Exception as _shared_err:
+        try:
+            messages.append(
+                f"Shared XCH ledger unavailable ({_shared_err}); "
+                "sizing from full wallet after reserve"
+            )
+        except Exception:
+            pass
+
     # Practical minimum: Dexie offers below this aren't worth a taker's fee
     _MIN_OFFER_XCH = 0.005
 
@@ -2778,6 +2824,9 @@ def _calculate_smart_defaults(
             "tier_label": _tier_label_full,
             "strategy": _strategy,
             "n_sell_limited_by_cat": _cat_limited,
+            # Pair's claimed slice of shared wallet capital (Phase 4).
+            "proposed_xch_budget_xch": round(_avail_xch, 4),
+            "shared_allocation": _shared_alloc,
         }
         messages.append(f"Strategy: {_strategy}")
         _tier_msg = (
@@ -2808,6 +2857,8 @@ def _calculate_smart_defaults(
             "available_xch": round(_avail_xch, 4),
             "available_cat": round(_avail_cat, 2),
             "insufficient": True,
+            "proposed_xch_budget_xch": round(_avail_xch, 4),
+            "shared_allocation": _shared_alloc,
         }
         if _avail_xch > 0:
             messages.append(
@@ -4193,6 +4244,16 @@ def _calculate_smart_defaults(
         "sell_outer_tier_count": _sell_n_outer if _sell_n_outer >= 0 else None,
         "sell_extreme_tier_count": _sell_n_extreme if _sell_n_extreme >= 0 else None,
         "_capital_plan": _capital_plan,
+        # Multi-pair: proposed hard XCH budget for the focus pair.
+        "proposed_xch_budget_xch": round(
+            float(
+                (_capital_plan or {}).get("proposed_xch_budget_xch")
+                if isinstance(_capital_plan, dict)
+                and (_capital_plan or {}).get("proposed_xch_budget_xch") is not None
+                else _avail_xch
+            ),
+            4,
+        ),
         # Bot Operations
         # Smart Settings sizes a sniper pool (_smart_sniper_size /
         # _smart_sniper_prep are carved BEFORE _trading_xch, so the pool

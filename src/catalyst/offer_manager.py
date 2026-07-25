@@ -1433,7 +1433,8 @@ class OfferManager:
                     elif int(_wid) == _cat_wid:
                         _cat_spend += abs(int(_amt))
 
-            # Multi-pair Phase 3: hard XCH budget gate for buy offers.
+            # Multi-pair Phase 3/4: hard per-pair XCH budget + optional
+            # portfolio exposure cap for buy offers.
             if _xch_spend > 0:
                 try:
                     from shared_xch_ledger import ledger as _ledger
@@ -1454,6 +1455,25 @@ class OfferManager:
                                 "warning",
                                 "xch_budget_blocked",
                                 _reason,
+                                data={
+                                    "asset_id": _aid,
+                                    "spend_mojos": _xch_spend,
+                                },
+                            )
+                        except Exception:
+                            pass
+                        return None
+                    _pok, _preason = _ledger.can_spend_portfolio(
+                        _xch_spend, cfg=cfg
+                    )
+                    if not _pok:
+                        try:
+                            from database import log_event as _le
+
+                            _le(
+                                "warning",
+                                "portfolio_exposure_blocked",
+                                _preason,
                                 data={
                                     "asset_id": _aid,
                                     "spend_mojos": _xch_spend,
