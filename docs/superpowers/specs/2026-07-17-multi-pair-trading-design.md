@@ -216,10 +216,17 @@ Done in this branch:
 - SSE/`alert` payloads stamped with `asset_id`; alert ids namespaced per pair; GUI filters focus-pair dashboard/price updates.
 - Watcher threads (price/coin/health) re-enter `pair_context` so ambient `cfg.CAT_*` resolves to the owning pair.
 
+Also done:
+
+- Shared prep queue (`prep_queue.py`) with fair per-pair FIFO/RR; one worker at a time.
+- Prep trigger stamps pair identity into worker env; stops all running pairs before prep.
+- Pair-scoped DB cleanup (CAT coins/offers for that asset; XCH owned by it or unowned).
+- Minimal XCH ownership: `coins.owner_asset_id` tagged after successful prep; free-coin selection prefers owned/unowned.
+
 Still open:
 
 - Richer aggregate P&amp;L across pairs.
-- Coin ownership planner / shared prep fairness.
+- Fuller XCH ownership planner (budget-proportional reshape; fee/sniper shared pools).
 - Raise pair limit once stable.
 - Deeper toxicity isolation polish.
 

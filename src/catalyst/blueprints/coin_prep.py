@@ -606,6 +606,12 @@ def api_coin_prep_status():
     bot = api_server.bot
     try:
         result = {"success": True, **api_server._coin_prep_state}
+        try:
+            from prep_queue import get_prep_queue
+
+            result["prep_queue"] = get_prep_queue().status()
+        except Exception:
+            result["prep_queue"] = {"busy": bool(result.get("running")), "queued": []}
 
         def _refresh_finished_prep_coin_counts(payload: dict):
             """Backfill current coin counts after prep stops.
@@ -1294,60 +1300,163 @@ def api_coin_prep_verify():
         return api_server._api_exception(request.path)
 
 
+def _normalize_prep_asset_id(raw: str = "") -> str:
+    return str(raw or "").strip().lower().replace("0x", "")
+
+
+def _parse_prep_trigger_params(body: dict = None) -> dict:
+    """Build prep params from an HTTP body or queued request dict."""
+    data = body if isinstance(body, dict) else {}
+    try:
+        multiplier = float(data.get("coin_multiplier", 1))
+        multiplier = max(0.5, min(3.0, multiplier))
+    except Exception:
+        multiplier = 1.0
+    full_reset = bool(data.get("full_reset", False))
+    asset_id = _normalize_prep_asset_id(data.get("asset_id"))
+    if len(asset_id) != 64:
+        # Fall back to focus / ambient CAT for single-pair callers.
+        asset_id = _normalize_prep_asset_id(
+            getattr(cfg, "CAT_ASSET_ID", "")
+            or (api_server._active_cat or {}).get("asset_id")
+        )
+        if len(asset_id) != 64:
+            asset_id = ""
+    return {
+        "asset_id": asset_id,
+        "coin_multiplier": multiplier,
+        "reset_pnl": bool(data.get("reset_pnl", full_reset)),
+        "reset_offer_history": bool(data.get("reset_offer_history", False)),
+        "reset_counters": bool(data.get("reset_counters", False)),
+        "source": str(data.get("source") or "api"),
+        "request_id": data.get("request_id"),
+    }
+
+
+def _schedule_next_prep_job():
+    """After a worker finishes, start the next fair-queued pair if any."""
+    try:
+        from prep_queue import get_prep_queue
+
+        nxt = get_prep_queue().complete_current(
+            failed=bool(api_server._coin_prep_state.get("error"))
+        )
+    except Exception as exc:
+        log_event(
+            "warning",
+            "prep_queue_next_failed",
+            f"Could not advance prep queue: {exc}",
+        )
+        return
+    if not nxt:
+        return
+
+    def _run_next():
+        # Serialize with HTTP trigger path.
+        with _coin_prep_trigger_lock:
+            if _coin_prep_is_active(api_server.bot):
+                # Unexpected overlap — re-queue and wait.
+                try:
+                    from prep_queue import get_prep_queue
+
+                    get_prep_queue().enqueue(nxt)
+                except Exception:
+                    pass
+                return
+            _api_coin_prep_trigger_locked(nxt)
+
+    threading.Thread(
+        target=_run_next, daemon=True, name="prep-queue-next"
+    ).start()
+
+
 @bp.route("/api/coin-prep/trigger", methods=["POST"])
 def api_coin_prep_trigger():
-    """Trigger coin preparation behind an atomic duplicate-start guard."""
+    """Trigger coin preparation via the shared multi-pair prep queue."""
     bot = api_server.bot
     if not _coin_prep_trigger_lock.acquire(blocking=False):
         return _coin_prep_already_running_response("starting")
 
     try:
+        try:
+            body = request.get_json(silent=True) or {}
+        except Exception:
+            body = {}
+        params = _parse_prep_trigger_params(body)
+
+        from prep_queue import get_prep_queue
+
+        queue = get_prep_queue()
+
+        # If a worker is already active, same-pair → already_running;
+        # different pair → fair queue.
         if _coin_prep_is_active(bot):
-            return _coin_prep_already_running_response("running")
-        return _api_coin_prep_trigger_locked()
+            current_aid = (
+                queue.current_asset_id()
+                or _normalize_prep_asset_id(
+                    api_server._coin_prep_state.get("asset_id")
+                )
+            )
+            if (
+                params.get("asset_id")
+                and current_aid
+                and params["asset_id"] == current_aid
+            ):
+                return _coin_prep_already_running_response("running")
+            if not params.get("asset_id"):
+                return _coin_prep_already_running_response("running")
+            result = queue.enqueue(params)
+            return jsonify(result)
+
+        # Worker is idle — drop a stale queue "current" so try_start can run.
+        if queue.is_busy():
+            queue.mark_worker_idle()
+
+        decision = queue.try_start(params)
+        if decision.get("status") == "already_running":
+            return jsonify(decision)
+        if decision.get("status") == "queued":
+            return jsonify(decision)
+        if decision.get("status") != "started":
+            return jsonify(decision), 400
+
+        launch_params = decision.get("params") or params
+        return _api_coin_prep_trigger_locked(launch_params)
     finally:
         _coin_prep_trigger_lock.release()
 
 
-def _api_coin_prep_trigger_locked():
+def _api_coin_prep_trigger_locked(params: dict = None):
     """Trigger coin preparation.
 
-    Launches the coin_prep_worker subprocess via coin_manager.
-    The worker writes its progress to coin_prep_status.json.
-    The /api/coin-prep/status endpoint reads that file for live progress.
-    This thread monitors the subprocess and updates running/complete flags.
+    Launches the coin_prep_worker subprocess. The worker writes its progress
+    to coin_prep_status.json. The /api/coin-prep/status endpoint reads that
+    file for live progress. This thread monitors the subprocess and updates
+    running/complete flags.
+
+    ``params`` may come from the HTTP trigger or from the shared prep queue
+    when the next fair-scheduled pair is started.
     """
     bot = api_server.bot
     try:
-        # Read coin_multiplier and full_reset flag from request body NOW,
-        # while we're still inside the Flask request context. The do_prep()
-        # thread runs AFTER the HTTP response is sent, so request.get_json()
-        # won't work there.
-        try:
-            _prep_req_data = request.get_json(silent=True) or {}
-            _prep_coin_multiplier = float(_prep_req_data.get("coin_multiplier", 1))
-            _prep_coin_multiplier = max(0.5, min(3.0, _prep_coin_multiplier))
-        except Exception:
-            _prep_req_data = {}
-            _prep_coin_multiplier = 1.0
-        # Historical flag: full_reset=True means "Start Fresh" — wipes fills /
-        # round-trips / position baseline alongside the coin-shape reset.
-        # Default False (2026-04-19) so a routine re-prep keeps the user's
-        # trading history. 2026-04-21: superseded by the granular flags
-        # below (reset_pnl / reset_offer_history / reset_counters) driven by
-        # the pre-prep choice modal. full_reset is still honoured as an
-        # alias for reset_pnl so older clients keep working.
-        _prep_full_reset = bool(_prep_req_data.get("full_reset", False))
-        _prep_reset_pnl = bool(_prep_req_data.get("reset_pnl", _prep_full_reset))
-        _prep_reset_offers = bool(_prep_req_data.get("reset_offer_history", False))
-        _prep_reset_counters = bool(_prep_req_data.get("reset_counters", False))
+        if params is None:
+            try:
+                params = _parse_prep_trigger_params(request.get_json(silent=True) or {})
+            except Exception:
+                params = _parse_prep_trigger_params({})
+        _prep_coin_multiplier = float(params.get("coin_multiplier", 1.0) or 1.0)
+        _prep_reset_pnl = bool(params.get("reset_pnl", False))
+        _prep_reset_offers = bool(params.get("reset_offer_history", False))
+        _prep_reset_counters = bool(params.get("reset_counters", False))
+        _prep_asset_id = _normalize_prep_asset_id(params.get("asset_id"))
         log_event(
             "info",
             "coin_prep_multiplier",
             f"Coin prep multiplier from GUI: {_prep_coin_multiplier}× "
             f"(reset_pnl={_prep_reset_pnl}, "
             f"reset_offers={_prep_reset_offers}, "
-            f"reset_counters={_prep_reset_counters})",
+            f"reset_counters={_prep_reset_counters}, "
+            f"asset_id={_prep_asset_id[:12] + '...' if _prep_asset_id else 'focus'})",
         )
 
         # If a previous worker is still running, kill it first.
@@ -1429,6 +1538,7 @@ def _api_coin_prep_trigger_locked():
                     if _prep_reset_pnl
                     else "coin_prep_reprep_cleanup"
                 ),
+                cat_asset_id=_prep_asset_id or None,
             )
         except Exception as _clean_err:
             log_event(
@@ -1445,12 +1555,23 @@ def _api_coin_prep_trigger_locked():
         if _prep_reset_offers:
             try:
                 conn = get_connection()
-                cur = conn.execute(
-                    "DELETE FROM offers "
-                    "WHERE status IN ('cancelled', 'filled', 'expired') "
-                    "   OR lifecycle_state IN ('cancelled', 'filled', 'expired', "
-                    "                          'phantom_rejected', 'user_cancelled')"
-                )
+                if _prep_asset_id:
+                    cur = conn.execute(
+                        "DELETE FROM offers "
+                        "WHERE cat_asset_id=? AND ("
+                        " status IN ('cancelled', 'filled', 'expired') "
+                        " OR lifecycle_state IN ('cancelled', 'filled', 'expired', "
+                        "                        'phantom_rejected', 'user_cancelled')"
+                        ")",
+                        (_prep_asset_id,),
+                    )
+                else:
+                    cur = conn.execute(
+                        "DELETE FROM offers "
+                        "WHERE status IN ('cancelled', 'filled', 'expired') "
+                        "   OR lifecycle_state IN ('cancelled', 'filled', 'expired', "
+                        "                          'phantom_rejected', 'user_cancelled')"
+                    )
                 deleted = int(cur.rowcount or 0)
                 conn.commit()
                 log_event(
@@ -1539,16 +1660,27 @@ def _api_coin_prep_trigger_locked():
         api_server._coin_prep_state["error"] = None
         api_server._coin_prep_state["phase"] = "idle"
         api_server._coin_prep_state["run_id"] = run_id
+        api_server._coin_prep_state["asset_id"] = _prep_asset_id or None
         api_server._coin_prep_state["started_at"] = datetime.now(
             timezone.utc
         ).isoformat()
 
-        # CRITICAL: Stop the bot loop entirely during coin prep.
-        # Just setting _prep_running is NOT enough — the bot loop's
-        # requote step also creates offers, and any running cycle
-        # may already be mid-execution. The only safe approach is
-        # to fully stop the bot. User must press "Start Bot" after
-        # coin prep completes.
+        # CRITICAL: Stop every running pair during coin prep.
+        # Just setting _prep_running is NOT enough — any pair's requote
+        # step can create offers against the same Sage wallet while the
+        # worker consolidates/splits. User must restart pairs after prep.
+        _stopped_pairs = []
+        try:
+            from pair_registry import get_registry
+
+            _stop_result = get_registry().stop_all_for_prep(reason="coin_prep")
+            _stopped_pairs = list(_stop_result.get("stopped") or [])
+        except Exception as _reg_err:
+            log_event(
+                "warning",
+                "coin_prep_registry_stop_failed",
+                f"Pair registry stop-all skipped: {_reg_err}",
+            )
         if bot and bot.is_running():
             bot.stop()
             log_event(
@@ -1556,15 +1688,37 @@ def _api_coin_prep_trigger_locked():
                 "coin_prep_bot_stopped",
                 "Bot loop STOPPED for coin prep — press Start Bot after prep completes",
             )
+        if _stopped_pairs or (bot and not bot.is_running()):
             api_server.events.emit(
-                "bot_control", {"action": "stopped", "reason": "coin_prep"}
+                "bot_control",
+                {
+                    "action": "stopped",
+                    "reason": "coin_prep",
+                    "asset_id": _prep_asset_id or None,
+                    "stopped_pairs": _stopped_pairs,
+                },
             )
 
-        # Also set the flag as a safety belt
-        if bot and hasattr(bot, "coin_manager"):
-            bot.coin_manager._prep_running = True
+        # Also set the flag as a safety belt on focus + all registry bots.
+        _prep_bots = []
+        if bot is not None:
+            _prep_bots.append(bot)
+        try:
+            from pair_registry import get_registry
+
+            for _rt in (get_registry().status().get("pairs") or []):
+                _aid = _rt.get("asset_id")
+                _runtime = get_registry().get_runtime(_aid) if _aid else None
+                if _runtime and _runtime.bot is not None and _runtime.bot not in _prep_bots:
+                    _prep_bots.append(_runtime.bot)
+        except Exception:
+            pass
+        for _pb in _prep_bots:
+            if hasattr(_pb, "coin_manager") and _pb.coin_manager is not None:
+                _pb.coin_manager._prep_running = True
+        if _prep_bots:
             log_event(
-                "info", "coin_prep_gate", "Coin manager marked busy for coin prep"
+                "info", "coin_prep_gate", "Coin manager(s) marked busy for coin prep"
             )
 
         # Write a fresh "starting" status file immediately.
@@ -1619,6 +1773,33 @@ def _api_coin_prep_trigger_locked():
                     return
 
                 env = _coin_prep_worker_environment()
+                # Multi-pair: stamp the pair identity into the worker env so
+                # CAT RPCs / writes don't follow a stale focus CAT.
+                if _prep_asset_id:
+                    env["CAT_ASSET_ID"] = _prep_asset_id
+                    try:
+                        _snap = None
+                        from pair_context import build_snapshot_from_store
+
+                        _snap = build_snapshot_from_store(
+                            _prep_asset_id,
+                            active_cat=api_server._active_cat,
+                            cfg=cfg,
+                        )
+                        if _snap and _snap.wallet_id is not None:
+                            env["CAT_WALLET_ID"] = str(int(_snap.wallet_id))
+                        if _snap and _snap.decimals is not None:
+                            env["CAT_DECIMALS"] = str(int(_snap.decimals))
+                        if _snap and _snap.name:
+                            env["CAT_NAME"] = str(_snap.name)
+                        if _snap and _snap.ticker_id:
+                            env["CAT_TICKER_ID"] = str(_snap.ticker_id)
+                    except Exception as _env_pair_err:
+                        log_event(
+                            "warning",
+                            "coin_prep_pair_env",
+                            f"Could not stamp pair env for prep: {_env_pair_err}",
+                        )
 
                 # Build CLI args from LIVE config so the worker uses the
                 # actual GUI settings, not stale .env values.
@@ -2083,29 +2264,82 @@ def _api_coin_prep_trigger_locked():
                     pass
                 api_server._coin_prep_state["running"] = False
                 api_server._coin_prep_proc = None  # Clear global ref — worker is done
-                # CRITICAL: Ungate the bot loop so it can resume offer creation
-                if bot and hasattr(bot, "coin_manager"):
-                    bot.coin_manager._prep_running = False
-                    if prep_succeeded:
+                # Tag free XCH coins as owned by this pair so other pairs
+                # prefer their own (or unowned) inventory.
+                if prep_succeeded and _prep_asset_id:
+                    try:
+                        from database import assign_xch_owner_to_free_coins
+
+                        _tagged = assign_xch_owner_to_free_coins(_prep_asset_id)
                         log_event(
                             "info",
-                            "coin_prep_ungate",
-                            "Coin prep complete — press Start Bot to begin trading",
+                            "coin_prep_xch_owned",
+                            f"Tagged {_tagged} free XCH coins as owned by "
+                            f"{_prep_asset_id[:12]}...",
                         )
-                    else:
+                    except Exception as _own_err:
                         log_event(
                             "warning",
-                            "coin_prep_ungate_error",
-                            "Coin prep ended with an error — review details before retrying",
+                            "coin_prep_xch_own_failed",
+                            f"XCH ownership tagging skipped: {_own_err}",
                         )
+                # CRITICAL: Ungate coin managers so trading can resume after
+                # the operator restarts pairs. If another pair is queued,
+                # the next job will re-gate immediately.
+                for _pb in _prep_bots:
+                    try:
+                        if hasattr(_pb, "coin_manager") and _pb.coin_manager is not None:
+                            _pb.coin_manager._prep_running = False
+                    except Exception:
+                        pass
+                if prep_succeeded:
+                    log_event(
+                        "info",
+                        "coin_prep_ungate",
+                        "Coin prep complete — press Start Bot to begin trading",
+                    )
+                else:
+                    log_event(
+                        "warning",
+                        "coin_prep_ungate_error",
+                        "Coin prep ended with an error — review details before retrying",
+                    )
+                # Advance the shared fair queue (may start another pair).
+                try:
+                    _schedule_next_prep_job()
+                except Exception as _q_err:
+                    log_event(
+                        "warning",
+                        "prep_queue_schedule_failed",
+                        f"Prep queue advance failed: {_q_err}",
+                    )
 
         threading.Thread(target=do_prep, daemon=True).start()
-        return jsonify({"success": True, "message": "Coin prep started"})
+        return jsonify(
+            {
+                "success": True,
+                "status": "started",
+                "message": "Coin prep started",
+                "asset_id": _prep_asset_id or None,
+            }
+        )
     except Exception as e:
         api_server._coin_prep_state["running"] = False
         # Also ungate on early failure
         if bot and hasattr(bot, "coin_manager"):
             bot.coin_manager._prep_running = False
+        try:
+            from prep_queue import get_prep_queue
+
+            nxt = get_prep_queue().complete_current(failed=True)
+            if nxt:
+                threading.Thread(
+                    target=lambda p=nxt: _api_coin_prep_trigger_locked(p),
+                    daemon=True,
+                    name="prep-queue-next",
+                ).start()
+        except Exception:
+            pass
         try:
             log_event("error", "coin_prep_trigger_failed", str(e))
         except Exception:
@@ -2120,10 +2354,17 @@ def api_coin_prep_reset():
     api_server._coin_prep_state["running"] = False
     api_server._coin_prep_state["complete"] = False
     api_server._coin_prep_state["started_at"] = None
+    api_server._coin_prep_state["asset_id"] = None
     # Ungate bot loop if it was gated
     if bot and hasattr(bot, "coin_manager"):
         bot.coin_manager._prep_running = False
     api_server._coin_prep_state["error"] = None
+    try:
+        from prep_queue import get_prep_queue
+
+        get_prep_queue().reset()
+    except Exception:
+        pass
     return jsonify({"success": True})
 
 
@@ -2139,9 +2380,26 @@ def api_coin_prep_cancel():
     Returns a list of killed PIDs so the GUI can show the user what
     happened. Empty list means there was nothing to cancel — that's
     not an error, the response is still success=True.
+
+    Also clears fair-queued pair prep requests (optionally scoped by body
+    ``asset_id`` / ``request_id``).
     """
     bot = api_server.bot
     killed: list[int] = []
+    try:
+        body = request.get_json(silent=True) or {}
+    except Exception:
+        body = {}
+    try:
+        from prep_queue import get_prep_queue
+
+        get_prep_queue().cancel(
+            asset_id=body.get("asset_id"),
+            request_id=body.get("request_id"),
+            cancel_running=True,
+        )
+    except Exception:
+        pass
 
     # Blueprint-launched worker (manual coin prep trigger)
     proc = api_server._coin_prep_proc

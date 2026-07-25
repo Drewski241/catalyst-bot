@@ -495,7 +495,9 @@ CREATE TABLE IF NOT EXISTS coins (
     first_seen      TEXT NOT NULL,
     last_seen       TEXT NOT NULL,
     -- Multi-pair Phase 2: 'xch' for native, 64-hex CAT asset id for CATs
-    asset_id        TEXT
+    asset_id        TEXT,
+    -- Multi-pair Phase 4: which pair "owns" this XCH prep coin (NULL = shared)
+    owner_asset_id  TEXT
 );
 
 -- Indexes for common queries
@@ -723,6 +725,25 @@ def init_database():
             "db_migration",
             f"coins.asset_id backfill skipped: {_asset_backfill_err}",
         )
+
+    # Migration: multi-pair Phase 4 — XCH ownership so pairs prefer their
+    # own prep inventory (unowned XCH remains shared/available).
+    try:
+        conn.execute("SELECT owner_asset_id FROM coins LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE coins ADD COLUMN owner_asset_id TEXT")
+        conn.commit()
+        log_event(
+            "info", "db_migration", "Added 'owner_asset_id' column to coins table"
+        )
+    try:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_coins_owner_status "
+            "ON coins(owner_asset_id, status)"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
 
     # Migration: create trading_pace table for adaptive replenishment
     conn.executescript("""
@@ -2823,7 +2844,9 @@ def mark_coins_gone(coin_ids: List[str]) -> int:
         return 0
 
 
-def get_free_coins(wallet_type: str, asset_id: str = None) -> List[Dict]:
+def get_free_coins(
+    wallet_type: str, asset_id: str = None, owner_asset_id: str = None
+) -> List[Dict]:
     """Get all free (available) coins for a wallet type.
 
     Returns every row from `coins` where status='free', largest first. Callers
@@ -2834,15 +2857,45 @@ def get_free_coins(wallet_type: str, asset_id: str = None) -> List[Dict]:
 
     When ``asset_id`` is provided, only coins tagged with that asset (or still
     untagged, for pre-migration rows) are returned.
+
+    When ``owner_asset_id`` is provided (typically for XCH under multi-pair),
+    only coins owned by that pair or still unowned are returned. Owned coins
+    for the pair are sorted first.
     """
     conn = get_connection()
     resolved = _normalize_coin_asset_id(wallet_type, asset_id) if asset_id else ""
-    if resolved:
+    owner = (
+        str(owner_asset_id or "")
+        .strip()
+        .lower()
+        .replace("0x", "")
+    )
+    if len(owner) != 64:
+        owner = ""
+
+    if resolved and owner:
+        rows = conn.execute(
+            "SELECT * FROM coins WHERE status='free' AND wallet_type=? "
+            "AND (asset_id = ? OR asset_id IS NULL OR asset_id = '') "
+            "AND (owner_asset_id = ? OR owner_asset_id IS NULL OR owner_asset_id = '') "
+            "ORDER BY CASE WHEN owner_asset_id = ? THEN 0 ELSE 1 END, "
+            "amount_mojos DESC",
+            [wallet_type, resolved, owner, owner],
+        ).fetchall()
+    elif resolved:
         rows = conn.execute(
             "SELECT * FROM coins WHERE status='free' AND wallet_type=? "
             "AND (asset_id = ? OR asset_id IS NULL OR asset_id = '') "
             "ORDER BY amount_mojos DESC",
             [wallet_type, resolved],
+        ).fetchall()
+    elif owner:
+        rows = conn.execute(
+            "SELECT * FROM coins WHERE status='free' AND wallet_type=? "
+            "AND (owner_asset_id = ? OR owner_asset_id IS NULL OR owner_asset_id = '') "
+            "ORDER BY CASE WHEN owner_asset_id = ? THEN 0 ELSE 1 END, "
+            "amount_mojos DESC",
+            [wallet_type, owner, owner],
         ).fetchall()
     else:
         rows = conn.execute(
@@ -2851,6 +2904,43 @@ def get_free_coins(wallet_type: str, asset_id: str = None) -> List[Dict]:
             [wallet_type],
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def assign_xch_owner_to_free_coins(owner_asset_id: str) -> int:
+    """Tag free unowned XCH coins as owned by ``owner_asset_id``.
+
+    Used after a successful pair-scoped coin prep so other pairs prefer
+    their own inventory. Returns number of rows updated.
+    """
+    owner = (
+        str(owner_asset_id or "")
+        .strip()
+        .lower()
+        .replace("0x", "")
+    )
+    if len(owner) != 64:
+        return 0
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "UPDATE coins SET owner_asset_id=? "
+            "WHERE status='free' AND wallet_type='xch' "
+            "AND (owner_asset_id IS NULL OR owner_asset_id='')",
+            (owner,),
+        )
+        conn.commit()
+        return int(cur.rowcount or 0)
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        log_event(
+            "warning",
+            "assign_xch_owner_failed",
+            f"Could not assign XCH owner {owner[:12]}...: {exc}",
+        )
+        return 0
 
 
 def count_open_offers_by_cat() -> Dict[str, Dict[str, int]]:

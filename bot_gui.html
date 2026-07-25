@@ -34217,6 +34217,9 @@ function closeCtgErrorModal() {
             try {
                 // Send the spare coin multiplier from the GUI to the API
                 const coinMultiplier = parseFloat(document.getElementById('configCoinPrepMultiplier')?.value) || 2;
+                const prepAssetId = (currentCAT && currentCAT.asset_id)
+                    || (typeof getSettingsSelectedCAT === 'function' && getSettingsSelectedCAT()?.asset_id)
+                    || '';
                 const response = await apiFetch(`${API_URL}/coin-prep/trigger`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -34225,11 +34228,16 @@ function closeCtgErrorModal() {
                         reset_pnl: !!resets.pnl,
                         reset_offer_history: !!resets.offers,
                         reset_counters: !!resets.counters,
+                        asset_id: prepAssetId,
                     })
                 });
                 const data = await response.json();
 
-                if (data.success) {
+                if (data.success && data.status === 'queued') {
+                    showToast(data.message || 'Coin prep queued for this pair', 'info');
+                    if (btn) { btn.disabled = false; btn.textContent = 'Yes, Prepare Coins'; }
+                    try { closeCoinPrepConfirm(); } catch (_) {}
+                } else if (data.success) {
                     // Reset rolling log history for new run
                     _coinPrepMsgHistory = [];
                     _coinPrepLastMsg = '';

@@ -198,6 +198,20 @@ def _log_coin_prep_sage_rpc_context(cert_path: str, source: str) -> None:
         pass
 
 
+def _current_pair_owner_asset_id() -> Optional[str]:
+    """Return the active pair asset id for XCH ownership filtering, if any."""
+    try:
+        from pair_context import get_pair_context
+
+        ctx = get_pair_context()
+        if ctx is None:
+            return None
+        aid = ctx.normalized_asset_id()
+        return aid if len(aid) == 64 else None
+    except Exception:
+        return None
+
+
 def _coin_prep_worker_environment(base_env: Optional[dict] = None) -> dict:
     """Return the environment used when launching the coin-prep worker.
 
@@ -2271,8 +2285,14 @@ class CoinManager:
         try:
             from database import get_free_coins, get_locked_coins, set_coin_designation
 
-            # Build a lookup of DB designations for this wallet
-            db_coins = get_free_coins(wallet_type)
+            # Build a lookup of DB designations for this wallet.
+            # Under multi-pair, XCH selection prefers this pair's owned coins
+            # (plus still-unowned XCH) so another pair's prep inventory is not
+            # silently consumed.
+            _owner = (
+                _current_pair_owner_asset_id() if wallet_type == "xch" else None
+            )
+            db_coins = get_free_coins(wallet_type, owner_asset_id=_owner)
             db_desig_map = {}  # coin_id → (designation, assigned_tier)
             for dc in db_coins:
                 cid = dc.get("coin_id", "")
@@ -3195,7 +3215,8 @@ class CoinManager:
                         if cid:
                             rpc_ids.add(cid)
 
-                    db_free = get_free_coins(wt)
+                    _owner = _current_pair_owner_asset_id() if wt == "xch" else None
+                    db_free = get_free_coins(wt, owner_asset_id=_owner)
                     db_ids = {c["coin_id"] for c in db_free}
 
                     gone = db_ids - rpc_ids
@@ -3893,7 +3914,10 @@ class CoinManager:
             # Normalize DB coin IDs to match the format from _coin_id_from_record()
             from database import norm_coin_id
 
-            db_free = get_free_coins(wallet_type)
+            _owner = (
+                _current_pair_owner_asset_id() if wallet_type == "xch" else None
+            )
+            db_free = get_free_coins(wallet_type, owner_asset_id=_owner)
             missing_ids = [
                 c["coin_id"]
                 for c in db_free

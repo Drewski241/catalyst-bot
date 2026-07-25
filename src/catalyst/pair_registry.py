@@ -240,6 +240,30 @@ class PairRegistry:
                 "running_pairs": self.list_running(),
             }
 
+    def stop_all_for_prep(self, reason: str = "coin_prep") -> Dict[str, Any]:
+        """Stop every running pair before a wallet-wide coin prep.
+
+        Offers are left resting (same as stop_pair). Returns the asset ids
+        that were stopped so the GUI can remind the operator to restart.
+        """
+        stopped: List[str] = []
+        errors: Dict[str, str] = {}
+        for aid in list(self.list_running()):
+            result = self.stop_pair(aid)
+            if result.get("success"):
+                if result.get("status") == "stopped":
+                    stopped.append(aid)
+            else:
+                errors[aid] = str(result.get("error") or "stop failed")
+        if stopped:
+            slog(
+                "PAIR_REGISTRY",
+                f"Stopped {len(stopped)} pair(s) for {reason}: "
+                + ", ".join(a[:12] for a in stopped),
+                level="info",
+            )
+        return {"success": not errors, "stopped": stopped, "errors": errors}
+
     def status(self) -> Dict[str, Any]:
         with self._lock:
             pairs = []

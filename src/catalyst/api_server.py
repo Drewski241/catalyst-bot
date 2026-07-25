@@ -1675,6 +1675,7 @@ def _reset_fresh_run_session(
     cancel_open_offers: bool = False,
     preserve_history: bool = False,
     reason: str = "fresh_start",
+    cat_asset_id: str = None,
 ) -> Dict:
     """Reset session-facing bot state.
 
@@ -1694,12 +1695,24 @@ def _reset_fresh_run_session(
         trading history survives the re-prep. This is the 2026-04-19
         default for the Prepare Coins flow; users who actually want a
         full wipe can pick the explicit Start Fresh button.
+
+    When ``cat_asset_id`` is set (multi-pair prep), coin/offer cleanup is
+    scoped to that CAT plus XCH coins owned by it (or still unowned). Other
+    pairs' CAT rows and owned XCH inventory are left alone.
     """
     global _run_history_cutoff, _session_start_time
 
     from database import _sqlite_ts
 
     reset_at = _sqlite_ts(datetime.now(timezone.utc))
+    aid = (
+        str(cat_asset_id or "")
+        .strip()
+        .lower()
+        .replace("0x", "")
+    )
+    if len(aid) != 64:
+        aid = ""
     summary = {
         "reset_at": reset_at,
         "preserve_history": bool(preserve_history),
@@ -1709,6 +1722,7 @@ def _reset_fresh_run_session(
         "open_offers_cancelled": 0,
         "price_history_cleared": False,
         "inventory_cleared": False,
+        "scoped_asset_id": aid or None,
     }
 
     conn = get_connection()
@@ -1721,36 +1735,131 @@ def _reset_fresh_run_session(
 
         if not preserve_history:
             # Only count rows we're actually going to delete.
-            summary["fills_cleared"] = int(
-                (conn.execute("SELECT COUNT(*) as cnt FROM fills").fetchone()["cnt"])
-                or 0
-            )
-            if has_round_trips:
-                summary["round_trips_cleared"] = int(
+            if aid:
+                summary["fills_cleared"] = int(
                     (
                         conn.execute(
-                            "SELECT COUNT(*) as cnt FROM round_trips"
+                            "SELECT COUNT(*) as cnt FROM fills WHERE cat_asset_id=?",
+                            (aid,),
                         ).fetchone()["cnt"]
                     )
                     or 0
                 )
+                if has_round_trips:
+                    try:
+                        summary["round_trips_cleared"] = int(
+                            (
+                                conn.execute(
+                                    "SELECT COUNT(*) as cnt FROM round_trips "
+                                    "WHERE cat_asset_id=?",
+                                    (aid,),
+                                ).fetchone()["cnt"]
+                            )
+                            or 0
+                        )
+                    except Exception:
+                        summary["round_trips_cleared"] = int(
+                            (
+                                conn.execute(
+                                    "SELECT COUNT(*) as cnt FROM round_trips"
+                                ).fetchone()["cnt"]
+                            )
+                            or 0
+                        )
+            else:
+                summary["fills_cleared"] = int(
+                    (conn.execute("SELECT COUNT(*) as cnt FROM fills").fetchone()["cnt"])
+                    or 0
+                )
+                if has_round_trips:
+                    summary["round_trips_cleared"] = int(
+                        (
+                            conn.execute(
+                                "SELECT COUNT(*) as cnt FROM round_trips"
+                            ).fetchone()["cnt"]
+                        )
+                        or 0
+                    )
 
         if clear_coins:
-            summary["coins_cleared"] = int(
-                (conn.execute("SELECT COUNT(*) as cnt FROM coins").fetchone()["cnt"])
-                or 0
-            )
+            if aid:
+                # CAT rows for this pair + XCH owned by this pair or still unowned.
+                try:
+                    summary["coins_cleared"] = int(
+                        (
+                            conn.execute(
+                                "SELECT COUNT(*) as cnt FROM coins WHERE "
+                                "(wallet_type='cat' AND asset_id=?) OR "
+                                "(wallet_type='xch' AND ("
+                                "owner_asset_id=? OR owner_asset_id IS NULL "
+                                "OR owner_asset_id=''))",
+                                (aid, aid),
+                            ).fetchone()["cnt"]
+                        )
+                        or 0
+                    )
+                except Exception:
+                    summary["coins_cleared"] = int(
+                        (
+                            conn.execute(
+                                "SELECT COUNT(*) as cnt FROM coins WHERE "
+                                "wallet_type='cat' AND asset_id=?",
+                                (aid,),
+                            ).fetchone()["cnt"]
+                        )
+                        or 0
+                    )
+            else:
+                summary["coins_cleared"] = int(
+                    (conn.execute("SELECT COUNT(*) as cnt FROM coins").fetchone()["cnt"])
+                    or 0
+                )
 
         if not preserve_history:
-            conn.execute("DELETE FROM fills")
-            if has_round_trips:
-                conn.execute("DELETE FROM round_trips")
+            if aid:
+                conn.execute("DELETE FROM fills WHERE cat_asset_id=?", (aid,))
+                if has_round_trips:
+                    try:
+                        conn.execute(
+                            "DELETE FROM round_trips WHERE cat_asset_id=?", (aid,)
+                        )
+                    except Exception:
+                        pass
+            else:
+                conn.execute("DELETE FROM fills")
+                if has_round_trips:
+                    conn.execute("DELETE FROM round_trips")
         if clear_coins:
-            conn.execute("DELETE FROM coins")
+            if aid:
+                try:
+                    conn.execute(
+                        "DELETE FROM coins WHERE "
+                        "(wallet_type='cat' AND asset_id=?) OR "
+                        "(wallet_type='xch' AND ("
+                        "owner_asset_id=? OR owner_asset_id IS NULL "
+                        "OR owner_asset_id=''))",
+                        (aid, aid),
+                    )
+                except Exception:
+                    # owner_asset_id column may not exist yet on very old DBs
+                    # mid-migration — fall back to CAT-only scoped delete.
+                    conn.execute(
+                        "DELETE FROM coins WHERE wallet_type='cat' AND asset_id=?",
+                        (aid,),
+                    )
+            else:
+                conn.execute("DELETE FROM coins")
         if cancel_open_offers:
-            cursor = conn.execute(
-                "UPDATE offers SET status='cancelled' WHERE status='open'"
-            )
+            if aid:
+                cursor = conn.execute(
+                    "UPDATE offers SET status='cancelled' "
+                    "WHERE status='open' AND cat_asset_id=?",
+                    (aid,),
+                )
+            else:
+                cursor = conn.execute(
+                    "UPDATE offers SET status='cancelled' WHERE status='open'"
+                )
             summary["open_offers_cancelled"] = int(cursor.rowcount or 0)
         if clear_price_history:
             try:

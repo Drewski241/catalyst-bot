@@ -36,6 +36,12 @@ class _FlaskBase(unittest.TestCase):
         self.token = api_server._LOCAL_API_TOKEN
         self.auth = {"X-Bot-Local-Token": self.token}
         api_server._rate_limit_log.clear()
+        try:
+            import prep_queue
+
+            prep_queue._QUEUE = None
+        except Exception:
+            pass
 
     def tearDown(self):
         api_server._rate_limit_log.clear()
@@ -43,7 +49,14 @@ class _FlaskBase(unittest.TestCase):
         api_server._coin_prep_state["complete"] = False
         api_server._coin_prep_state["error"] = None
         api_server._coin_prep_state["phase"] = "idle"
+        api_server._coin_prep_state["asset_id"] = None
         api_server._coin_prep_proc = None
+        try:
+            import prep_queue
+
+            prep_queue._QUEUE = None
+        except Exception:
+            pass
 
     def _post(self, path, body=None, auth=True):
         headers = dict(self.auth) if auth else {}
