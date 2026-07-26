@@ -1774,7 +1774,8 @@ def _api_coin_prep_trigger_locked(params: dict = None):
 
                 env = _coin_prep_worker_environment()
                 # Multi-pair: stamp the pair identity into the worker env so
-                # CAT RPCs / writes don't follow a stale focus CAT.
+                # CAT RPCs / writes don't follow a stale focus CAT, and so
+                # selective XCH reshape can protect foreign-owned UTXOs.
                 if _prep_asset_id:
                     env["CAT_ASSET_ID"] = _prep_asset_id
                     try:
@@ -1799,6 +1800,18 @@ def _api_coin_prep_trigger_locked(params: dict = None):
                             "warning",
                             "coin_prep_pair_env",
                             f"Could not stamp pair env for prep: {_env_pair_err}",
+                        )
+                    try:
+                        from pair_store import get_xch_budget_mojos
+
+                        _budget = int(get_xch_budget_mojos(_prep_asset_id) or 0)
+                        if _budget > 0:
+                            env["XCH_BUDGET_MOJOS"] = str(_budget)
+                    except Exception as _budget_err:
+                        log_event(
+                            "warning",
+                            "coin_prep_budget_env",
+                            f"Could not stamp XCH budget for prep: {_budget_err}",
                         )
 
                 # Build CLI args from LIVE config so the worker uses the

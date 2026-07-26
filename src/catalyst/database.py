@@ -3072,6 +3072,49 @@ def get_foreign_owned_xch_coin_ids(owner_asset_id: Optional[str] = None) -> set:
     return {cid for cid, oid in owners.items() if oid != owner}
 
 
+def get_shared_pool_xch_coin_ids() -> set:
+    """Unowned fee/sniper/reserve XCH coin IDs (shared pools).
+
+    These must survive multi-pair prep reshape so every pair keeps a
+    usable fee/sniper inventory. Trading-tier coins are not included.
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT coin_id FROM coins "
+            "WHERE wallet_type='xch' AND status='free' "
+            "AND (owner_asset_id IS NULL OR owner_asset_id='') "
+            "AND lower(coalesce(assigned_tier, '')) IN "
+            "('fees', 'fee', 'sniper', 'reserve')"
+        ).fetchall()
+    except Exception:
+        return set()
+    return {norm_coin_id(row["coin_id"]) for row in rows if row["coin_id"]}
+
+
+def get_xch_coins_protected_from_prep(
+    owner_asset_id: Optional[str] = None,
+) -> set:
+    """XCH coin IDs that selective prep must not melt.
+
+    When ``owner_asset_id`` is a valid 64-hex pair id, returns the union of:
+      - coins owned by a *different* pair
+      - unowned shared-pool tiers (fees / sniper / reserve)
+
+    When owner is missing (legacy single-pair), returns an empty set so
+    prep keeps its historical full-wallet melt behaviour.
+    """
+    owner = (
+        str(owner_asset_id or "")
+        .strip()
+        .lower()
+        .replace("0x", "")
+    )
+    if len(owner) != 64:
+        return set()
+    return get_foreign_owned_xch_coin_ids(owner) | get_shared_pool_xch_coin_ids()
+
+
 def summarize_xch_ownership() -> Dict[str, Any]:
     """Aggregate free XCH ownership for the pairs overview / diagnostics."""
     conn = get_connection()

@@ -227,6 +227,40 @@ class TestXchOwnership(unittest.TestCase):
         self.assertEqual(summary["pairs"][_ASSET_A]["mojos"], 3_000_000_000_000)
         self.assertEqual(summary["shared"]["fees_coins"], 1)
 
+    def test_protected_from_prep_includes_foreign_and_shared_pools(self):
+        _db.upsert_coin(
+            "owned-a",
+            "xch",
+            1_000_000_000_000,
+            designation="tier_spare",
+            assigned_tier="inner",
+        )
+        _db.upsert_coin(
+            "unowned-trade",
+            "xch",
+            2_000_000_000_000,
+            designation="tier_spare",
+            assigned_tier="mid",
+        )
+        _db.upsert_coin(
+            "fee-shared",
+            "xch",
+            50_000_000,
+            designation="tier_spare",
+            assigned_tier="fees",
+        )
+        _db.claim_xch_ownership_for_pair(_ASSET_A, max_mojos=1_000_000_000_000)
+
+        # Legacy / no owner → no protection (full melt allowed)
+        self.assertEqual(_db.get_xch_coins_protected_from_prep(None), set())
+
+        # Pair B prep must protect A's owned coin + shared fee coin, but not
+        # the still-unowned trading coin.
+        protected = _db.get_xch_coins_protected_from_prep(_ASSET_B)
+        self.assertIn(_db.norm_coin_id("owned-a"), protected)
+        self.assertIn(_db.norm_coin_id("fee-shared"), protected)
+        self.assertNotIn(_db.norm_coin_id("unowned-trade"), protected)
+
     def test_scoped_reset_preserves_other_pair_cat_coins(self):
         _db.upsert_coin("cat-a", "cat", 1000, asset_id=_ASSET_A)
         _db.upsert_coin("cat-b", "cat", 2000, asset_id=_ASSET_B)
