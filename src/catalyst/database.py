@@ -24,7 +24,7 @@ import threading
 import time
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
-from typing import Optional, List, Dict
+from typing import Any, Optional, List, Dict
 
 
 # ---------------------------------------------------------------------------
