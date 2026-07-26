@@ -118,27 +118,114 @@ class TestXchOwnership(unittest.TestCase):
             pass
 
     def test_assign_and_filter_free_xch(self):
-        _db.upsert_coin("coin-a", "xch", 1_000_000_000_000, asset_id="xch")
-        _db.upsert_coin("coin-b", "xch", 2_000_000_000_000, asset_id="xch")
+        # Only trading-tier XCH is claimable; fees/sniper stay shared.
+        _db.upsert_coin(
+            "coin-a",
+            "xch",
+            1_000_000_000_000,
+            asset_id="xch",
+            designation="tier_spare",
+            assigned_tier="inner",
+        )
+        _db.upsert_coin(
+            "coin-b",
+            "xch",
+            2_000_000_000_000,
+            asset_id="xch",
+            designation="tier_spare",
+            assigned_tier="mid",
+        )
+        _db.upsert_coin(
+            "coin-fee",
+            "xch",
+            50_000_000,
+            asset_id="xch",
+            designation="tier_spare",
+            assigned_tier="fees",
+        )
         tagged = _db.assign_xch_owner_to_free_coins(_ASSET_A)
         self.assertEqual(tagged, 2)
 
-        # Insert an unowned coin after tagging
-        _db.upsert_coin("coin-c", "xch", 3_000_000_000_000, asset_id="xch")
+        # Insert an unowned trading coin after tagging
+        _db.upsert_coin(
+            "coin-c",
+            "xch",
+            3_000_000_000_000,
+            asset_id="xch",
+            designation="tier_spare",
+            assigned_tier="outer",
+        )
 
         def _ids(rows):
             return {_db.norm_coin_id(c["coin_id"]) for c in rows}
 
-        # Pair A sees owned + unowned
+        # Pair A sees owned + unowned (including shared fee coin)
         free_a = _db.get_free_coins("xch", owner_asset_id=_ASSET_A)
         self.assertEqual(
             _ids(free_a),
-            {_db.norm_coin_id(x) for x in ("coin-a", "coin-b", "coin-c")},
+            {_db.norm_coin_id(x) for x in ("coin-a", "coin-b", "coin-c", "coin-fee")},
         )
 
         # Pair B only sees unowned (not A's coins)
         free_b = _db.get_free_coins("xch", owner_asset_id=_ASSET_B)
-        self.assertEqual(_ids(free_b), {_db.norm_coin_id("coin-c")})
+        self.assertEqual(
+            _ids(free_b),
+            {_db.norm_coin_id(x) for x in ("coin-c", "coin-fee")},
+        )
+
+        foreign = _db.get_foreign_owned_xch_coin_ids(_ASSET_B)
+        self.assertEqual(
+            foreign,
+            {_db.norm_coin_id(x) for x in ("coin-a", "coin-b")},
+        )
+
+    def test_claim_respects_budget_and_skips_shared_tiers(self):
+        _db.upsert_coin(
+            "big",
+            "xch",
+            5_000_000_000_000,
+            designation="tier_spare",
+            assigned_tier="inner",
+        )
+        _db.upsert_coin(
+            "mid",
+            "xch",
+            2_000_000_000_000,
+            designation="tier_spare",
+            assigned_tier="mid",
+        )
+        _db.upsert_coin(
+            "small",
+            "xch",
+            1_000_000_000_000,
+            designation="tier_spare",
+            assigned_tier="outer",
+        )
+        _db.upsert_coin(
+            "fee",
+            "xch",
+            50_000_000,
+            designation="tier_spare",
+            assigned_tier="fees",
+        )
+        # Budget fits mid+small (3 XCH) but not mid+small+big.
+        claim = _db.claim_xch_ownership_for_pair(
+            _ASSET_A, max_mojos=3_000_000_000_000
+        )
+        self.assertEqual(claim["claimed_coins"], 2)
+        self.assertEqual(claim["claimed_mojos"], 3_000_000_000_000)
+        self.assertGreaterEqual(claim["skipped_budget"], 1)
+        self.assertGreaterEqual(claim["skipped_shared"], 1)
+
+        owners = _db.get_xch_coin_owners()
+        self.assertEqual(owners[_db.norm_coin_id("mid")], _ASSET_A)
+        self.assertEqual(owners[_db.norm_coin_id("small")], _ASSET_A)
+        self.assertNotIn(_db.norm_coin_id("big"), owners)
+        self.assertNotIn(_db.norm_coin_id("fee"), owners)
+
+        summary = _db.summarize_xch_ownership()
+        self.assertEqual(summary["pairs"][_ASSET_A]["mojos"], 3_000_000_000_000)
+        self.assertEqual(summary["shared"]["fees_coins"], 1)
 
     def test_scoped_reset_preserves_other_pair_cat_coins(self):
         _db.upsert_coin("cat-a", "cat", 1000, asset_id=_ASSET_A)

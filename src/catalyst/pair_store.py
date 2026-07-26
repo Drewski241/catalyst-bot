@@ -872,6 +872,29 @@ def build_pairs_overview(
     except Exception:
         ledger_snap = {}
 
+    # Physical XCH ownership (prep-claimed trading UTXOs) — complements the
+    # soft ledger budget which tracks open-buy exposure.
+    xch_ownership: Dict[str, Any] = {}
+    try:
+        from database import summarize_xch_ownership
+
+        xch_ownership = summarize_xch_ownership() or {}
+        owned_pairs = xch_ownership.get("pairs") or {}
+        for pair in pairs:
+            aid = pair.get("asset_id")
+            bucket = owned_pairs.get(aid) or {}
+            owned_mojos = int(bucket.get("mojos") or 0)
+            pair["xch_owned_mojos"] = owned_mojos
+            pair["xch_owned"] = owned_mojos / 1e12
+            pair["xch_owned_coins"] = int(bucket.get("coins") or 0)
+    except Exception as exc:
+        slog("PAIR_STORE", f"XCH ownership summary unavailable: {exc}", level="warning")
+        xch_ownership = {}
+        for pair in pairs:
+            pair.setdefault("xch_owned_mojos", 0)
+            pair.setdefault("xch_owned", 0.0)
+            pair.setdefault("xch_owned_coins", 0)
+
     return {
         "success": True,
         "focus_asset_id": focus or None,
@@ -880,4 +903,5 @@ def build_pairs_overview(
         "pnl": aggregate_pnl,
         "max_concurrent_pairs": 4,
         "xch_ledger": ledger_snap,
+        "xch_ownership": xch_ownership,
     }

@@ -2264,24 +2264,39 @@ def _api_coin_prep_trigger_locked(params: dict = None):
                     pass
                 api_server._coin_prep_state["running"] = False
                 api_server._coin_prep_proc = None  # Clear global ref — worker is done
-                # Tag free XCH coins as owned by this pair so other pairs
-                # prefer their own (or unowned) inventory.
+                # Claim free trading-tier XCH for this pair (budget-capped).
+                # Fees / sniper / reserve stay unowned (shared pools).
                 if prep_succeeded and _prep_asset_id:
                     try:
-                        from database import assign_xch_owner_to_free_coins
+                        from database import claim_xch_ownership_for_pair
+                        from pair_store import get_xch_budget_mojos
 
-                        _tagged = assign_xch_owner_to_free_coins(_prep_asset_id)
+                        _budget = int(get_xch_budget_mojos(_prep_asset_id) or 0)
+                        # Budget > 0 → hard cap. Unset (0) → claim all unowned
+                        # trading tiers (single-pair / legacy).
+                        _claim = claim_xch_ownership_for_pair(
+                            _prep_asset_id,
+                            max_mojos=_budget if _budget > 0 else None,
+                        )
+                        _n = int(_claim.get("claimed_coins") or 0)
+                        _mojos = int(_claim.get("claimed_mojos") or 0)
                         log_event(
                             "info",
                             "coin_prep_xch_owned",
-                            f"Tagged {_tagged} free XCH coins as owned by "
-                            f"{_prep_asset_id[:12]}...",
+                            f"Claimed {_n} XCH coin(s) / {_mojos / 1e12:.4f} XCH "
+                            f"for {_prep_asset_id[:12]}..."
+                            + (
+                                f" (budget {_budget / 1e12:.4f} XCH)"
+                                if _budget > 0
+                                else ""
+                            ),
+                            data=_claim,
                         )
                     except Exception as _own_err:
                         log_event(
                             "warning",
                             "coin_prep_xch_own_failed",
-                            f"XCH ownership tagging skipped: {_own_err}",
+                            f"XCH ownership claim skipped: {_own_err}",
                         )
                 # CRITICAL: Ungate coin managers so trading can resume after
                 # the operator restarts pairs. If another pair is queued,

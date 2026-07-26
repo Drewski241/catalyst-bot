@@ -313,6 +313,52 @@ class TestOpenOfferCountsAndPairsApi(unittest.TestCase):
         )
         self.assertEqual(payload["pnl"]["round_trips"], 2)
 
+    def test_pairs_overview_includes_xch_ownership(self):
+        pair_store.upsert_pair_identity(
+            _ASSET_A, name="Alpha", ticker_id="AAA", decimals=3
+        )
+        pair_store.set_xch_budget_mojos(_ASSET_A, 10_000_000_000_000)
+        _db.upsert_coin(
+            "owned-a",
+            "xch",
+            2_000_000_000_000,
+            designation="tier_spare",
+            assigned_tier="inner",
+        )
+        _db.upsert_coin(
+            "fee-shared",
+            "xch",
+            50_000_000,
+            designation="tier_spare",
+            assigned_tier="fees",
+        )
+        claim = _db.claim_xch_ownership_for_pair(
+            _ASSET_A, max_mojos=10_000_000_000_000
+        )
+        self.assertEqual(claim["claimed_coins"], 1)
+
+        with (
+            patch("wallet.get_wallets", return_value={"success": True, "wallets": []}),
+            patch(
+                "wallet.get_wallet_balance",
+                return_value={
+                    "success": True,
+                    "wallet_balance": {
+                        "spendable_balance": 1_000_000_000_000,
+                        "confirmed_wallet_balance": 1_000_000_000_000,
+                    },
+                },
+            ),
+        ):
+            payload = pair_store.build_pairs_overview(focus_asset_id=_ASSET_A)
+
+        self.assertIn("xch_ownership", payload)
+        alpha = next(p for p in payload["pairs"] if p["asset_id"] == _ASSET_A)
+        self.assertEqual(alpha["xch_owned_mojos"], 2_000_000_000_000)
+        self.assertAlmostEqual(alpha["xch_owned"], 2.0)
+        self.assertEqual(alpha["xch_owned_coins"], 1)
+        self.assertEqual(payload["xch_ownership"]["shared"]["fees_coins"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2412,11 +2412,26 @@ class CoinManager:
             # Track reserve IDs for this wallet
             reserve_ids = set()
             skipped_no_id = 0
+            # Multi-pair: skip XCH UTXOs owned by another pair so they do not
+            # enter this pair's trading buckets / topup targets.
+            foreign_xch_ids = set()
+            if wallet_type == "xch" and _owner:
+                try:
+                    from database import get_foreign_owned_xch_coin_ids
+
+                    foreign_xch_ids = {
+                        str(cid).strip().lower()
+                        for cid in get_foreign_owned_xch_coin_ids(_owner)
+                    }
+                except Exception:
+                    foreign_xch_ids = set()
 
             for rec in records:
                 cid = _coin_id_from_record(rec)
                 if not cid:
                     skipped_no_id += 1
+                    continue
+                if cid.lower() in foreign_xch_ids:
                     continue
                 amt = _coin_amount(rec)
 

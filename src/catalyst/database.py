@@ -2906,11 +2906,27 @@ def get_free_coins(
     return [dict(row) for row in rows]
 
 
-def assign_xch_owner_to_free_coins(owner_asset_id: str) -> int:
-    """Tag free unowned XCH coins as owned by ``owner_asset_id``.
+# Shared-pool XCH tiers must stay unowned so every pair (and FeeCoinPool)
+# can use them. Trading ladder tiers are claimable against a pair budget.
+_SHARED_XCH_TIERS = frozenset({"fees", "fee", "sniper", "reserve", "dust", "none", ""})
+_CLAIMABLE_XCH_TIERS = frozenset({"inner", "mid", "outer", "extreme"})
 
-    Used after a successful pair-scoped coin prep so other pairs prefer
-    their own inventory. Returns number of rows updated.
+
+def claim_xch_ownership_for_pair(
+    owner_asset_id: str,
+    *,
+    max_mojos: Optional[int] = None,
+    clear_existing: bool = True,
+) -> Dict[str, Any]:
+    """Claim unowned trading-tier XCH for a pair (budget-aware).
+
+    - Never overwrites another pair's ``owner_asset_id``.
+    - Leaves fees / sniper / reserve / dust unowned (shared pools).
+    - Caps claimed Σ amount at ``max_mojos`` when provided (>0).
+    - Optionally clears this pair's prior trading-tier claims first so a
+      re-prep reallocates cleanly under the current budget.
+
+    Returns a summary dict (``claimed_coins``, ``claimed_mojos``, …).
     """
     owner = (
         str(owner_asset_id or "")
@@ -2918,18 +2934,74 @@ def assign_xch_owner_to_free_coins(owner_asset_id: str) -> int:
         .lower()
         .replace("0x", "")
     )
+    summary: Dict[str, Any] = {
+        "owner_asset_id": owner or None,
+        "claimed_coins": 0,
+        "claimed_mojos": 0,
+        "skipped_shared": 0,
+        "skipped_budget": 0,
+        "cleared_coins": 0,
+        "max_mojos": int(max_mojos) if max_mojos is not None else None,
+    }
     if len(owner) != 64:
-        return 0
+        return summary
+
     conn = get_connection()
     try:
-        cur = conn.execute(
-            "UPDATE coins SET owner_asset_id=? "
+        if clear_existing:
+            # Release only this pair's previous trading claims (keep shared).
+            cur = conn.execute(
+                "UPDATE coins SET owner_asset_id=NULL "
+                "WHERE wallet_type='xch' AND owner_asset_id=? "
+                "AND lower(coalesce(assigned_tier, '')) IN "
+                "('inner','mid','outer','extreme')",
+                (owner,),
+            )
+            summary["cleared_coins"] = int(cur.rowcount or 0)
+
+        rows = conn.execute(
+            "SELECT coin_id, amount_mojos, assigned_tier, designation "
+            "FROM coins "
             "WHERE status='free' AND wallet_type='xch' "
-            "AND (owner_asset_id IS NULL OR owner_asset_id='')",
-            (owner,),
-        )
+            "AND (owner_asset_id IS NULL OR owner_asset_id='') "
+            "ORDER BY amount_mojos DESC, coin_id ASC"
+        ).fetchall()
+
+        cap = int(max_mojos) if max_mojos is not None and int(max_mojos) > 0 else None
+        claimed_mojos = 0
+        claimed_ids: List[str] = []
+        skipped_shared = 0
+        skipped_budget = 0
+
+        for row in rows:
+            tier = str(row["assigned_tier"] or "").strip().lower()
+            if tier in _SHARED_XCH_TIERS or tier not in _CLAIMABLE_XCH_TIERS:
+                skipped_shared += 1
+                continue
+            amt = int(row["amount_mojos"] or 0)
+            if amt <= 0:
+                continue
+            if cap is not None and claimed_mojos + amt > cap:
+                skipped_budget += 1
+                continue
+            claimed_ids.append(str(row["coin_id"]))
+            claimed_mojos += amt
+
+        if claimed_ids:
+            placeholders = ",".join("?" for _ in claimed_ids)
+            conn.execute(
+                f"UPDATE coins SET owner_asset_id=? "
+                f"WHERE coin_id IN ({placeholders}) "
+                f"AND (owner_asset_id IS NULL OR owner_asset_id='')",
+                [owner, *claimed_ids],
+            )
+
         conn.commit()
-        return int(cur.rowcount or 0)
+        summary["claimed_coins"] = len(claimed_ids)
+        summary["claimed_mojos"] = claimed_mojos
+        summary["skipped_shared"] = skipped_shared
+        summary["skipped_budget"] = skipped_budget
+        return summary
     except Exception as exc:
         try:
             conn.rollback()
@@ -2937,10 +3009,126 @@ def assign_xch_owner_to_free_coins(owner_asset_id: str) -> int:
             pass
         log_event(
             "warning",
-            "assign_xch_owner_failed",
-            f"Could not assign XCH owner {owner[:12]}...: {exc}",
+            "claim_xch_owner_failed",
+            f"Could not claim XCH for {owner[:12]}...: {exc}",
         )
-        return 0
+        return summary
+
+
+def assign_xch_owner_to_free_coins(
+    owner_asset_id: str, max_mojos: Optional[int] = None
+) -> int:
+    """Tag free trading-tier XCH coins as owned by ``owner_asset_id``.
+
+    Budget-aware wrapper around :func:`claim_xch_ownership_for_pair`.
+    Returns number of coins claimed. Shared fee/sniper/reserve coins are
+    never tagged.
+    """
+    result = claim_xch_ownership_for_pair(
+        owner_asset_id, max_mojos=max_mojos, clear_existing=True
+    )
+    return int(result.get("claimed_coins") or 0)
+
+
+def get_xch_coin_owners() -> Dict[str, str]:
+    """Return ``{norm_coin_id: owner_asset_id}`` for owned free XCH coins."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT coin_id, owner_asset_id FROM coins "
+            "WHERE wallet_type='xch' "
+            "AND owner_asset_id IS NOT NULL AND owner_asset_id != ''"
+        ).fetchall()
+    except Exception:
+        return {}
+    out: Dict[str, str] = {}
+    for row in rows:
+        cid = norm_coin_id(row["coin_id"])
+        owner = (
+            str(row["owner_asset_id"] or "")
+            .strip()
+            .lower()
+            .replace("0x", "")
+        )
+        if cid and len(owner) == 64:
+            out[cid] = owner
+    return out
+
+
+def get_foreign_owned_xch_coin_ids(owner_asset_id: Optional[str] = None) -> set:
+    """Coin IDs owned by a *different* pair than ``owner_asset_id``.
+
+    When ``owner_asset_id`` is empty, returns every owned XCH coin id.
+    """
+    owner = (
+        str(owner_asset_id or "")
+        .strip()
+        .lower()
+        .replace("0x", "")
+    )
+    owners = get_xch_coin_owners()
+    if len(owner) != 64:
+        return set(owners.keys())
+    return {cid for cid, oid in owners.items() if oid != owner}
+
+
+def summarize_xch_ownership() -> Dict[str, Any]:
+    """Aggregate free XCH ownership for the pairs overview / diagnostics."""
+    conn = get_connection()
+    result: Dict[str, Any] = {
+        "shared": {
+            "coins": 0,
+            "mojos": 0,
+            "fees_coins": 0,
+            "sniper_coins": 0,
+            "reserve_coins": 0,
+            "other_coins": 0,
+        },
+        "pairs": {},
+        "total_owned_mojos": 0,
+        "total_owned_coins": 0,
+    }
+    try:
+        rows = conn.execute(
+            "SELECT owner_asset_id, assigned_tier, amount_mojos "
+            "FROM coins WHERE status='free' AND wallet_type='xch'"
+        ).fetchall()
+    except Exception:
+        return result
+
+    for row in rows:
+        owner = (
+            str(row["owner_asset_id"] or "")
+            .strip()
+            .lower()
+            .replace("0x", "")
+        )
+        tier = str(row["assigned_tier"] or "").strip().lower()
+        amt = int(row["amount_mojos"] or 0)
+        if len(owner) == 64:
+            bucket = result["pairs"].setdefault(
+                owner, {"coins": 0, "mojos": 0, "tiers": {}}
+            )
+            bucket["coins"] += 1
+            bucket["mojos"] += amt
+            bucket["tiers"][tier or "unknown"] = (
+                int(bucket["tiers"].get(tier or "unknown", 0)) + 1
+            )
+            result["total_owned_coins"] += 1
+            result["total_owned_mojos"] += amt
+        else:
+            shared = result["shared"]
+            shared["coins"] += 1
+            shared["mojos"] += amt
+            if tier in ("fees", "fee"):
+                shared["fees_coins"] += 1
+            elif tier == "sniper":
+                shared["sniper_coins"] += 1
+            elif tier == "reserve":
+                shared["reserve_coins"] += 1
+            else:
+                shared["other_coins"] += 1
+    return result
 
 
 def count_open_offers_by_cat() -> Dict[str, Dict[str, int]]:
