@@ -785,6 +785,73 @@ def build_pairs_overview(
             }
         )
 
+    # Session-scoped realised P&L per pair + aggregate (Phase 4).
+    # Uses the same get_stats path as the dashboard / focus PnL tab so the
+    # numbers share RUN_HISTORY_CUTOFF and economic-fill filtering.
+    since = None
+    try:
+        import api_server as _api
+
+        since = _api._get_run_history_cutoff() or None
+    except Exception:
+        since = None
+
+    aggregate_pnl = {
+        "realised_pnl_xch": "0",
+        "round_trips": 0,
+        "total_fills": 0,
+        "since": since,
+    }
+    try:
+        from database import get_stats
+        from decimal import Decimal as _Dec
+
+        listed_pnl = _Dec("0")
+        listed_trips = 0
+        listed_fills = 0
+        for pair in pairs:
+            aid = pair.get("asset_id")
+            try:
+                stats = get_stats(aid, since=since) or {}
+            except Exception:
+                stats = {}
+            realised = str(stats.get("realised_pnl_xch") or "0")
+            trips = int(stats.get("round_trips") or 0)
+            fills = int(stats.get("total_fills") or 0)
+            pair["realised_pnl_xch"] = realised
+            pair["round_trips"] = trips
+            pair["total_fills"] = fills
+            try:
+                listed_pnl += _Dec(str(realised))
+            except Exception:
+                pass
+            listed_trips += trips
+            listed_fills += fills
+
+        # Prefer summing listed pairs (what the panel shows). Fall back to an
+        # all-fills aggregate when no pairs are listed yet.
+        if pairs:
+            aggregate_pnl = {
+                "realised_pnl_xch": str(listed_pnl),
+                "round_trips": listed_trips,
+                "total_fills": listed_fills,
+                "since": since,
+            }
+        else:
+            all_stats = get_stats(None, since=since) or {}
+            aggregate_pnl = {
+                "realised_pnl_xch": str(all_stats.get("realised_pnl_xch") or "0"),
+                "round_trips": int(all_stats.get("round_trips") or 0),
+                "total_fills": int(all_stats.get("total_fills") or 0),
+                "since": since,
+            }
+    except Exception as exc:
+        slog("PAIR_STORE", f"pair PnL aggregate unavailable: {exc}", level="warning")
+        for pair in pairs:
+            pair.setdefault("realised_pnl_xch", "0")
+            pair.setdefault("round_trips", 0)
+            pair.setdefault("total_fills", 0)
+
     # Running first, then focus, then profiles with offers, then name.
     def _sort_key(p: Dict[str, Any]):
         return (
@@ -810,6 +877,7 @@ def build_pairs_overview(
         "focus_asset_id": focus or None,
         "xch": xch_balances,
         "pairs": pairs,
+        "pnl": aggregate_pnl,
         "max_concurrent_pairs": 4,
         "xch_ledger": ledger_snap,
     }

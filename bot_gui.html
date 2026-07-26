@@ -5117,7 +5117,7 @@
         }
         .pairs-overview-row {
             display: grid;
-            grid-template-columns: minmax(140px, 1.3fr) minmax(120px, 1fr) minmax(110px, 0.9fr) auto;
+            grid-template-columns: minmax(140px, 1.3fr) minmax(120px, 1fr) minmax(100px, 0.9fr) minmax(90px, 0.8fr) auto;
             gap: 10px;
             align-items: center;
             padding: 10px 14px;
@@ -5127,6 +5127,9 @@
             color: inherit;
             width: 100%;
         }
+        .pairs-overview-pnl.positive { color: var(--status-success); }
+        .pairs-overview-pnl.negative { color: var(--sell-color); }
+        .pairs-overview-pnl.neutral { color: var(--text-secondary); }
         .pairs-overview-row:last-child { border-bottom: none; }
         .pairs-overview-row:hover { background: rgba(255,255,255,0.03); }
         .pairs-overview-row.is-focus {
@@ -5192,13 +5195,14 @@
                 grid-template-columns: 1fr 1fr;
                 grid-template-areas:
                     "name name"
-                    "bal offers"
-                    "note note";
+                    "bal budget"
+                    "pnl actions";
             }
             .pairs-overview-name { grid-area: name; }
             .pairs-overview-row .pairs-overview-metric:nth-of-type(1) { grid-area: bal; }
-            .pairs-overview-row .pairs-overview-metric:nth-of-type(2) { grid-area: offers; }
-            .pairs-overview-note { grid-area: note; white-space: normal; }
+            .pairs-overview-row .pairs-overview-metric:nth-of-type(2) { grid-area: budget; }
+            .pairs-overview-row .pairs-overview-metric:nth-of-type(3) { grid-area: pnl; }
+            .pairs-overview-actions { grid-area: actions; justify-content: flex-start; }
         }
         .la-header {
             display: flex;
@@ -23465,6 +23469,12 @@
             return n.toLocaleString(undefined, { maximumFractionDigits: digits });
         }
 
+        function _pairsOverviewPnlClass(value) {
+            const n = Number(value);
+            if (!Number.isFinite(n) || n === 0) return 'neutral';
+            return n > 0 ? 'positive' : 'negative';
+        }
+
         function renderPairsOverview(payload) {
             const panel = document.getElementById('pairsOverviewPanel');
             const list = document.getElementById('pairsOverviewList');
@@ -23474,11 +23484,15 @@
             const pairs = Array.isArray(payload?.pairs) ? payload.pairs : [];
             const maxPairs = Number(payload?.max_concurrent_pairs || 4);
             const xchSpendable = payload?.xch?.spendable;
+            const aggPnl = payload?.pnl?.realised_pnl_xch;
+            const aggPnlBit = (aggPnl != null && typeof formatPnlXch === 'function')
+                ? ` · ${formatPnlXch(aggPnl)} XCH PnL`
+                : '';
             if (meta) {
                 const xchBit = Number.isFinite(Number(xchSpendable))
                     ? ` · ${_fmtPairAmount(xchSpendable, 4)} XCH spendable`
                     : '';
-                meta.textContent = `Up to ${maxPairs} pairs · focus one to configure${xchBit}`;
+                meta.textContent = `Up to ${maxPairs} pairs · focus one to configure${xchBit}${aggPnlBit}`;
             }
 
             if (!pairs.length) {
@@ -23503,6 +23517,12 @@
                 const budgetLabel = budget > 0
                     ? `${_fmtPairAmount(remaining, 4)} / ${_fmtPairAmount(budget, 4)} XCH`
                     : 'No XCH budget';
+                const pnlRaw = pair.realised_pnl_xch;
+                const pnlText = (typeof formatPnlXch === 'function')
+                    ? formatPnlXch(pnlRaw)
+                    : String(pnlRaw ?? '0');
+                const pnlClass = _pairsOverviewPnlClass(pnlRaw);
+                const trips = Number(pair.round_trips || 0);
                 const assetAttr = escapeHtml(pair.asset_id || '');
                 const startStopBtn = running
                     ? `<button type="button" class="btn btn-secondary pairs-overview-action" data-action="stop" data-asset-id="${assetAttr}">Stop</button>`
@@ -23518,6 +23538,7 @@
                     `${running ? '<span class="pairs-overview-badge">Running</span>' : ''}</div>` +
                     `<div class="pairs-overview-metric"><strong>${bal}</strong> CAT · <strong>${buys}</strong>/<strong>${sells}</strong> offers</div>` +
                     `<div class="pairs-overview-metric" title="Remaining / allocated XCH budget for this pair">${escapeHtml(budgetLabel)}</div>` +
+                    `<div class="pairs-overview-metric pairs-overview-pnl ${pnlClass}" title="Session realised PnL · ${trips} round trip${trips === 1 ? '' : 's'}"><strong>${escapeHtml(pnlText)}</strong> XCH</div>` +
                     `<div class="pairs-overview-actions">${budgetBtn}${focusBtn}${startStopBtn}</div>` +
                     `</div>`
                 );
@@ -23537,9 +23558,10 @@
             });
             if (meta) {
                 const runningCount = pairs.filter((p) => p.running).length;
-                meta.textContent = anyRunning
+                const base = anyRunning
                     ? `${runningCount} running · up to ${Number(payload?.max_concurrent_pairs || 4)} · shared XCH budgets`
                     : `Up to ${Number(payload?.max_concurrent_pairs || 4)} pairs · set XCH budget, then Start`;
+                meta.textContent = base + aggPnlBit;
             }
         }
 

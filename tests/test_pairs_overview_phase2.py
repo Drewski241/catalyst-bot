@@ -254,6 +254,65 @@ class TestOpenOfferCountsAndPairsApi(unittest.TestCase):
         self.assertFalse(beta["is_focus"])
         self.assertAlmostEqual(beta["balances"]["spendable"], 5.0)
 
+    def _seed_matched_trip(self, asset_id, buy_trade, sell_trade, pnl):
+        buy_id = _db.record_fill(
+            trade_id=buy_trade,
+            side="buy",
+            price_xch=Decimal("0.01"),
+            size_xch=Decimal("0.1"),
+            size_cat=Decimal("10"),
+            cat_asset_id=asset_id,
+        )
+        sell_id = _db.record_fill(
+            trade_id=sell_trade,
+            side="sell",
+            price_xch=Decimal("0.012"),
+            size_xch=Decimal("0.12"),
+            size_cat=Decimal("10"),
+            cat_asset_id=asset_id,
+        )
+        self.assertGreater(buy_id, 0)
+        self.assertGreater(sell_id, 0)
+        _db.match_round_trip(buy_id, sell_id, Decimal(str(pnl)))
+
+    def test_pairs_overview_includes_per_pair_and_aggregate_pnl(self):
+        pair_store.upsert_pair_identity(
+            _ASSET_A, name="Alpha", ticker_id="AAA", decimals=3
+        )
+        pair_store.upsert_pair_identity(
+            _ASSET_B, name="Beta", ticker_id="BBB", decimals=3
+        )
+        self._seed_matched_trip(_ASSET_A, "buy-a-1", "sell-a-1", "0.05")
+        self._seed_matched_trip(_ASSET_B, "buy-b-1", "sell-b-1", "0.02")
+
+        with (
+            patch("wallet.get_wallets", return_value={"success": True, "wallets": []}),
+            patch(
+                "wallet.get_wallet_balance",
+                return_value={
+                    "success": True,
+                    "wallet_balance": {
+                        "spendable_balance": 1_000_000_000_000,
+                        "confirmed_wallet_balance": 1_000_000_000_000,
+                    },
+                },
+            ),
+            patch.object(api_server, "_get_run_history_cutoff", return_value=None),
+        ):
+            payload = pair_store.build_pairs_overview(focus_asset_id=_ASSET_A)
+
+        alpha = next(p for p in payload["pairs"] if p["asset_id"] == _ASSET_A)
+        beta = next(p for p in payload["pairs"] if p["asset_id"] == _ASSET_B)
+        self.assertEqual(Decimal(str(alpha["realised_pnl_xch"])), Decimal("0.05"))
+        self.assertEqual(Decimal(str(beta["realised_pnl_xch"])), Decimal("0.02"))
+        self.assertEqual(alpha["round_trips"], 1)
+        self.assertEqual(beta["round_trips"], 1)
+        self.assertIn("pnl", payload)
+        self.assertEqual(
+            Decimal(str(payload["pnl"]["realised_pnl_xch"])), Decimal("0.07")
+        )
+        self.assertEqual(payload["pnl"]["round_trips"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

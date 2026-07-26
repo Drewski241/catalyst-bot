@@ -223,12 +223,17 @@ Also done:
 - Pair-scoped DB cleanup (CAT coins/offers for that asset; XCH owned by it or unowned).
 - Minimal XCH ownership: `coins.owner_asset_id` tagged after successful prep; free-coin selection prefers owned/unowned.
 
+Also done:
+
+- Aggregate + per-pair session realised P&amp;L on `GET /api/pairs` / Trading Pairs panel
+  (same `get_stats` + `RUN_HISTORY_CUTOFF` semantics as the focus PnL tab).
+
 Still open:
 
-- Richer aggregate P&amp;L across pairs.
 - Fuller XCH ownership planner (budget-proportional reshape; fee/sniper shared pools).
 - Raise pair limit once stable.
 - Deeper toxicity isolation polish.
+- Optional unrealised P&amp;L aggregate (needs per-pair mid + inventory).
 
 ---
 
