@@ -2687,6 +2687,65 @@ class CoinPrepWorker:
             return 1 <= reshapeable <= 2
         return reshapeable == 1
 
+    def _credit_existing_shared_xch_tiers(self) -> Dict[str, int]:
+        """Skip recreating shared fees/sniper when protected pools already exist.
+
+        Only runs under selective multi-pair reshape. Mutates
+        ``self.xch_tier_counts`` / ``self.xch_target_coins`` in place.
+        Returns ``{tier: credited_count}``.
+        """
+        if not self.tier_enabled or not self._xch_selective_reshape_enabled():
+            return {}
+        if not getattr(self, "xch_tier_counts", None):
+            return {}
+        try:
+            from database import credit_shared_xch_tier_targets
+        except Exception as exc:
+            self.log(f"   ⚠️ Shared-tier credit skipped (import): {exc}")
+            return {}
+
+        before = dict(self.xch_tier_counts)
+        try:
+            result = credit_shared_xch_tier_targets(self.xch_tier_counts) or {}
+        except Exception as exc:
+            self.log(f"   ⚠️ Shared-tier credit failed: {exc}")
+            return {}
+
+        adjusted = result.get("adjusted_counts") or {}
+        credited = {
+            k: int(v)
+            for k, v in (result.get("credited") or {}).items()
+            if int(v or 0) > 0
+        }
+        if not credited:
+            return {}
+
+        self.xch_tier_counts = {
+            str(k): int(v)
+            for k, v in adjusted.items()
+            if int(v or 0) > 0
+        }
+        # Keep legacy combined view in sync for partition helpers.
+        if getattr(self, "tier_counts", None) is not None:
+            for tier in ("fees", "sniper"):
+                if tier in before:
+                    self.tier_counts[tier] = int(self.xch_tier_counts.get(tier, 0) or 0)
+        self.xch_target_coins = sum(int(v or 0) for v in self.xch_tier_counts.values())
+        for tier, n in credited.items():
+            have = int((result.get("existing") or {}).get(tier, 0) or 0)
+            still = int(self.xch_tier_counts.get(tier, 0) or 0)
+            if still <= 0:
+                self.log(
+                    f"   ✅ Shared {tier} pool already has {have} coin(s) — "
+                    f"skipping recreate (credited {n})"
+                )
+            else:
+                self.log(
+                    f"   ✅ Shared {tier}: keeping {have} existing, "
+                    f"creating {still} more (credited {n})"
+                )
+        return credited
+
     def _mark_stale_coins_gone_for_prep(self) -> int:
         """Mark free coins gone before reshape, preserving protected XCH rows."""
         from database import get_connection
@@ -7455,6 +7514,11 @@ class CoinPrepWorker:
                         )
                 except Exception as e:
                     self.log(f"   DB: stale cleanup failed: {e}")
+
+            # Multi-pair: if shared fee/sniper pools already exist (protected
+            # from melt), credit them against this run's targets so we do not
+            # recreate a second global fee inventory.
+            self._credit_existing_shared_xch_tiers()
 
             self._set_status_coin_counts(xch_total=xch_coins, cat_total=cat_coins)
             self.update_status(

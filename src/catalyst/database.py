@@ -3092,6 +3092,72 @@ def get_shared_pool_xch_coin_ids() -> set:
     return {norm_coin_id(row["coin_id"]) for row in rows if row["coin_id"]}
 
 
+def count_shared_pool_xch_by_tier() -> Dict[str, int]:
+    """Count unowned free XCH coins in shared-pool tiers.
+
+    Normalises ``fee`` → ``fees``. Used by selective prep to credit
+    already-present fee/sniper inventory instead of recreating it.
+    """
+    conn = get_connection()
+    out: Dict[str, int] = {"fees": 0, "sniper": 0, "reserve": 0}
+    try:
+        rows = conn.execute(
+            "SELECT lower(coalesce(assigned_tier, '')) AS tier, COUNT(*) AS n "
+            "FROM coins "
+            "WHERE wallet_type='xch' AND status='free' "
+            "AND (owner_asset_id IS NULL OR owner_asset_id='') "
+            "AND lower(coalesce(assigned_tier, '')) IN "
+            "('fees', 'fee', 'sniper', 'reserve') "
+            "GROUP BY lower(coalesce(assigned_tier, ''))"
+        ).fetchall()
+    except Exception:
+        return out
+    for row in rows:
+        tier = str(row["tier"] or "").strip().lower()
+        if tier == "fee":
+            tier = "fees"
+        if tier in out:
+            out[tier] += int(row["n"] or 0)
+    return out
+
+
+def credit_shared_xch_tier_targets(
+    xch_tier_counts: Dict[str, int],
+) -> Dict[str, Any]:
+    """Reduce fees/sniper prep targets by already-present shared coins.
+
+    Returns a summary::
+        {
+          "adjusted_counts": {...},
+          "credited": {"fees": n, "sniper": n},
+          "existing": {"fees": n, "sniper": n, "reserve": n},
+        }
+    """
+    existing = count_shared_pool_xch_by_tier()
+    adjusted = {
+        str(k): int(v or 0)
+        for k, v in (xch_tier_counts or {}).items()
+    }
+    credited: Dict[str, int] = {"fees": 0, "sniper": 0}
+    for tier in ("fees", "sniper"):
+        want = int(adjusted.get(tier, 0) or 0)
+        if want <= 0:
+            continue
+        have = int(existing.get(tier, 0) or 0)
+        if have <= 0:
+            continue
+        take = min(want, have)
+        adjusted[tier] = want - take
+        credited[tier] = take
+        if adjusted[tier] <= 0:
+            adjusted.pop(tier, None)
+    return {
+        "adjusted_counts": adjusted,
+        "credited": credited,
+        "existing": existing,
+    }
+
+
 def get_xch_coins_protected_from_prep(
     owner_asset_id: Optional[str] = None,
 ) -> set:
