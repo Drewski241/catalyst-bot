@@ -84,6 +84,85 @@ class TestCoinsAssetIdSchema(unittest.TestCase):
         self.assertEqual(a_rows[0]["asset_id"], _ASSET_A)
         self.assertEqual(b_rows[0]["asset_id"], _ASSET_B)
 
+
+@unittest.skipIf(_SKIP, f"Import failed: {_SKIP}")
+class TestCoinsAssetIdUpgradeFromLegacy(unittest.TestCase):
+    """Older DBs have coins without asset_id; SCHEMA_SQL must not fail on them."""
+
+    def setUp(self):
+        self._tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self._tmp.close()
+        self._tmp_path = self._tmp.name
+        self._orig_db_path = _db.DB_PATH
+        _db.DB_PATH = self._tmp_path
+        self._orig_init_path = _db._db_initialized_path
+        _db._db_initialized_path = ""
+        if hasattr(_db._local, "conn") and _db._local.conn:
+            try:
+                _db._local.conn.close()
+            except Exception:
+                pass
+        _db._local.conn = None
+
+        # Simulate a pre-multi-pair coins table (no asset_id / owner_asset_id).
+        import sqlite3
+
+        conn = sqlite3.connect(self._tmp_path)
+        conn.executescript(
+            """
+            CREATE TABLE coins (
+                coin_id         TEXT PRIMARY KEY,
+                wallet_type     TEXT NOT NULL,
+                amount_mojos    INTEGER NOT NULL,
+                tier            TEXT,
+                status          TEXT NOT NULL DEFAULT 'free',
+                trade_id        TEXT,
+                first_seen      TEXT NOT NULL,
+                last_seen       TEXT NOT NULL,
+                designation     TEXT DEFAULT 'unknown',
+                assigned_tier   TEXT DEFAULT 'none'
+            );
+            INSERT INTO coins (
+                coin_id, wallet_type, amount_mojos, status, first_seen, last_seen
+            ) VALUES (
+                'legacy-coin-1',
+                'xch', 1000, 'free', datetime('now'), datetime('now')
+            );
+            """
+        )
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        if hasattr(_db._local, "conn") and _db._local.conn:
+            try:
+                _db._local.conn.close()
+            except Exception:
+                pass
+        _db._local.conn = None
+        _db.DB_PATH = self._orig_db_path
+        _db._db_initialized_path = self._orig_init_path
+        try:
+            os.unlink(self._tmp_path)
+        except Exception:
+            pass
+
+    def test_init_database_migrates_legacy_coins_table(self):
+        _db.init_database()
+        cols = {
+            row["name"]
+            for row in _db.get_connection()
+            .execute("PRAGMA table_info(coins)")
+            .fetchall()
+        }
+        self.assertIn("asset_id", cols)
+        self.assertIn("owner_asset_id", cols)
+        idx = _db.get_connection().execute(
+            "SELECT name FROM sqlite_master WHERE type='index' "
+            "AND name='idx_coins_wallet_asset_status'"
+        ).fetchone()
+        self.assertIsNotNone(idx)
+
     def test_xch_coins_get_xch_asset_id(self):
         _db.upsert_coin("0x" + ("44" * 32), "xch", 1_000_000_000_000)
         rows = _db.get_free_coins("xch", asset_id="xch")

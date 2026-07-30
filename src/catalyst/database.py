@@ -517,8 +517,9 @@ CREATE INDEX IF NOT EXISTS idx_events_time ON events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_coins_status ON coins(status);
 CREATE INDEX IF NOT EXISTS idx_coins_wallet ON coins(wallet_type);
 CREATE INDEX IF NOT EXISTS idx_coins_trade ON coins(trade_id);
-CREATE INDEX IF NOT EXISTS idx_coins_wallet_asset_status
-    ON coins(wallet_type, asset_id, status);
+-- NOTE: idx_coins_wallet_asset_status is created in init_database() AFTER the
+-- asset_id ADD COLUMN migration. Putting it in SCHEMA_SQL breaks upgrades of
+-- older DBs where CREATE TABLE IF NOT EXISTS is a no-op and asset_id is missing.
 
 -- Simple key-value settings table (persists across restarts)
 CREATE TABLE IF NOT EXISTS bot_settings (
