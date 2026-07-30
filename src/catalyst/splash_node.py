@@ -437,6 +437,16 @@ class SplashNode:
         stale_port = int(port_str) if port_str.isdigit() else 4000
         self._kill_stale_process(stale_port)
 
+        # Splash inherits this process's soft NOFILE limit. Raise before
+        # spawn so a P2P gossip burst does not immediately hit EMFILE when
+        # posting to --offer-hook.
+        try:
+            from api_server import raise_nofile_limit
+
+            raise_nofile_limit(8192)
+        except Exception:
+            pass
+
         # Build command line
         submit_host = getattr(cfg, "SPLASH_SUBMIT_URL", "http://localhost:4000")
         # Extract host:port from URL (e.g., "http://localhost:4000" → "127.0.0.1:4000")

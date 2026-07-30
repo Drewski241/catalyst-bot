@@ -187,14 +187,17 @@ _RATE_LIMIT_EXEMPT_WRITE_ROUTES = {
 }
 
 # Dedicated limiter for /api/splash/incoming so an unbounded webhook flood
-# cannot amplify into runaway DB writes. 200/sec per process is still
-# generous for a local webhook but prevents a pathological flood.
-_SPLASH_RATE_LIMIT = {"window_s": 1.0, "max": 200, "hits": [], "lock": threading.Lock()}
+# cannot amplify into runaway DB writes / thread+socket exhaustion.
+# Splash can gossip far faster than we need for sniper ingest; keep this
+# modest so a P2P burst cannot hit EMFILE (os error 24) on Linux.
+_SPLASH_RATE_LIMIT = {"window_s": 1.0, "max": 40, "hits": [], "lock": threading.Lock()}
+_SPLASH_RATE_LIMIT_LOG_TS = 0.0
 
 
 def _splash_incoming_rate_limited() -> bool:
     import time as _t
 
+    global _SPLASH_RATE_LIMIT_LOG_TS
     now = _t.time()
     with _SPLASH_RATE_LIMIT["lock"]:
         hits = _SPLASH_RATE_LIMIT["hits"]
@@ -203,9 +206,48 @@ def _splash_incoming_rate_limited() -> bool:
         while hits and hits[0] < cutoff:
             hits.pop(0)
         if len(hits) >= _SPLASH_RATE_LIMIT["max"]:
+            # Log at most once per 10s — Splash floods make per-hit logs useless.
+            if now - _SPLASH_RATE_LIMIT_LOG_TS >= 10.0:
+                _SPLASH_RATE_LIMIT_LOG_TS = now
+                try:
+                    from database import log_event
+
+                    log_event(
+                        "warning",
+                        "splash_incoming_rate_limited",
+                        f"Splash offer-hook rate limit "
+                        f"({_SPLASH_RATE_LIMIT['max']}/s) — dropping excess",
+                    )
+                except Exception:
+                    pass
             return True
         hits.append(now)
         return False
+
+
+def raise_nofile_limit(min_soft: int = 8192) -> None:
+    """Best-effort raise of the process soft RLIMIT_NOFILE (Linux/macOS).
+
+    Splash offer-hook bursts and threaded Flask can burn FDs quickly. Raising
+    the soft limit (up to the hard cap) reduces EMFILE flake during gossip
+    storms. No-op on Windows or when ``resource`` is unavailable.
+    """
+    try:
+        import resource
+    except ImportError:
+        return
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except Exception:
+        return
+    target = min(max(int(min_soft), soft), hard if hard > 0 else int(min_soft))
+    if target <= soft:
+        return
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+        print(f"[STARTUP] Raised RLIMIT_NOFILE soft limit {soft} -> {target}")
+    except Exception as exc:
+        print(f"[STARTUP] Could not raise RLIMIT_NOFILE ({soft}/{hard}): {exc}")
 
 
 # ---------------------------------------------------------------------------

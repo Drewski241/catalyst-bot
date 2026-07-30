@@ -737,6 +737,11 @@ def start_flask_server():
     # Import api_server - this triggers all the module imports and init
     import api_server
 
+    try:
+        api_server.raise_nofile_limit(8192)
+    except Exception:
+        pass
+
     # Initialise database
     from database import init_database
 
