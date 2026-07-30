@@ -79,6 +79,42 @@ class TestSharedAllocHelpers(unittest.TestCase):
             remain = ledger.remaining_allocatable_mojos(_ASSET_A, cfg=cfg)
             self.assertEqual(remain, 2_390_000_000_000)
 
+    def test_remaining_allocatable_clamps_to_reshapeable_inventory(self):
+        cfg = MagicMock()
+        cfg.XCH_RESERVE = Decimal("0")
+        cfg.FEE_PREP_COUNT = 0
+        cfg.FEE_COIN_SIZE_XCH = Decimal("0")
+        cfg.PORTFOLIO_MAX_XCH_EXPOSURE = Decimal("0")
+        ledger = shared_xch_ledger.ledger
+        pair_store.set_xch_budget_mojos(_ASSET_A, 0)
+        # Pair A owns 2 XCH trading; 0.5 XCH is still unowned/reshapeable for B.
+        _db.upsert_coin(
+            "owned-a",
+            "xch",
+            2_000_000_000_000,
+            designation="tier_spare",
+            assigned_tier="inner",
+        )
+        _db.upsert_coin(
+            "free-trade",
+            "xch",
+            500_000_000_000,
+            designation="tier_spare",
+            assigned_tier="mid",
+        )
+        _db.upsert_coin(
+            "fee-shared",
+            "xch",
+            50_000_000,
+            designation="tier_spare",
+            assigned_tier="fees",
+        )
+        _db.claim_xch_ownership_for_pair(_ASSET_A, max_mojos=2_000_000_000_000)
+        with patch.object(ledger, "spendable_xch_mojos", return_value=5_000_000_000_000):
+            remain = ledger.remaining_allocatable_mojos(_ASSET_B, cfg=cfg)
+        self.assertEqual(remain, 500_000_000_000)
+        self.assertEqual(_db.sum_reshapeable_xch_mojos(_ASSET_B), 500_000_000_000)
+
     def test_portfolio_cap_blocks_over_exposure(self):
         cfg = MagicMock()
         cfg.PORTFOLIO_MAX_XCH_EXPOSURE = Decimal("1.0")

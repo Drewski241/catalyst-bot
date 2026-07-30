@@ -19799,12 +19799,22 @@
                         if (shared && (shared.clamped || Number(shared.other_budgets_xch) > 0 || proposedBudget > 0)) {
                             const otherBudgets = Number(shared.other_budgets_xch) || 0;
                             const sharedRemain = Number(shared.shared_remaining_xch);
+                            const reshapeableXch = Number(shared.reshapeable_xch);
+                            const reshapeKnown = Number.isFinite(reshapeableXch);
+                            const reshapeTight = reshapeKnown
+                                && Number.isFinite(sharedRemain)
+                                && reshapeableXch + 1e-9 < (Number(shared.budget_headroom_xch) || sharedRemain + 1);
                             sharedRow = `<div style="margin-top:6px;padding:6px 8px;border-radius:4px;background:rgba(56,189,248,0.08);border:1px solid rgba(56,189,248,0.22);">
                                 <div style="color:var(--info-300);font-size:0.78em;text-transform:uppercase;letter-spacing:0.04em;">Shared wallet budget</div>
                                 <div style="margin-top:3px;">Pair budget <strong>${proposedBudget.toFixed(4)} XCH</strong>`
                                 + (otherBudgets > 0 ? ` · other pairs hold <strong>${otherBudgets.toFixed(4)} XCH</strong>` : '')
                                 + (Number.isFinite(sharedRemain) ? ` · <strong>${sharedRemain.toFixed(4)} XCH</strong> free to allocate` : '')
-                                + (shared.clamped ? ` <span style="color:var(--orange-400);">· clamped to leftover capital</span>` : '')
+                                + (reshapeKnown ? ` · <strong>${reshapeableXch.toFixed(4)} XCH</strong> reshapeable for prep` : '')
+                                + (shared.clamped
+                                    ? (reshapeTight
+                                        ? ` <span style="color:var(--orange-400);">· clamped to reshapeable leftover</span>`
+                                        : ` <span style="color:var(--orange-400);">· clamped to leftover capital</span>`)
+                                    : '')
                                 + `</div></div>`;
                         }
                         _lastSmartCapitalPlan = Object.assign({}, cp);

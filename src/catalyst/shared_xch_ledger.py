@@ -169,7 +169,19 @@ class SharedXchLedger:
                     others += self.get_budget_mojos(rid)
         else:
             others = self.sum_budgets_mojos(exclude_asset_id=aid or None)
-        return max(0, available - others)
+        remaining = max(0, available - others)
+        # Cap by physically reshapeable free XCH for this pair so budgets
+        # cannot claim capital that coin prep must leave untouched.
+        if len(aid) == 64:
+            try:
+                from database import sum_reshapeable_xch_mojos
+
+                reshapeable = sum_reshapeable_xch_mojos(aid)
+                if reshapeable is not None:
+                    remaining = min(remaining, max(0, reshapeable))
+            except Exception:
+                pass
+        return remaining
 
     def portfolio_open_buy_mojos(self) -> int:
         """Sum open buy XCH across all pairs with a saved budget."""

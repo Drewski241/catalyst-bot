@@ -7622,10 +7622,30 @@ class CoinPrepWorker:
                     self.log("OVERSHOOT: coin prep pool exceeds available wallet")
                     self.log("=" * 60)
                     if _xch_overshoot:
+                        _detail = (
+                            f"(total {_xch_total_mojos / 1e12:.4f} - "
+                            f"reserve {_xch_reserve_mojos / 1e12:.4f}"
+                        )
+                        if self._xch_selective_reshape_enabled():
+                            _rm = (
+                                _reshape_mojos
+                                if "_reshape_mojos" in locals()
+                                and _reshape_mojos is not None
+                                else None
+                            )
+                            if _rm is not None:
+                                _detail += f"; reshapeable {_rm / 1e12:.4f}"
+                            try:
+                                _b = int(os.getenv("XCH_BUDGET_MOJOS") or 0)
+                            except (TypeError, ValueError):
+                                _b = 0
+                            if _b > 0:
+                                _detail += f"; budget {_b / 1e12:.4f}"
+                        _detail += ")"
                         self.log(
                             f"  XCH: pool wants {_xch_pool_mojos / 1e12:.4f} XCH, "
                             f"wallet has {_xch_avail_mojos / 1e12:.4f} XCH avail "
-                            f"(total {_xch_total_mojos / 1e12:.4f} - reserve {_xch_reserve_mojos / 1e12:.4f})"
+                            f"{_detail}"
                         )
                     if _cat_overshoot:
                         self.log(

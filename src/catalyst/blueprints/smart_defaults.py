@@ -1980,28 +1980,93 @@ def _calculate_smart_defaults(
     try:
         from shared_xch_ledger import ledger as _xch_ledger
 
-        _remaining_mojos = _xch_ledger.remaining_allocatable_mojos(
-            _focus_aid or None, cfg=cfg, running_asset_ids=None
-        )
-        _shared_avail_xch = float(_xch_ledger.mojos_to_xch(_remaining_mojos))
-        _wallet_avail_xch = _avail_xch
+        # Budget-only headroom (other pairs' saved budgets) before the
+        # physical reshapeable clamp that remaining_allocatable applies.
         _other_budgets_xch = float(
             _xch_ledger.mojos_to_xch(
                 _xch_ledger.sum_budgets_mojos(exclude_asset_id=_focus_aid or None)
             )
         )
-        if _shared_avail_xch < _avail_xch:
-            messages.append(
-                f"Shared XCH: sizing this pair from {_shared_avail_xch:.4f} XCH "
-                f"(wallet had {_wallet_avail_xch:.4f} after reserve; "
-                f"other pairs hold {_other_budgets_xch:.4f} XCH in budgets)"
+        _budget_headroom_xch = float(
+            _xch_ledger.mojos_to_xch(
+                max(
+                    0,
+                    _xch_ledger.allocatable_mojos(cfg)
+                    - _xch_ledger.sum_budgets_mojos(
+                        exclude_asset_id=_focus_aid or None
+                    ),
+                )
             )
+        )
+        _remaining_mojos = _xch_ledger.remaining_allocatable_mojos(
+            _focus_aid or None, cfg=cfg, running_asset_ids=None
+        )
+        _shared_avail_xch = float(_xch_ledger.mojos_to_xch(_remaining_mojos))
+        _wallet_avail_xch = _avail_xch
+        # Physically reshapeable XCH (unowned + this pair). Other pairs'
+        # owned UTXOs and shared fee/sniper/reserve cannot be melted by
+        # this pair's coin prep — budgeting them caused "pool exceeds
+        # available" / not-enough-balance failures after Smart Settings.
+        _reshape_xch = None
+        try:
+            from database import sum_reshapeable_xch_mojos
+
+            if len(_focus_aid) == 64:
+                _reshape_mojos = sum_reshapeable_xch_mojos(_focus_aid)
+                if _reshape_mojos is not None:
+                    _reshape_xch = float(_xch_ledger.mojos_to_xch(_reshape_mojos))
+        except Exception:
+            _reshape_xch = None
+        if _shared_avail_xch < _avail_xch:
+            _reshape_binding = (
+                _reshape_xch is not None
+                and _reshape_xch + 1e-12 < _budget_headroom_xch
+                and abs(_shared_avail_xch - _reshape_xch) < 1e-9
+            )
+            if _reshape_binding:
+                messages.append(
+                    f"Reshapeable XCH: sizing this pair from {_shared_avail_xch:.4f} XCH "
+                    f"(wallet had {_wallet_avail_xch:.4f} after reserve; "
+                    f"other pairs' owned coins + shared fee/sniper/reserve "
+                    f"are reserved for prep"
+                    + (
+                        f"; other pair budgets {_other_budgets_xch:.4f} XCH"
+                        if _other_budgets_xch > 0
+                        else ""
+                    )
+                    + ")"
+                )
+            else:
+                messages.append(
+                    f"Shared XCH: sizing this pair from {_shared_avail_xch:.4f} XCH "
+                    f"(wallet had {_wallet_avail_xch:.4f} after reserve; "
+                    f"other pairs hold {_other_budgets_xch:.4f} XCH in budgets)"
+                )
             _avail_xch = max(0.0, _shared_avail_xch)
+        # Belt-and-braces: keep local avail ≤ reshapeable even if ledger
+        # accounting and the coins table briefly disagree.
+        if _reshape_xch is not None and _reshape_xch < _avail_xch:
+            messages.append(
+                f"Reshapeable XCH: sizing this pair from {_reshape_xch:.4f} XCH "
+                f"(other pairs' owned coins + shared fee/sniper/reserve "
+                f"are reserved for prep)"
+            )
+            _avail_xch = max(0.0, _reshape_xch)
         _shared_alloc = {
             "wallet_available_xch": round(_wallet_avail_xch, 4),
             "shared_remaining_xch": round(_shared_avail_xch, 4),
+            "budget_headroom_xch": round(_budget_headroom_xch, 4),
             "other_budgets_xch": round(_other_budgets_xch, 4),
-            "clamped": bool(_shared_avail_xch < _wallet_avail_xch),
+            "reshapeable_xch": (
+                round(_reshape_xch, 4) if _reshape_xch is not None else None
+            ),
+            "clamped": bool(
+                _shared_avail_xch < _wallet_avail_xch
+                or (
+                    _reshape_xch is not None
+                    and _reshape_xch < _wallet_avail_xch
+                )
+            ),
             "focus_asset_id": _focus_aid or None,
         }
     except Exception as _shared_err:

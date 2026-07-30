@@ -3182,6 +3182,41 @@ def get_xch_coins_protected_from_prep(
     return get_foreign_owned_xch_coin_ids(owner) | get_shared_pool_xch_coin_ids()
 
 
+def sum_reshapeable_xch_mojos(
+    owner_asset_id: Optional[str] = None,
+) -> Optional[int]:
+    """Sum free XCH mojos selective prep may melt for ``owner_asset_id``.
+
+    Matches coin-prep's protect filter: when a 64-hex owner is provided,
+    foreign-owned UTXOs and unowned fee/sniper/reserve coins are excluded.
+
+    Returns ``None`` when the coins table has no free XCH rows (inventory
+    not synced yet) so callers can fall back to wallet-balance accounting
+    instead of incorrectly treating reshapeable capital as zero.
+    """
+    protected = get_xch_coins_protected_from_prep(owner_asset_id)
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT coin_id, amount_mojos FROM coins "
+            "WHERE status='free' AND wallet_type='xch'"
+        ).fetchall()
+    except Exception:
+        return None
+    if not rows:
+        return None
+    total = 0
+    for row in rows:
+        cid = norm_coin_id(row["coin_id"])
+        if cid and cid in protected:
+            continue
+        try:
+            total += max(0, int(row["amount_mojos"] or 0))
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
 def summarize_xch_ownership() -> Dict[str, Any]:
     """Aggregate free XCH ownership for the pairs overview / diagnostics."""
     conn = get_connection()
