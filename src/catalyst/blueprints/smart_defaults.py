@@ -3847,7 +3847,10 @@ def _calculate_smart_defaults(
                             break
                     _f64c, _f64s, _f64_cat = _f64_distribute(_f64_expanded)
 
-                if _f64_expanded > _f64_old_sell_count:
+                if (
+                    _f64_expanded > _f64_old_sell_count
+                    and _f64_cat <= _f64_cat_budget_tokens
+                ):
                     _smart_max_sell = _f64_expanded
                     _sell_n_inner = _f64c[0]
                     _sell_n_mid = _f64c[1]
@@ -3867,6 +3870,12 @@ def _calculate_smart_defaults(
                         f"[SMART_DEFAULTS] F64 sell count: "
                         f"{_f64_old_sell_count} → {_f64_expanded} "
                         f"(CAT: {_f64_cat:,.0f}/{_f64_cat_budget_tokens:,.0f})"
+                    )
+                elif _f64_expanded > _f64_old_sell_count:
+                    print(
+                        f"[SMART_DEFAULTS] F64 sell count skipped: "
+                        f"expanded {_f64_expanded} still needs "
+                        f"{_f64_cat:,.0f} > budget {_f64_cat_budget_tokens:,.0f}"
                     )
 
         # ── Update strategy if asymmetric ──
@@ -4006,6 +4015,245 @@ def _calculate_smart_defaults(
                         f"{_old_topup_cat:,.0f} -> {_topup_buffer_cat:,.0f}, "
                         f"total now {_f65_new_total:,.0f}/{_avail_cat:,.0f}"
                     )
+
+                # When sizes are already at the minimum-offer floor, scaling
+                # cannot shrink the CAT bill further. Peel spare coins first,
+                # then live sell slots, so the plan fits the wallet CAT the
+                # user actually has (second-pair / thin-CAT cases).
+                def _f65_tier_total_tokens():
+                    _tiers = [
+                        (_sell_n_inner + _sell_spare_inner, _smart_sell_inner),
+                        (_sell_n_mid + _sell_spare_mid, _smart_sell_mid),
+                    ]
+                    if _max_tiers >= 3 and _smart_sell_outer > 0:
+                        _tiers.append(
+                            (_sell_n_outer + _sell_spare_outer, _smart_sell_outer)
+                        )
+                    if _max_tiers == 4 and _smart_sell_extreme > 0:
+                        _tiers.append(
+                            (
+                                _sell_n_extreme + _sell_spare_extreme,
+                                _smart_sell_extreme,
+                            )
+                        )
+                    return sum(
+                        _c * round((_s / mid_price) * _f65_hm) for _c, _s in _tiers
+                    )
+
+                if _f65_new_total > _avail_cat:
+                    _pre_spare = (
+                        _sell_spare_inner,
+                        _sell_spare_mid,
+                        _sell_spare_outer,
+                        _sell_spare_extreme,
+                    )
+                    _spare_vals = [
+                        _sell_spare_inner,
+                        _sell_spare_mid,
+                        _sell_spare_outer,
+                        _sell_spare_extreme,
+                    ]
+                    _size_vals = [
+                        _smart_sell_inner,
+                        _smart_sell_mid,
+                        _smart_sell_outer,
+                        _smart_sell_extreme,
+                    ]
+                    # Spares on zero-size tiers never hit the CAT bill but
+                    # still poison the GUI prep preview — drop them first.
+                    for _i in range(4):
+                        if float(_size_vals[_i] or 0) <= 0 and int(_spare_vals[_i] or 0) > 0:
+                            _spare_vals[_i] = 0
+                    (
+                        _sell_spare_inner,
+                        _sell_spare_mid,
+                        _sell_spare_outer,
+                        _sell_spare_extreme,
+                    ) = _spare_vals
+                    _f65_new_tier = _f65_tier_total_tokens()
+                    _f65_new_total = _f65_new_tier + _f65_sniper_cat + _f65_topup_cat
+                    while (
+                        _f65_new_total > _avail_cat
+                        and any(
+                            int(_spare_vals[i] or 0) > 0 and float(_size_vals[i] or 0) > 0
+                            for i in range(4)
+                        )
+                    ):
+                        # Drop one spare from the most expensive live tier first.
+                        _best_i = max(
+                            range(4),
+                            key=lambda i: (
+                                int(_spare_vals[i] or 0) > 0
+                                and float(_size_vals[i] or 0) > 0,
+                                float(_size_vals[i] or 0),
+                                int(_spare_vals[i] or 0),
+                            ),
+                        )
+                        if (
+                            int(_spare_vals[_best_i] or 0) <= 0
+                            or float(_size_vals[_best_i] or 0) <= 0
+                        ):
+                            break
+                        _spare_vals[_best_i] = int(_spare_vals[_best_i]) - 1
+                        (
+                            _sell_spare_inner,
+                            _sell_spare_mid,
+                            _sell_spare_outer,
+                            _sell_spare_extreme,
+                        ) = _spare_vals
+                        _f65_new_tier = _f65_tier_total_tokens()
+                        _f65_new_total = (
+                            _f65_new_tier + _f65_sniper_cat + _f65_topup_cat
+                        )
+                    if _pre_spare != (
+                        _sell_spare_inner,
+                        _sell_spare_mid,
+                        _sell_spare_outer,
+                        _sell_spare_extreme,
+                    ):
+                        # Keep shared spare fields in sync (legacy + buy-side
+                        # seed). Sell-side is authoritative after F65.
+                        _spare_inner = _sell_spare_inner
+                        _spare_mid = _sell_spare_mid
+                        _spare_outer = _sell_spare_outer
+                        _spare_extreme = _sell_spare_extreme
+                        messages.append(
+                            "CAT spare coins reduced "
+                            f"{_pre_spare[0]}/{_pre_spare[1]}/"
+                            f"{_pre_spare[2]}/{_pre_spare[3]} → "
+                            f"{_sell_spare_inner}/{_sell_spare_mid}/"
+                            f"{_sell_spare_outer}/{_sell_spare_extreme} "
+                            "so coin prep fits the token balance."
+                        )
+                        print(
+                            f"[SMART_DEFAULTS] F65 CAT spare peel: "
+                            f"{_pre_spare} → "
+                            f"({_sell_spare_inner}, {_sell_spare_mid}, "
+                            f"{_sell_spare_outer}, {_sell_spare_extreme}), "
+                            f"total now {_f65_new_total:,.0f}/{_avail_cat:,.0f}"
+                        )
+
+                if _f65_new_total > _avail_cat:
+                    _pre_live = (
+                        _sell_n_inner,
+                        _sell_n_mid,
+                        _sell_n_outer,
+                        _sell_n_extreme,
+                    )
+                    _live_vals = [
+                        _sell_n_inner,
+                        _sell_n_mid,
+                        _sell_n_outer,
+                        _sell_n_extreme,
+                    ]
+                    _size_vals = [
+                        _smart_sell_inner,
+                        _smart_sell_mid,
+                        _smart_sell_outer,
+                        _smart_sell_extreme,
+                    ]
+                    for _i in range(4):
+                        if float(_size_vals[_i] or 0) <= 0 and int(_live_vals[_i] or 0) > 0:
+                            _live_vals[_i] = 0
+                    (
+                        _sell_n_inner,
+                        _sell_n_mid,
+                        _sell_n_outer,
+                        _sell_n_extreme,
+                    ) = _live_vals
+                    _smart_max_sell = max(
+                        0,
+                        int(_sell_n_inner)
+                        + int(_sell_n_mid)
+                        + int(_sell_n_outer)
+                        + int(_sell_n_extreme),
+                    )
+                    _f65_new_tier = _f65_tier_total_tokens()
+                    _f65_new_total = _f65_new_tier + _f65_sniper_cat + _f65_topup_cat
+                    while (
+                        _f65_new_total > _avail_cat
+                        and any(
+                            int(_live_vals[i] or 0) > 0 and float(_size_vals[i] or 0) > 0
+                            for i in range(4)
+                        )
+                    ):
+                        _best_i = max(
+                            range(4),
+                            key=lambda i: (
+                                int(_live_vals[i] or 0) > 0
+                                and float(_size_vals[i] or 0) > 0,
+                                float(_size_vals[i] or 0),
+                                int(_live_vals[i] or 0),
+                            ),
+                        )
+                        if (
+                            int(_live_vals[_best_i] or 0) <= 0
+                            or float(_size_vals[_best_i] or 0) <= 0
+                        ):
+                            break
+                        _live_vals[_best_i] = int(_live_vals[_best_i]) - 1
+                        (
+                            _sell_n_inner,
+                            _sell_n_mid,
+                            _sell_n_outer,
+                            _sell_n_extreme,
+                        ) = _live_vals
+                        _smart_max_sell = max(
+                            0,
+                            int(_sell_n_inner)
+                            + int(_sell_n_mid)
+                            + int(_sell_n_outer)
+                            + int(_sell_n_extreme),
+                        )
+                        _f65_new_tier = _f65_tier_total_tokens()
+                        _f65_new_total = (
+                            _f65_new_tier + _f65_sniper_cat + _f65_topup_cat
+                        )
+                    if _pre_live != (
+                        _sell_n_inner,
+                        _sell_n_mid,
+                        _sell_n_outer,
+                        _sell_n_extreme,
+                    ):
+                        messages.append(
+                            "Sell offer count reduced "
+                            f"{sum(_pre_live)} → {_smart_max_sell} "
+                            "so coin prep fits the token balance."
+                        )
+                        print(
+                            f"[SMART_DEFAULTS] F65 CAT live peel: "
+                            f"{_pre_live} → "
+                            f"({_sell_n_inner}, {_sell_n_mid}, "
+                            f"{_sell_n_outer}, {_sell_n_extreme}), "
+                            f"total now {_f65_new_total:,.0f}/{_avail_cat:,.0f}"
+                        )
+
+                # Last resort: disable sell prep entirely rather than emit
+                # a plan the GUI must reject as "not enough tokens".
+                if _f65_new_total > _avail_cat:
+                    _sell_n_inner = _sell_n_mid = _sell_n_outer = _sell_n_extreme = 0
+                    _sell_spare_inner = (
+                        _sell_spare_mid
+                    ) = _sell_spare_outer = _sell_spare_extreme = 0
+                    _spare_inner = _spare_mid = _spare_outer = _spare_extreme = 0
+                    _smart_max_sell = 0
+                    _smart_sniper_prep = 0
+                    _sniper_pool_xch = 0.0
+                    _topup_buffer_cat = 0.0
+                    _f65_sniper_cat = 0
+                    _f65_topup_cat = 0
+                    _f65_new_tier = 0
+                    _f65_new_total = 0
+                    messages.append(
+                        "Sell coin prep disabled — even minimum-size sell "
+                        "coins exceed the available token balance. "
+                        "Add tokens or switch to buy-only."
+                    )
+                    print(
+                        "[SMART_DEFAULTS] F65 CAT: disabled sell prep "
+                        f"(budget {_avail_cat:,.0f} tokens)"
+                    )
+
             messages.append(
                 f"F65 sell-side CAT safety clamp: "
                 f"inner {_f65_old_inner:.4f} → {_smart_sell_inner:.4f} "
@@ -4021,6 +4269,31 @@ def _calculate_smart_defaults(
                 f"(budget {_avail_cat:,.0f})"
             )
     # ═══ END F65 FINAL SELL-SIDE CAT VERIFICATION ═════════════════════════
+
+    # Sync max_active_sell to the post-F65 live sell ladder. An earlier
+    # `_n_sell_cap` clamp may have zeroed max_sell based on full spare
+    # overhead even though F65 later peeled spares enough to fund sells.
+    _fitted_sell = (
+        int(_sell_n_inner or 0)
+        + int(_sell_n_mid or 0)
+        + int(_sell_n_outer or 0)
+        + int(_sell_n_extreme or 0)
+    )
+    if _fitted_sell > 0:
+        _smart_max_sell = _fitted_sell
+
+    # When sell offers are zeroed (CAT cannot fund even a minimum ladder),
+    # scrub residual sell sizes/spares so the GUI does not keep preparing
+    # spare CAT coins against max_active_sell=0.
+    if int(_smart_max_sell or 0) <= 0 or _fitted_sell <= 0:
+        _smart_max_sell = 0
+        _sell_n_inner = _sell_n_mid = _sell_n_outer = _sell_n_extreme = 0
+        _sell_spare_inner = _sell_spare_mid = _sell_spare_outer = _sell_spare_extreme = 0
+        _smart_sell_inner = _smart_sell_mid = _smart_sell_outer = _smart_sell_extreme = (
+            0.0
+        )
+        _smart_inner = _smart_mid = _smart_outer = _smart_extreme = 0.0
+        _topup_buffer_cat = 0.0
 
     # Diagnostic dump — printed on every smart-defaults call so any
     # future coin-prep overshoot can be traced from the server log.

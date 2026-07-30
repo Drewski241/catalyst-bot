@@ -19588,9 +19588,21 @@
                         extreme: parseFloat(_sellExt)   || 0,
                     };
                 }
-                // Offer counts from capital sizing
-                if (data.max_active_buy !== undefined) document.getElementById('configMaxBuy').value = data.max_active_buy || '';
-                if (data.max_active_sell !== undefined) document.getElementById('configMaxSell').value = data.max_active_sell || '';
+                // Offer counts from capital sizing. Preserve explicit 0
+                // (CAT cannot fund sells) — `|| ''` would blank the field and
+                // leave stale tier/spare counts driving a fake prep bill.
+                if (data.max_active_buy !== undefined && data.max_active_buy !== null) {
+                    document.getElementById('configMaxBuy').value = data.max_active_buy;
+                }
+                if (data.max_active_sell !== undefined && data.max_active_sell !== null) {
+                    document.getElementById('configMaxSell').value = data.max_active_sell;
+                }
+                if (Number(data.max_active_sell) === 0) {
+                    ['configInnerTierCount', 'configMidTierCount', 'configOuterTierCount', 'configExtremeTierCount',
+                     'configInnerTierSpareCount', 'configMidTierSpareCount', 'configOuterTierSpareCount', 'configExtremeTierSpareCount']
+                        .forEach((id) => { const el = document.getElementById(id); if (el) el.value = 0; });
+                    window._topupBufferCat = 0;
+                }
                 // Per-tier counts (market-adaptive distribution).
                 // Sell row first — Smart Settings sizes by SIZE column, which
                 // matches the sell ladder directly (no reversal).
@@ -20683,6 +20695,13 @@
             const hasCustomSpareCounts = ['inner', 'mid', 'outer', 'extreme'].some(
                 tier => Number(explicitSpareCounts?.[tier] || 0) > 0
             );
+            // No live offers on this side → no spare coins either. Otherwise
+            // leftover Smart Settings spare fields with maxSell/maxBuy=0 still
+            // inflate CAT/XCH prep totals and trip "not enough token" warnings.
+            if (!maxOffersPerSide || maxOffersPerSide <= 0) {
+                return { inner: 0, mid: 0, outer: 0, extreme: 0 };
+            }
+
             const spareCounts = hasCustomSpareCounts
                 ? {
                     inner: Math.max(0, parseInt(explicitSpareCounts.inner) || 0),
