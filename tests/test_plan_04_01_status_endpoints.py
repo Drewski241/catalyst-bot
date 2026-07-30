@@ -344,5 +344,60 @@ class TestStatusEndpointWriteGuards(_FlaskBase):
         self.assertEqual(resp.status_code, 405)
 
 
+# ---------------------------------------------------------------------------
+# 5. Status TibetSwap fallback cache (bot-exists / mid=0 path)
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipIf(_SKIP is not None, f"api_server unavailable: {_SKIP}")
+class TestStatusTibetFallbackCache(unittest.TestCase):
+    def setUp(self):
+        from blueprints import bot as bot_bp
+
+        self.bot_bp = bot_bp
+        self._orig = dict(bot_bp._STATUS_TIBET_FALLBACK_CACHE)
+        bot_bp._STATUS_TIBET_FALLBACK_CACHE.update(
+            {"fetched_at": 0.0, "asset_id": "", "mid": 0.0, "logged_at": 0.0}
+        )
+
+    def tearDown(self):
+        self.bot_bp._STATUS_TIBET_FALLBACK_CACHE.clear()
+        self.bot_bp._STATUS_TIBET_FALLBACK_CACHE.update(self._orig)
+
+    def test_fallback_mid_is_cached_across_polls(self):
+        asset = "a" * 64
+        payload = [
+            {
+                "asset_id": asset,
+                "xch_reserve": 1_000_000_000_000,  # 1 XCH
+                "token_reserve": 10_000_000,  # 10_000 @ 3 decimals
+            }
+        ]
+
+        class _Resp:
+            status_code = 200
+
+            def json(self):
+                return payload
+
+        with (
+            patch("requests.get", return_value=_Resp()) as mocked_get,
+            patch.object(self.bot_bp, "_record_api_call"),
+        ):
+            mid1 = self.bot_bp._get_status_tibet_fallback_mid(asset, 3)
+            mid2 = self.bot_bp._get_status_tibet_fallback_mid(asset, 3)
+
+        self.assertAlmostEqual(mid1, 0.0001, places=8)
+        self.assertEqual(mid1, mid2)
+        self.assertEqual(mocked_get.call_count, 1)
+
+    def test_status_bid_ask_uses_config_not_risk_manager(self):
+        mid = 0.001
+        with patch.object(api_server, "bot", None):
+            bid, ask = self.bot_bp._status_bid_ask_from_mid(mid)
+        self.assertLess(bid, mid)
+        self.assertGreater(ask, mid)
+
+
 if __name__ == "__main__":
     unittest.main()
