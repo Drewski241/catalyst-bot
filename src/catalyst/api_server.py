@@ -189,8 +189,9 @@ _RATE_LIMIT_EXEMPT_WRITE_ROUTES = {
 # Dedicated limiter for /api/splash/incoming so an unbounded webhook flood
 # cannot amplify into runaway DB writes / thread+socket exhaustion.
 # Splash can gossip far faster than we need for sniper ingest; keep this
-# modest so a P2P burst cannot hit EMFILE (os error 24) on Linux.
-_SPLASH_RATE_LIMIT = {"window_s": 1.0, "max": 40, "hits": [], "lock": threading.Lock()}
+# modest so a P2P burst cannot hit EMFILE / SQLite lock storms on Linux.
+# 15/s is enough for sniper ingest and stays under serialized DB write cost.
+_SPLASH_RATE_LIMIT = {"window_s": 1.0, "max": 15, "hits": [], "lock": threading.Lock()}
 _SPLASH_RATE_LIMIT_LOG_TS = 0.0
 
 

@@ -88,6 +88,19 @@ def _missing_splash_table(exc: Exception) -> bool:
     )
 
 
+def _is_db_locked(exc: Exception) -> bool:
+    msg = str(exc or "").lower()
+    return "database is locked" in msg or "database is busy" in msg
+
+
+# Serialize Splash webhook inserts. Flask threads + gossip bursts otherwise
+# stampede SQLite writers; each failure also used to call log_event() which
+# wrote *another* row and amplified the lock storm.
+_splash_incoming_write_lock = threading.Lock()
+_splash_db_error_log_ts = 0.0
+_SPLASH_DB_ERROR_LOG_INTERVAL_S = 10.0
+
+
 def get_connection() -> sqlite3.Connection:
     """Get a thread-local database connection.
 
@@ -5985,30 +5998,65 @@ def record_splash_incoming(
 
     Returns True if recorded (new), False if duplicate fingerprint.
     """
-    conn = get_connection()
-    try:
-        # Skip if we already have this fingerprint (dedup)
-        existing = conn.execute(
-            "SELECT id FROM splash_incoming_offers WHERE fingerprint = ?",
-            (fingerprint,),
-        ).fetchone()
-        if existing:
-            return False
+    global _splash_db_error_log_ts
 
-        conn.execute(
-            """INSERT INTO splash_incoming_offers
-               (offer_bech32, fingerprint, received_at, status, pair_hint, source_ip)
-               VALUES (?, ?, ?, 'new', ?, ?)""",
-            (offer_bech32, fingerprint, _now(), pair_hint, source_ip),
-        )
-        conn.commit()
-        return True
-    except Exception as e:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        log_event("warning", "splash_db_error", f"Failed to record incoming offer: {e}")
+    # One writer at a time for this hot path. Concurrent Flask request
+    # threads otherwise all hit busy_timeout together and spam lock errors.
+    with _splash_incoming_write_lock:
+        last_err: Optional[Exception] = None
+        for attempt in range(4):
+            conn = get_connection()
+            try:
+                # Skip if we already have this fingerprint (dedup)
+                existing = conn.execute(
+                    "SELECT id FROM splash_incoming_offers WHERE fingerprint = ?",
+                    (fingerprint,),
+                ).fetchone()
+                if existing:
+                    return False
+
+                conn.execute(
+                    """INSERT INTO splash_incoming_offers
+                       (offer_bech32, fingerprint, received_at, status, pair_hint, source_ip)
+                       VALUES (?, ?, ?, 'new', ?, ?)""",
+                    (offer_bech32, fingerprint, _now(), pair_hint, source_ip),
+                )
+                conn.commit()
+                return True
+            except Exception as e:
+                last_err = e
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                if _missing_splash_table(e):
+                    break
+                if _is_db_locked(e) and attempt < 3:
+                    # Brief backoff; lock is held so other Splash writers wait
+                    # here instead of opening more competing transactions.
+                    time.sleep(0.02 * (attempt + 1))
+                    continue
+                break
+
+        # Throttle failure logs and avoid log_event() on lock storms — that
+        # helper also writes the events table and makes contention worse.
+        now = time.time()
+        if now - _splash_db_error_log_ts >= _SPLASH_DB_ERROR_LOG_INTERVAL_S:
+            _splash_db_error_log_ts = now
+            err_txt = str(last_err or "unknown error")
+            print(
+                f"[SPLASH] Failed to record incoming offer (throttled): {err_txt}",
+                flush=True,
+            )
+            if not _is_db_locked(last_err or Exception()):
+                try:
+                    log_event(
+                        "warning",
+                        "splash_db_error",
+                        f"Failed to record incoming offer: {err_txt}",
+                    )
+                except Exception:
+                    pass
         return False
 
 
