@@ -2408,6 +2408,10 @@ def _calculate_smart_defaults(
     _smart_trade_size = 0.0
     _capital_plan = {}
     _n_sell_cap = 0  # F64: CAT-backed sell capacity (set inside capital plan)
+    # Always defined — capital-plan branch may skip when reshapeable/shared
+    # XCH for this pair is too small (common for a second pair while pair A
+    # still owns most free XCH). Diagnostic dump + F66 peel both read this.
+    _n_final = 0
 
     if _avail_xch > 0 and _trading_xch >= (_MIN_OFFER_XCH * 2) and _target_n > 0:
         # Derive base size from trading capital — includes active + spares + headroom.
@@ -2940,7 +2944,33 @@ def _calculate_smart_defaults(
                 f"need at least {_MIN_OFFER_XCH * 2:.3f} XCH trading capital"
             )
         else:
-            messages.append("Capital: no XCH available after reserve")
+            _reshape = (
+                (_shared_alloc or {}).get("reshapeable_xch")
+                if isinstance(_shared_alloc, dict)
+                else None
+            )
+            _wallet_avail = (
+                (_shared_alloc or {}).get("wallet_available_xch")
+                if isinstance(_shared_alloc, dict)
+                else None
+            )
+            if (
+                isinstance(_reshape, (int, float))
+                and isinstance(_wallet_avail, (int, float))
+                and _wallet_avail > 0
+                and _reshape + 1e-12 < _wallet_avail
+            ):
+                messages.append(
+                    "Capital: no reshapeable XCH left for this pair "
+                    f"(wallet has {_wallet_avail:.4f} XCH after reserve, but "
+                    f"only {_reshape:.4f} XCH is unowned/this-pair). "
+                    "Other pairs' owned trading coins and shared fee/sniper/"
+                    "reserve pools cannot be melted for coin prep. Stop the "
+                    "other pair and free/re-prep XCH, or lower its XCH budget "
+                    "and re-run Coin Prep so some coins become unowned."
+                )
+            else:
+                messages.append("Capital: no XCH available after reserve")
 
     # ═══ COIN PREP MULTIPLIER — recalculated from capital plan ═══
     # Now we have the capital plan values (_smart_trade_size, _smart_max_buy/sell,

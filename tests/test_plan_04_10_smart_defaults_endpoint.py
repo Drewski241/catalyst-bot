@@ -867,6 +867,156 @@ class TestSmartDefaultsBalanceSizingRegression(_FlaskBase):
         self.assertGreater(body["max_active_sell"], 0)
         self.assertGreater(float(body.get("sell_inner_size_xch") or 0), 0)
 
+    def test_second_pair_with_no_reshapeable_xch_does_not_crash(self):
+        """Pair A owns all free XCH → pair B Smart Settings must return a
+        graceful insufficient-capital response, not UnboundLocalError on
+        ``_n_final`` (CRT/XCH repro while MZ was still holding prep coins).
+        """
+        from blueprints import smart_defaults
+
+        spendable_xch = 12.0198
+        available_cat = 898_100.0
+        asset_id = "ea3ace5525d6aaf6d921b66052afc67da11c820b676de91d61ae1a766c8ce615"
+
+        def fake_balance(wallet_id):
+            if wallet_id == 1:
+                mojos = int(spendable_xch * 1_000_000_000_000)
+            else:
+                mojos = int(available_cat * 1_000)
+            return {
+                "success": True,
+                "wallet_balance": {
+                    "unconfirmed_wallet_balance": mojos,
+                    "confirmed_wallet_balance": mojos,
+                    "spendable_balance": mojos,
+                    "pending_coin_removal_count": 0,
+                },
+            }
+
+        raw_market = {
+            "dexie_ticker": {
+                "price": 0.00225907,
+                "volume_30d": 200,
+                "high_30d": 0.003,
+                "low_30d": 0.0015,
+            },
+            "dexie_trades": {
+                "total_count": 400,
+                "volume_trend": "flat",
+                "trades": [{"price": 0.00213890, "xch_amount": 2.0}] * 8,
+            },
+            "tibet_pool": {
+                "has_data": True,
+                "price": 0.00217132,
+                "xch_reserve": 1225,
+            },
+            "tibet_quote": {},
+            "spacescan": {"has_data": True, "price_xch": 0.00217132},
+            "internal_db": {"price_count": 60, "fill_count": 0, "pool_trend": "stable"},
+        }
+        analysis = {
+            "volatility": {
+                "regime": "volatile",
+                "range_30d_pct": 40,
+                "range_90d_pct": 60,
+                "max_single_move_pct": 12,
+                "confidence": "high",
+                "std_dev_pct": 6,
+                "quiet_phase": False,
+            },
+            "liquidity": {
+                "fills_per_day": 4.0,
+                "daily_volume_xch": 40,
+                "pool_depth_xch": 1225,
+                "level": "moderate",
+                "volume_trend": "flat",
+            },
+            "token_health": {
+                "risk_level": "healthy",
+                "activity_level": "active",
+                "holder_count": 2000,
+            },
+            "bot_performance": {"has_history": False},
+            "data_quality": {"score": 90, "quality": "excellent"},
+        }
+        orderbook = {
+            "has_data": False,
+            "api_ok": True,
+            "num_buy_offers": 0,
+            "num_sell_offers": 0,
+            "competitor_spread_bps": 0,
+            "best_bid": 0,
+            "best_ask": 0,
+        }
+
+        with (
+            patch("wallet.get_wallet_balance", side_effect=fake_balance),
+            patch(
+                "market_data_collector.collect_all_market_data",
+                return_value=raw_market,
+            ),
+            patch("market_data_collector.analyze_market_data", return_value=analysis),
+            patch.object(
+                smart_defaults,
+                "_fetch_dexie_orderbook_standalone",
+                return_value=orderbook,
+            ),
+            patch.object(
+                smart_defaults,
+                "_smart_dbx_defaults",
+                return_value={
+                    "dbx_max_spread_bps": 500,
+                    "pair_incentivized": False,
+                    "dbx_buy_incentive": None,
+                    "dbx_sell_incentive": None,
+                },
+            ),
+            patch(
+                "tx_fees.get_suggested_transaction_fee",
+                return_value={"available": False},
+            ),
+            patch(
+                "database.sum_reshapeable_xch_mojos",
+                return_value=0,
+            ),
+            patch(
+                "shared_xch_ledger.ledger.sum_budgets_mojos",
+                return_value=int(9.0 * 1_000_000_000_000),
+            ),
+            patch(
+                "shared_xch_ledger.ledger.spendable_xch_mojos",
+                return_value=int(spendable_xch * 1_000_000_000_000),
+            ),
+            patch(
+                "shared_xch_ledger.ledger.allocatable_mojos",
+                return_value=int(spendable_xch * 1_000_000_000_000),
+            ),
+            patch(
+                "shared_xch_ledger.ledger.remaining_allocatable_mojos",
+                return_value=0,
+            ),
+        ):
+            with api_server.app.test_request_context("/api/smart-defaults"):
+                resp = smart_defaults._calculate_smart_defaults(
+                    xch_reserve=0,
+                    cat_reserve=0,
+                    risk_profile="balanced",
+                    asset_id=asset_id,
+                    cat_wallet_id=2,
+                    cat_decimals=3,
+                    cat_ticker_id="CRT_XCH",
+                    cat_name="Circuit Token",
+                )
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.get_json()
+        self.assertNotIn("error", body)
+        plan = body.get("_capital_plan") or {}
+        self.assertTrue(plan.get("insufficient"))
+        self.assertEqual(float(body.get("proposed_xch_budget_xch") or 0), 0.0)
+        messages = " ".join((body.get("_data_sources") or {}).get("messages") or [])
+        self.assertIn("reshapeable", messages.lower())
+
     def test_quiet_shallow_pair_xch_prep_fits_reshapeable_ceiling(self):
         """User log repro: quiet + shallow pool disables extreme live tier but
         used to keep extreme spare=1 on the large reverse-buy size, while
