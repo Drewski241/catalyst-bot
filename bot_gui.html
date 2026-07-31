@@ -12241,18 +12241,18 @@
                     <div>
                         <div class="v4-modal-kicker">Session Recovery</div>
                         <h3 class="v4-modal-title">Previous session detected</h3>
-                        <p class="v4-modal-copy">Active offers from a prior run are still live. Load a quick session overview and then choose when to resume the bot, or start fresh and review settings again.</p>
+                        <p class="v4-modal-copy" id="resumeModalCopy">A prior trading session left live offers and/or pair XCH budgets. Continue with that setup, or start fresh to release owned XCH and re-run Smart Settings / Coin Prep.</p>
                     </div>
                 </div>
             
             <!-- Offer counts -->
             <div class="v4-modal-grid" style="margin-bottom: 16px;">
                 <div class="v4-modal-stat" style="background: rgba(16,185,129,0.10); border-color: rgba(16,185,129,0.40);">
-                    <div class="v4-modal-stat-label">Buy Offers</div>
+                    <div class="v4-modal-stat-label">Focus Buy Offers</div>
                     <div class="v4-modal-stat-value" style="color: var(--status-success);" id="resumeBuyCount">0</div>
                 </div>
                 <div class="v4-modal-stat" style="background: rgba(239,68,68,0.10); border-color: rgba(239,68,68,0.40);">
-                    <div class="v4-modal-stat-label">Sell Offers</div>
+                    <div class="v4-modal-stat-label">Focus Sell Offers</div>
                     <div class="v4-modal-stat-value" style="color: var(--sell-color);" id="resumeSellCount">0</div>
                 </div>
             </div>
@@ -12261,6 +12261,10 @@
             <div id="resumeSettingsSummary" class="v4-modal-panel" style="font-size: 0.88em; text-align: left; line-height: 1.7;">
                 Loading settings...
             </div>
+
+            <!-- Multi-pair leftover state -->
+            <div id="resumePairsSessionInfo" class="v4-modal-panel" style="display: none; text-align: left; margin-top: 12px; font-size: 0.85em; line-height: 1.6;">
+            </div>
             
             <!-- Gap closer info (shown only if gap closer was active) -->
             <div id="resumeGapCloserInfo" class="v4-modal-panel v4-modal-panel--violet" style="display: none; text-align: left;">
@@ -12268,13 +12272,17 @@
                 <div id="resumeGapCloserDetails" style="font-size: 0.85em; line-height: 1.6; opacity: 0.9;"></div>
             </div>
 
-            <div id="resumeAgeInfo" style="opacity: 0.6; margin-bottom: 20px; font-size: 0.85em; color: var(--text-secondary);">
+            <div id="resumeAgeInfo" style="opacity: 0.6; margin-bottom: 12px; font-size: 0.85em; color: var(--text-secondary);">
                 Last active: checking...
+            </div>
+            <div id="resumeFreshHint" style="opacity: 0.75; margin-bottom: 20px; font-size: 0.8em; color: var(--text-secondary); text-align: left;">
+                <strong>Continue</strong> keeps live offers, pair budgets, and owned XCH.
+                <strong>Start Fresh</strong> clears pair XCH budgets and ownership tags so you can reallocate capital (Dexie offers stay resting until you cancel them).
             </div>
             
             <div class="v4-modal-actions v4-modal-actions--center">
                 <button class="btn btn-config btn-secondary" onclick="dismissResumeFresh()" style="flex: 1; max-width: 190px;">⚙️ Start Fresh</button>
-                <button class="btn" onclick="resumeSession()" style="flex: 1; max-width: 190px; background: var(--status-success); color: white; border: none; cursor: pointer; padding: 10px 20px; border-radius: 8px; font-weight: bold;">✅ Load Previous Session</button>
+                <button class="btn" onclick="resumeSession()" style="flex: 1; max-width: 190px; background: var(--status-success); color: white; border: none; cursor: pointer; padding: 10px 20px; border-radius: 8px; font-weight: bold;">✅ Continue Session</button>
                 </div>
             </div>
         </div>
@@ -19861,7 +19869,23 @@
                             </div>${catLimited}${sharedRow}
                         </div>`;
                     } else if (cp.insufficient) {
-                        capitalRow = `<div style="color:var(--sell-color);margin-bottom:6px;">⚠ Insufficient capital after reserve — lower reserve % or add funds</div>`;
+                        const msgs = Array.isArray(src.messages) ? src.messages : [];
+                        const reshapeMsg = msgs.find((m) => /reshapeable/i.test(String(m || '')));
+                        const shared = cp.shared_allocation || {};
+                        const reshapeableXch = Number(shared.reshapeable_xch);
+                        const detail = reshapeMsg
+                            ? escapeHtml(String(reshapeMsg))
+                            : (Number.isFinite(reshapeableXch) && reshapeableXch <= 0
+                                ? 'No reshapeable XCH left for this pair — another pair still owns the prep coins.'
+                                : 'Insufficient capital after reserve — lower reserve % or add funds.');
+                        capitalRow = `<div style="color:var(--sell-color);margin-bottom:6px;">⚠ ${detail}</div>`
+                            + `<div style="margin:8px 0 4px 0;">`
+                            + `<button type="button" class="btn btn-secondary" id="smartDefaultsReleaseXchBtn" `
+                            + `style="font-size:0.85em;padding:6px 12px;">`
+                            + `Release XCH &amp; Start Fresh</button>`
+                            + `<div style="margin-top:4px;font-size:0.8em;color:var(--text-secondary);">`
+                            + `Stops keeping old pair budgets/ownership so this pair can re-run Smart Settings. `
+                            + `Stop other running pairs first; Dexie offers stay resting.</div></div>`;
                     }
 
                     // Ladder row
@@ -19916,12 +19940,25 @@
                     const profileLabel = escapeHtml(appliedProfile.charAt(0).toUpperCase() + appliedProfile.slice(1));
                     const profileBadge = `<span style="background:${profileColour}22;color:${profileColour};border:1px solid ${profileColour}55;border-radius:4px;padding:1px 7px;font-size:0.82em;font-weight:600;">${profileLabel}</span>`;
 
-                    resultTitle.innerHTML = `\u2713 Smart Settings applied &nbsp;${qBadge}&nbsp;${profileBadge}`;
+                    resultTitle.innerHTML = (cp.insufficient
+                        ? `Smart Settings needs capital &nbsp;${qBadge}&nbsp;${profileBadge}`
+                        : `\u2713 Smart Settings applied &nbsp;${qBadge}&nbsp;${profileBadge}`);
                     resultBody.innerHTML = `<div style="margin-bottom:8px;line-height:1.8;">${srcBadges}</div>
                         <div style="border-top:1px solid rgba(255,255,255,0.06);padding-top:8px;display:flex;flex-direction:column;gap:8px;">
                             ${marketRow}${capitalRow}${ladderRow}${spreadRow}${diffRow}
                         </div>`;
                     resultBox.style.display = 'block';
+                    const releaseBtn = document.getElementById('smartDefaultsReleaseXchBtn');
+                    if (releaseBtn) {
+                        releaseBtn.addEventListener('click', async () => {
+                            releaseBtn.disabled = true;
+                            const ok = await releaseXchForNewPairSetup();
+                            releaseBtn.disabled = false;
+                            if (ok) {
+                                showToast('XCH released — run Smart Settings again for this pair.', 'success');
+                            }
+                        });
+                    }
 
                     // Show quick-rerun strip and highlight active profile button
                     const rerunStrip = document.getElementById('riskProfileRerunStrip');
@@ -30671,9 +30708,42 @@
                     summaryHtml += `<div>↔️ Spread: ${(settings.spread_bps / 100).toFixed(1)}%</div>`;
                 }
                 if (!summaryHtml) {
-                    summaryHtml = '<div style="opacity: 0.6;">No saved settings found</div>';
+                    summaryHtml = '<div style="opacity: 0.6;">No saved focus-pair settings found — multi-pair capital may still be allocated below.</div>';
                 }
                 document.getElementById('resumeSettingsSummary').innerHTML = summaryHtml;
+
+                const pairsSession = data.pairs_session || {};
+                const pairsInfo = document.getElementById('resumePairsSessionInfo');
+                if (pairsInfo) {
+                    const pairs = Array.isArray(pairsSession.pairs) ? pairsSession.pairs : [];
+                    if (pairs.length > 0 || pairsSession.has_multi_pair_state) {
+                        let pairsHtml = `<div style="font-weight:600;margin-bottom:6px;">Saved pair capital</div>`;
+                        pairsHtml += `<div style="opacity:0.85;margin-bottom:8px;">`
+                            + `${Number(pairsSession.pairs_with_budget || 0)} with XCH budget · `
+                            + `${Number(pairsSession.pairs_with_owned_xch || 0)} with owned prep coins · `
+                            + `${Number(pairsSession.total_owned_xch || 0).toFixed(4)} XCH owned</div>`;
+                        pairs.slice(0, 4).forEach((p) => {
+                            const label = escapeHtml(p.name || p.ticker_id || (p.asset_id || '').slice(0, 12));
+                            pairsHtml += `<div>• <strong>${label}</strong> — budget ${Number(p.xch_budget || 0).toFixed(4)} XCH, `
+                                + `owned ${Number(p.xch_owned || 0).toFixed(4)} XCH, `
+                                + `offers ${Number(p.open_buy || 0)}/${Number(p.open_sell || 0)}</div>`;
+                        });
+                        if (pairs.length > 4) {
+                            pairsHtml += `<div style="opacity:0.7;">…and ${pairs.length - 4} more</div>`;
+                        }
+                        pairsInfo.innerHTML = pairsHtml;
+                        pairsInfo.style.display = 'block';
+                    } else {
+                        pairsInfo.style.display = 'none';
+                        pairsInfo.innerHTML = '';
+                    }
+                }
+                const resumeCopy = document.getElementById('resumeModalCopy');
+                if (resumeCopy) {
+                    resumeCopy.textContent = pairsSession.has_multi_pair_state
+                        ? 'A prior multi-pair setup left XCH budgets and/or owned prep coins. Continue to keep that allocation, or Start Fresh to release XCH for a new Smart Settings / Coin Prep pass.'
+                        : 'Active offers from a prior run are still live. Continue to resume this setup, or Start Fresh to release owned XCH and reconfigure.';
+                }
 
                 // Gap closer info
                 const gcInfo = data.gap_closer || {};
@@ -30699,7 +30769,7 @@
 
                 // Show the modal
                 document.getElementById('resumeSessionModal').classList.add('active');
-                debugLog(`[RESUME] Showing modal: ${data.offer_count} offers (${data.buy_count} buy, ${data.sell_count} sell)`);
+                debugLog(`[RESUME] Showing modal: ${data.offer_count} offers (${data.buy_count} buy, ${data.sell_count} sell), pairs_state=${!!pairsSession.has_multi_pair_state}`);
                 return true;
                 
             } catch (error) {
@@ -30976,13 +31046,26 @@
             try {
                 const response = await apiFetch(`${API_URL}/session/fresh-start`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' }
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ release_xch: true })
                 });
                 const result = await response.json();
                 if (!response.ok || result?.success === false) {
                     throw new Error(result?.error || 'Fresh-start reset failed');
                 }
                 debugLog('[RESUME] Fresh-start session reset:', result);
+                const ownedCleared = Number(result?.ownership_cleared_coins || 0);
+                const budgetsCleared = Number(result?.budgets_cleared_pairs || 0);
+                if (ownedCleared > 0 || budgetsCleared > 0) {
+                    showToast(
+                        `Fresh start — released ${ownedCleared} owned XCH coin${ownedCleared === 1 ? '' : 's'}`
+                        + (budgetsCleared ? ` and ${budgetsCleared} pair budget${budgetsCleared === 1 ? '' : 's'}` : '')
+                        + '. Re-run Smart Settings + Coin Prep.',
+                        'info'
+                    );
+                } else {
+                    showToast('Fresh run started — review settings and run coin prep for the new setup.', 'info');
+                }
             } catch (err) {
                 debugWarn('[RESUME] Fresh-start reset failed:', err);
                 showToast('Start Fresh reset failed: ' + formatError(err), 'warning');
@@ -30995,12 +31078,38 @@
             resetTierTemplateInputsForFreshStart();
             document.getElementById('resumeSessionModal').classList.remove('active');
             const startBtn = document.getElementById('startBtn');
-            if (startBtn) { startBtn.disabled = true; startBtn.innerHTML = 'â–¶ Start Bot'; }
+            if (startBtn) { startBtn.disabled = true; startBtn.innerHTML = '▶ Start Bot'; }
             updateStartupChecklist(bot_state);
             updateDashboardStartupLayout(bot_state);
+            try { await refreshPairsOverview(true); } catch (_) {}
             fetchDashboard();
-            debugLog('[RESUME] User chose Start Fresh \u2014 settingsReviewed:', settingsReviewed);
-            showToast('Fresh run started \u2014 review settings and run coin prep for the new setup.', 'info');
+            debugLog('[RESUME] User chose Start Fresh — settingsReviewed:', settingsReviewed);
+        }
+
+        /** Operator escape hatch: release owned XCH / budgets while keeping focus. */
+        async function releaseXchForNewPairSetup() {
+            try {
+                const response = await apiFetch(`${API_URL}/session/fresh-start`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ release_xch: true })
+                });
+                const result = await response.json();
+                if (!response.ok || result?.success === false) {
+                    throw new Error(result?.error || 'Could not release XCH');
+                }
+                setCoinPrepStatus('none');
+                setSettingsReviewedState(false);
+                try { await refreshPairsOverview(true); } catch (_) {}
+                showToast(
+                    'Released pair XCH ownership and budgets. Stop other pairs if they are still running, then re-run Smart Settings + Coin Prep.',
+                    'info'
+                );
+                return true;
+            } catch (err) {
+                showToast('Could not release XCH: ' + formatError(err), 'warning');
+                return false;
+            }
         }
 
         function resumeSkip() {

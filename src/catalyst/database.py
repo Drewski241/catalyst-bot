@@ -3016,6 +3016,48 @@ def claim_xch_ownership_for_pair(
         return summary
 
 
+def clear_all_xch_trading_ownership() -> Dict[str, Any]:
+    """Release every pair's trading-tier XCH ownership tags.
+
+    Shared fee / sniper / reserve / dust coins stay unowned (they already
+    should be). Used by Start Fresh so a second pair can re-run Smart
+    Settings + coin prep against the full reshapeable inventory.
+    """
+    summary: Dict[str, Any] = {"cleared_coins": 0, "cleared_mojos": 0}
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) AS cnt, COALESCE(SUM(amount_mojos), 0) AS mojos "
+            "FROM coins WHERE status='free' AND wallet_type='xch' "
+            "AND owner_asset_id IS NOT NULL AND owner_asset_id != '' "
+            "AND lower(coalesce(assigned_tier, '')) IN "
+            "('inner','mid','outer','extreme')"
+        ).fetchone()
+        summary["cleared_coins"] = int((row["cnt"] if row else 0) or 0)
+        summary["cleared_mojos"] = int((row["mojos"] if row else 0) or 0)
+        if summary["cleared_coins"] > 0:
+            conn.execute(
+                "UPDATE coins SET owner_asset_id=NULL "
+                "WHERE status='free' AND wallet_type='xch' "
+                "AND owner_asset_id IS NOT NULL AND owner_asset_id != '' "
+                "AND lower(coalesce(assigned_tier, '')) IN "
+                "('inner','mid','outer','extreme')"
+            )
+        conn.commit()
+        return summary
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        log_event(
+            "warning",
+            "clear_xch_ownership_failed",
+            f"Could not clear XCH ownership tags: {exc}",
+        )
+        return summary
+
+
 def assign_xch_owner_to_free_coins(
     owner_asset_id: str, max_mojos: Optional[int] = None
 ) -> int:

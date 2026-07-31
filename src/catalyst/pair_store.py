@@ -585,6 +585,35 @@ def set_xch_budget_mojos(asset_id: str, budget_mojos: int) -> bool:
         return False
 
 
+def clear_all_xch_budgets() -> Dict[str, Any]:
+    """Zero every pair's hard XCH budget (Start Fresh reallocation)."""
+    from database import get_connection
+
+    summary: Dict[str, Any] = {"pairs_cleared": 0}
+    conn = get_connection()
+    ensure_pair_configs_schema(conn)
+    now = _now()
+    try:
+        cur = conn.execute(
+            """
+            UPDATE pair_configs
+            SET xch_budget_mojos = 0, updated_at = ?
+            WHERE COALESCE(xch_budget_mojos, 0) > 0
+            """,
+            (now,),
+        )
+        summary["pairs_cleared"] = int(cur.rowcount or 0)
+        conn.commit()
+        return summary
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        slog("PAIR_STORE", f"Failed to clear XCH budgets: {exc}", level="error")
+        return summary
+
+
 def persist_current_pair_overlay(cfg: Any) -> bool:
     """Capture live cfg economics for the current CAT_ASSET_ID."""
     asset_id = _normalize_asset_id(getattr(cfg, "CAT_ASSET_ID", None))

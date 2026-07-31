@@ -115,6 +115,28 @@ class TestSharedAllocHelpers(unittest.TestCase):
         self.assertEqual(remain, 500_000_000_000)
         self.assertEqual(_db.sum_reshapeable_xch_mojos(_ASSET_B), 500_000_000_000)
 
+    def test_start_fresh_clears_ownership_and_budgets(self):
+        """Start Fresh must free reshapeable XCH for a second-pair reallocation."""
+        pair_store.set_xch_budget_mojos(_ASSET_A, 2_000_000_000_000)
+        pair_store.set_xch_budget_mojos(_ASSET_B, 500_000_000_000)
+        _db.upsert_coin(
+            "owned-fresh-a",
+            "xch",
+            1_000_000_000_000,
+            designation="tier_spare",
+            assigned_tier="inner",
+        )
+        _db.claim_xch_ownership_for_pair(_ASSET_A, max_mojos=1_000_000_000_000)
+        self.assertGreater(_db.summarize_xch_ownership()["total_owned_coins"], 0)
+
+        own = _db.clear_all_xch_trading_ownership()
+        budgets = pair_store.clear_all_xch_budgets()
+        self.assertGreaterEqual(own.get("cleared_coins", 0), 1)
+        self.assertGreaterEqual(budgets.get("pairs_cleared", 0), 1)
+        self.assertEqual(_db.summarize_xch_ownership()["total_owned_coins"], 0)
+        self.assertEqual(pair_store.get_xch_budget_mojos(_ASSET_A), 0)
+        self.assertEqual(pair_store.get_xch_budget_mojos(_ASSET_B), 0)
+
     def test_portfolio_cap_blocks_over_exposure(self):
         cfg = MagicMock()
         cfg.PORTFOLIO_MAX_XCH_EXPOSURE = Decimal("1.0")
