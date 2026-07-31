@@ -600,6 +600,9 @@ class Config:
         self.INVENTORY_ENABLED = _bool("INVENTORY_ENABLED", True)
         self.SKEW_INTENSITY = _decimal("SKEW_INTENSITY", "0.3")
         self.MAX_POSITION_XCH = _decimal("MAX_POSITION_XCH", "5.0")
+        # Process-global cap on aggregate open buy XCH across all pairs.
+        # 0 = disabled (per-pair xch_budget gates still apply).
+        self.PORTFOLIO_MAX_XCH_EXPOSURE = _decimal("PORTFOLIO_MAX_XCH_EXPOSURE", "0")
 
         # ----- Dynamic Spreads (V2) -----
         # Default flipped from False → True on 2026-04-08: with this off,
@@ -1098,6 +1101,7 @@ class Config:
         "INVENTORY_ENABLED",
         "SKEW_INTENSITY",
         "MAX_POSITION_XCH",
+        "PORTFOLIO_MAX_XCH_EXPOSURE",
         # Dynamic spreads
         "DYNAMIC_SPREAD_ENABLED",
         "BASE_SPREAD_BPS",

@@ -96,6 +96,30 @@ CANCEL_PENDING_METHODS = frozenset(
 )
 
 
+def _current_xch_owner_asset_id() -> Optional[str]:
+    """Active pair asset id for XCH ownership filtering (multi-pair)."""
+    try:
+        from pair_context import get_pair_context
+
+        ctx = get_pair_context()
+        if ctx is not None:
+            aid = ctx.normalized_asset_id()
+            if len(aid) == 64:
+                return aid
+    except Exception:
+        pass
+    try:
+        aid = (
+            str(getattr(cfg, "CAT_ASSET_ID", "") or "")
+            .strip()
+            .lower()
+            .replace("0x", "")
+        )
+        return aid if len(aid) == 64 else None
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Offer Manager
 # ---------------------------------------------------------------------------
@@ -505,7 +529,10 @@ class OfferManager:
             # reserve, dust and unknown coins which cannot fill offer slots).
             from database import get_free_coins
 
-            db_free = get_free_coins(wallet_type)
+            _owner = (
+                _current_xch_owner_asset_id() if wallet_type == "xch" else None
+            )
+            db_free = get_free_coins(wallet_type, owner_asset_id=_owner)
             _TRADING_DESIGS = {"tier_spare", "tier_active"}
             _SKIP_TIERS = {"none", "sniper", "reserve", "fee"}
             usable_by_tier: Dict[str, int] = {}
@@ -780,6 +807,21 @@ class OfferManager:
                 records = spendable_records
             wallet_type = "xch" if wallet_id == cfg.WALLET_ID_XCH else "cat"
 
+            # Multi-pair: never spend another pair's owned XCH UTXOs.
+            foreign_xch_ids = set()
+            owner_aid = None
+            if wallet_type == "xch":
+                owner_aid = _current_xch_owner_asset_id()
+                try:
+                    from database import get_foreign_owned_xch_coin_ids
+
+                    foreign_xch_ids = {
+                        str(cid).strip().lower()
+                        for cid in get_foreign_owned_xch_coin_ids(owner_aid)
+                    }
+                except Exception:
+                    foreign_xch_ids = set()
+
             spendable_amounts = {}
             fallback_candidates = []
             for r in records:
@@ -788,6 +830,8 @@ class OfferManager:
                     continue
 
                 coin_id = coin_id.lower()
+                if coin_id in foreign_xch_ids:
+                    continue
                 coin_data = r.get("coin", {})
                 coin_amount = int(coin_data.get("amount", 0))
                 spendable_amounts[coin_id] = coin_amount
@@ -824,7 +868,9 @@ class OfferManager:
             try:
                 from database import get_free_coins, get_reserve_coins
 
-                db_free_coins = get_free_coins(wallet_type)
+                db_free_coins = get_free_coins(
+                    wallet_type, owner_asset_id=owner_aid if wallet_type == "xch" else None
+                )
                 reserve_ids = {
                     str(c.get("coin_id", "")).strip().lower()
                     for c in get_reserve_coins(wallet_type)
@@ -1432,6 +1478,59 @@ class OfferManager:
                         _xch_spend += abs(int(_amt))
                     elif int(_wid) == _cat_wid:
                         _cat_spend += abs(int(_amt))
+
+            # Multi-pair Phase 3/4: hard per-pair XCH budget + optional
+            # portfolio exposure cap for buy offers.
+            if _xch_spend > 0:
+                try:
+                    from shared_xch_ledger import ledger as _ledger
+                    from pair_context import get_pair_context
+
+                    _ctx = get_pair_context()
+                    _aid = (
+                        _ctx.normalized_asset_id()
+                        if _ctx is not None
+                        else str(getattr(cfg, "CAT_ASSET_ID", "") or "")
+                    )
+                    _ok, _reason = _ledger.can_spend_buy(_aid, _xch_spend)
+                    if not _ok:
+                        try:
+                            from database import log_event as _le
+
+                            _le(
+                                "warning",
+                                "xch_budget_blocked",
+                                _reason,
+                                data={
+                                    "asset_id": _aid,
+                                    "spend_mojos": _xch_spend,
+                                },
+                            )
+                        except Exception:
+                            pass
+                        return None
+                    _pok, _preason = _ledger.can_spend_portfolio(
+                        _xch_spend, cfg=cfg
+                    )
+                    if not _pok:
+                        try:
+                            from database import log_event as _le
+
+                            _le(
+                                "warning",
+                                "portfolio_exposure_blocked",
+                                _preason,
+                                data={
+                                    "asset_id": _aid,
+                                    "spend_mojos": _xch_spend,
+                                },
+                            )
+                        except Exception:
+                            pass
+                        return None
+                except Exception:
+                    pass  # fail-open if ledger unavailable
+
             if _xch_spend > 0 or _cat_spend > 0:
                 _rm = _RM()
                 _res = _rm.try_acquire(
@@ -3414,7 +3513,10 @@ class OfferManager:
         try:
             from database import get_free_coins
 
-            _db_free = get_free_coins(wallet_type_str)
+            _owner = (
+                _current_xch_owner_asset_id() if wallet_type_str == "xch" else None
+            )
+            _db_free = get_free_coins(wallet_type_str, owner_asset_id=_owner)
             _TRADING_DESIGS = {"tier_spare", "tier_active"}
             _SKIP_TIERS = {"none", "sniper", "reserve", "fee"}
             spare_count = sum(

@@ -382,6 +382,13 @@ class BotLoop:
     """
 
     def __init__(self):
+        # Multi-pair Phase 3: optional frozen pair identity/economics.
+        # When set, _run_loop installs pair_context so cfg reads resolve to
+        # this pair instead of the GUI focus slot.
+        self._pair_snapshot = None
+        self._pair_asset_id = None
+        self._pair_registry = None
+        self._pair_stop_shared_services = True
         # ---- Module instances ----
         self.price_engine = PriceEngine()
         self.market_intel = MarketIntel(price_engine=self.price_engine)
@@ -1008,11 +1015,48 @@ class BotLoop:
     # Start / Stop
     # -------------------------------------------------------------------
 
+    def _pair_event_meta(self) -> dict:
+        """Identity fields stamped onto SSE payloads for multi-pair filtering."""
+        meta = {}
+        aid = str(getattr(self, "_pair_asset_id", None) or "").strip().lower()
+        if not aid:
+            snap = getattr(self, "_pair_snapshot", None)
+            if snap is not None:
+                try:
+                    aid = snap.normalized_asset_id()
+                except Exception:
+                    aid = str(getattr(snap, "asset_id", "") or "").strip().lower()
+        if not aid:
+            aid = str(getattr(cfg, "CAT_ASSET_ID", "") or "").strip().lower()
+        aid = aid.replace("0x", "")
+        if len(aid) == 64:
+            meta["asset_id"] = aid
+            meta["cat_asset_id"] = aid
+        snap = getattr(self, "_pair_snapshot", None)
+        if snap is not None:
+            name = str(getattr(snap, "name", "") or "").strip()
+            ticker = str(getattr(snap, "ticker_id", "") or "").strip()
+            if name:
+                meta["pair_name"] = name
+            if ticker:
+                meta["pair_ticker"] = ticker
+        elif meta.get("asset_id"):
+            name = str(getattr(cfg, "CAT_NAME", "") or "").strip()
+            ticker = str(getattr(cfg, "CAT_TICKER_ID", "") or "").strip()
+            if name:
+                meta["pair_name"] = name
+            if ticker:
+                meta["pair_ticker"] = ticker
+        return meta
+
     def _emit(self, event_type: str, data: dict):
         """Push an event to the SSE event bus (if connected)."""
         if self._event_bus:
             try:
-                self._event_bus.emit(event_type, data)
+                payload = dict(data or {})
+                for key, value in self._pair_event_meta().items():
+                    payload.setdefault(key, value)
+                self._event_bus.emit(event_type, payload)
             except Exception:
                 pass  # Don't let event bus errors crash the bot
 
@@ -1101,8 +1145,25 @@ class BotLoop:
         """
         if self._event_bus:
             try:
+                meta = self._pair_event_meta()
+                scoped_id = str(alert_id or "")
+                aid = meta.get("asset_id") or ""
+                if aid and scoped_id and not scoped_id.startswith(f"{aid}:"):
+                    scoped_id = f"{aid}:{scoped_id}"
+                pair_label = meta.get("pair_ticker") or meta.get("pair_name") or ""
+                scoped_title = title
+                if pair_label and title and f"[{pair_label}]" not in str(title):
+                    scoped_title = f"[{pair_label}] {title}"
                 self._event_bus.alert(
-                    alert_id, severity, title, message, action, action_label
+                    scoped_id,
+                    severity,
+                    scoped_title,
+                    message,
+                    action,
+                    action_label,
+                    asset_id=aid or None,
+                    pair_name=meta.get("pair_name") or None,
+                    pair_ticker=meta.get("pair_ticker") or None,
                 )
             except Exception as _alert_err:
                 try:
@@ -4605,8 +4666,8 @@ class BotLoop:
                 f"AMM Monitor stop raised during shutdown: {e}",
             )
 
-        # Stop mempool watcher
-        if _mempool_watcher_mod:
+        # Stop mempool watcher only when no other pair still needs it.
+        if getattr(self, "_pair_stop_shared_services", True) and _mempool_watcher_mod:
             try:
                 _mempool_watcher_mod.stop_watcher()
             except Exception as e:
@@ -4640,8 +4701,8 @@ class BotLoop:
                         f"{_t_name} thread did not exit within 10s",
                     )
 
-        # V3: Stop Splash node
-        if self.splash_node.is_running():
+        # V3: Stop Splash node only when this pair owns shared services.
+        if getattr(self, "_pair_stop_shared_services", True) and self.splash_node.is_running():
             try:
                 self.splash_node.stop()
             except Exception as e:
@@ -4880,6 +4941,13 @@ class BotLoop:
 
     def _run_loop(self):
         """The main trading loop — runs forever until stopped."""
+        from pair_context import pair_context
+
+        with pair_context(getattr(self, "_pair_snapshot", None)):
+            self._run_loop_inner()
+
+    def _run_loop_inner(self):
+        """Inner loop body (runs under optional pair_context)."""
         log_event("info", "bot_loop_init", "Initialising bot loop...")
 
         # Startup: sync state from wallet
@@ -4897,7 +4965,10 @@ class BotLoop:
             loop_start = time.time()
 
             try:
-                self._run_one_cycle()
+                from pair_context import pair_context
+
+                with pair_context(getattr(self, "_pair_snapshot", None)):
+                    self._run_one_cycle()
             except Exception as e:
                 log_event(
                     "error",
@@ -14432,6 +14503,13 @@ class BotLoop:
 
         The thread exits when self._running becomes False.
         """
+        from pair_context import pair_context
+
+        with pair_context(getattr(self, "_pair_snapshot", None)):
+            self._health_monitor_thread_inner()
+
+    def _health_monitor_thread_inner(self):
+        """Inner health monitor body (runs under optional pair_context)."""
         # Wait for startup_sync to finish before writing to DB
         slog("THREAD", "health-monitor waiting for startup_complete gate...")
         self._startup_complete.wait(timeout=120)
@@ -14650,6 +14728,13 @@ class BotLoop:
 
         V1 had this as _price_watcher_thread().
         """
+        from pair_context import pair_context
+
+        with pair_context(getattr(self, "_pair_snapshot", None)):
+            self._price_watcher_thread_inner()
+
+    def _price_watcher_thread_inner(self):
+        """Inner price watcher body (runs under optional pair_context)."""
         # Wait for startup_sync to finish before polling prices
         slog("THREAD", "price-watcher waiting for startup_complete gate...")
         self._startup_complete.wait(timeout=120)
@@ -14813,6 +14898,13 @@ class BotLoop:
         Thread is read-only — it only reads wallet + DB state and logs changes.
         The main bot loop remains the authority for DB writes.
         """
+        from pair_context import pair_context
+
+        with pair_context(getattr(self, "_pair_snapshot", None)):
+            self._coin_watcher_thread_inner()
+
+    def _coin_watcher_thread_inner(self):
+        """Inner coin watcher body (runs under optional pair_context)."""
         # Wait for startup_sync to finish before polling coins
         slog("THREAD", "coin-watcher waiting for startup_complete gate...")
         self._startup_complete.wait(timeout=120)

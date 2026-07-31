@@ -43,6 +43,112 @@ except Exception:
 
 bp = Blueprint("bot", __name__)
 
+# Shared /api/status TibetSwap fallback cache. The pre-bot branch already
+# caches for 60s; the bot-exists-but-no-mid branch historically refetched
+# on every poll, spamming logs and stalling Flask/Qt under poll pressure.
+_STATUS_TIBET_FALLBACK_CACHE: Dict[str, Any] = {
+    "fetched_at": 0.0,
+    "asset_id": "",
+    "mid": 0.0,
+    "logged_at": 0.0,
+}
+_STATUS_TIBET_FALLBACK_TTL_SECS = 60.0
+_STATUS_TIBET_FALLBACK_LOG_SECS = 300.0
+
+
+def _get_status_tibet_fallback_mid(
+    asset_id: str,
+    cat_decimals: int,
+    *,
+    force_refresh: bool = False,
+) -> float:
+    """Return a cached TibetSwap mid for /api/status, fetching at most once/min.
+
+    Logs at most once per ``_STATUS_TIBET_FALLBACK_LOG_SECS`` so a stuck
+    mid=0 bot does not flood the desktop console (and starve the UI thread).
+    """
+    aid = str(asset_id or "").strip().lower().replace("0x", "")
+    if len(aid) != 64:
+        return 0.0
+
+    now = time.time()
+    cache = _STATUS_TIBET_FALLBACK_CACHE
+    if (
+        not force_refresh
+        and cache.get("asset_id") == aid
+        and float(cache.get("mid") or 0) > 0
+        and (now - float(cache.get("fetched_at") or 0)) < _STATUS_TIBET_FALLBACK_TTL_SECS
+    ):
+        return float(cache["mid"])
+
+    mid = 0.0
+    try:
+        import requests as _req
+
+        _record_api_call("tibetswap", "/pairs")
+        resp = _req.get(
+            "https://api.v2.tibetswap.io/pairs",
+            params={"skip": 0, "limit": 200},
+            timeout=8,
+        )
+        if resp.status_code == 200:
+            for p in resp.json():
+                p_id = (
+                    str(p.get("asset_id", "")).lower().strip().replace("0x", "")
+                )
+                if p_id != aid:
+                    continue
+                xr = float(p.get("xch_reserve", 0)) / 1e12
+                tr = float(p.get("token_reserve", 0)) / (10 ** int(cat_decimals or 3))
+                if tr > 0:
+                    mid = xr / tr
+                break
+    except Exception as e:
+        if (now - float(cache.get("logged_at") or 0)) >= _STATUS_TIBET_FALLBACK_LOG_SECS:
+            print(f"[STATUS] TibetSwap fallback failed: {e}", flush=True)
+            cache["logged_at"] = now
+        # Keep a still-fresh previous mid for this asset if the refresh failed.
+        if cache.get("asset_id") == aid and float(cache.get("mid") or 0) > 0:
+            return float(cache["mid"])
+        return 0.0
+
+    cache["fetched_at"] = now
+    cache["asset_id"] = aid
+    cache["mid"] = float(mid or 0)
+    if mid > 0 and (now - float(cache.get("logged_at") or 0)) >= _STATUS_TIBET_FALLBACK_LOG_SECS:
+        print(f"[STATUS] TibetSwap fallback price: {mid:.8f}", flush=True)
+        cache["logged_at"] = now
+    return float(mid or 0)
+
+
+def _status_bid_ask_from_mid(mid: float) -> tuple:
+    """Derive bid/ask for /api/status without calling risk_manager.
+
+    ``get_market_health()`` / ``get_adjusted_spread()`` can take hundreds of
+    milliseconds and are hooked for logging — calling them on every status
+    poll freezes the desktop WebEngine under Qt.
+    """
+    if mid <= 0:
+        return 0.0, 0.0
+    try:
+        bot = getattr(api_server, "bot", None)
+        state = getattr(bot, "_bot_state", None) or {}
+        buy_bps = api_server._safe_float(state.get("buy_spread_bps", 0) or 0)
+        sell_bps = api_server._safe_float(state.get("sell_spread_bps", 0) or 0)
+        if buy_bps > 0 and sell_bps > 0:
+            return mid * (1 - buy_bps / 10000), mid * (1 + sell_bps / 10000)
+        total_bps = api_server._safe_float(state.get("spread_bps", 0) or 0)
+        if total_bps > 0:
+            half = total_bps / 20000.0
+            return mid * (1 - half), mid * (1 + half)
+    except Exception:
+        pass
+    base_bps = api_server._safe_float(
+        getattr(cfg, "BASE_SPREAD_BPS", 0) or getattr(cfg, "SPREAD_BPS", 200) or 200
+    )
+    half = (base_bps / 10000.0) / 2.0
+    return mid * (1 - half), mid * (1 + half)
+
 
 def _api_server():
     """Return the currently loaded api_server module.
@@ -297,7 +403,58 @@ def api_bot_start():
 
     server._reset_runtime_session_stats()
 
-    # Start with warnings
+    # Multi-pair Phase 3: start the focused pair via the registry so XCH
+    # budget checks and concurrent-pair caps apply. Falls back to legacy
+    # singleton start if the registry path fails unexpectedly.
+    focus_asset = str(getattr(cfg, "CAT_ASSET_ID", "") or "").strip().lower()
+    try:
+        from pair_registry import get_registry
+        import pair_store as _pair_store
+
+        with server._active_cat_lock:
+            active = dict(server._active_cat)
+        try:
+            _pair_store.persist_current_pair_overlay(cfg)
+        except Exception:
+            pass
+        reg_result = get_registry().start_pair(
+            focus_asset, cfg=cfg, active_cat=active
+        )
+        if not reg_result.get("success"):
+            return jsonify(
+                {
+                    "success": False,
+                    "status": "error",
+                    "errors": [reg_result.get("error") or "Failed to start pair"],
+                    "warnings": warnings,
+                    "bot_status": reg_result.get("bot_status") or "blocked",
+                }
+            ), 400
+        rt = get_registry().get_runtime(focus_asset)
+        if rt and rt.bot is not None:
+            server.bot = rt.bot
+        server._fresh_start_clear()
+        server.events.emit(
+            "bot_control",
+            {"action": "started", "asset_id": focus_asset, "multi_pair": True},
+        )
+        result = {
+            "success": True,
+            "status": "started",
+            "asset_id": focus_asset,
+            "running_pairs": reg_result.get("running_pairs") or [],
+        }
+        if warnings:
+            result["warnings"] = warnings
+        return jsonify(result)
+    except Exception as reg_err:
+        log_event(
+            "warning",
+            "pair_registry_start_fallback",
+            f"Registry start failed, falling back to singleton: {reg_err}",
+        )
+
+    # Legacy singleton start
     started = bot.start()
     if not started:
         state = {}
@@ -330,10 +487,38 @@ def api_bot_start():
 
 @bp.route("/api/bot/stop", methods=["POST"])
 def api_bot_stop():
-    """Stop the bot loop."""
+    """Stop the focused bot loop (or all if only one is running).
+
+    Multi-pair: stops the focused pair only. Other running pairs continue.
+    Open offers are left resting.
+    """
     server = _api_server()
     bot = server.bot
     slog("GUI_ACTION", ">>> BUTTON: Stop Bot")
+
+    # Prefer registry stop for the focused asset.
+    try:
+        from pair_registry import get_registry
+
+        focus = str(getattr(server.cfg, "CAT_ASSET_ID", "") or "").strip().lower()
+        registry = get_registry()
+        if focus and registry.is_running(focus):
+            result = registry.stop_pair(focus)
+            focus_bot = registry.get_focus_bot(focus)
+            if focus_bot is not None:
+                server.bot = focus_bot
+            server.events.emit(
+                "bot_control",
+                {"action": "stopped", "asset_id": focus, "multi_pair": True},
+            )
+            return jsonify(result)
+    except Exception as reg_err:
+        log_event(
+            "warning",
+            "pair_registry_stop_fallback",
+            f"Registry stop failed, falling back to singleton: {reg_err}",
+        )
+
     if not bot:
         return jsonify({"error": "Bot not initialised"}), 500
 
@@ -1147,82 +1332,35 @@ def api_status():
                 pass
 
         # Last resort: if still no price (bot created but loop hasn't run yet),
-        # do a lightweight TibetSwap fetch. This is read-only — no DB writes.
-        # Without this, the settings/coin-prep page can't calculate sell amounts.
+        # use a cached lightweight TibetSwap fetch. Uncached polls previously
+        # hammered the oracle + printed on every GUI poll, which could freeze
+        # the Qt desktop window under Flask thread pile-up.
         if mid == 0:
-            try:
-                import requests as _req
+            asset_id = api_server._active_cat.get("asset_id") or (
+                cfg.CAT_ASSET_ID if hasattr(cfg, "CAT_ASSET_ID") else ""
+            )
+            cat_dec = api_server._active_cat.get("decimals") or getattr(
+                cfg, "CAT_DECIMALS", 3
+            )
+            if asset_id:
+                mid = _get_status_tibet_fallback_mid(asset_id, int(cat_dec or 3))
+                # Seed the price-engine cache so the next poll hits the
+                # read-only path above instead of re-entering fallback.
+                if mid > 0 and hasattr(bot, "price_engine") and bot.price_engine:
+                    try:
+                        bot.price_engine._last_price_result = {
+                            "mid_price": mid,
+                            "source": "tibetswap_status_fallback",
+                        }
+                    except Exception:
+                        pass
 
-                asset_id = api_server._active_cat.get("asset_id") or (
-                    cfg.CAT_ASSET_ID if hasattr(cfg, "CAT_ASSET_ID") else ""
-                )
-                cat_dec = api_server._active_cat.get("decimals") or getattr(
-                    cfg, "CAT_DECIMALS", 3
-                )
-                if asset_id:
-                    _record_api_call("tibetswap", "/pairs")
-                    resp = _req.get(
-                        "https://api.v2.tibetswap.io/pairs",
-                        params={"skip": 0, "limit": 200},
-                        timeout=8,
-                    )
-                    if resp.status_code == 200:
-                        norm_id = asset_id.lower().strip().replace("0x", "")
-                        for p in resp.json():
-                            p_id = (
-                                str(p.get("asset_id", ""))
-                                .lower()
-                                .strip()
-                                .replace("0x", "")
-                            )
-                            if p_id == norm_id:
-                                xr = float(p.get("xch_reserve", 0)) / 1e12
-                                tr = float(p.get("token_reserve", 0)) / (
-                                    10 ** int(cat_dec)
-                                )
-                                if tr > 0:
-                                    mid = xr / tr
-                                    print(
-                                        f"[STATUS] TibetSwap fallback price: {mid:.8f}",
-                                        flush=True,
-                                    )
-                                break
-            except Exception as e:
-                print(f"[STATUS] TibetSwap fallback failed: {e}", flush=True)
-
-        # Compute bid/ask from mid using the EFFECTIVE spread.
-        # last_quoted_buy/sell both store mid_price (not actual bid/ask),
-        # so we always need to derive bid/ask from the spread.
+        # Compute bid/ask from mid using bot_state / config spreads only.
+        # Do NOT call risk_manager.get_market_health() / get_adjusted_spread()
+        # here — those are expensive and hooked for timing logs; status polls
+        # must stay cheap for the desktop WebEngine.
         if mid > 0:
-            _got_spread = False
-            # Try to get the effective spread from the risk manager (dynamic spread)
-            try:
-                if hasattr(bot, "risk_manager") and bot.risk_manager:
-                    health = bot.risk_manager.get_market_health()
-                    if health:
-                        _buy_bps = api_server._safe_float(
-                            health.get("buy_spread_bps", 0)
-                        )
-                        _sell_bps = api_server._safe_float(
-                            health.get("sell_spread_bps", 0)
-                        )
-                        if _buy_bps > 0 and _sell_bps > 0:
-                            bid = mid * (1 - _buy_bps / 10000)
-                            ask = mid * (1 + _sell_bps / 10000)
-                            _got_spread = True
-            except Exception:
-                pass
-
-            # Fallback: if risk manager didn't provide spread, use config
-            if not _got_spread:
-                _base_bps = api_server._safe_float(
-                    getattr(cfg, "BASE_SPREAD_BPS", 0)
-                    or getattr(cfg, "SPREAD_BPS", 200)
-                    or 200
-                )
-                spread_frac = _base_bps / 10000
-                bid = mid * (1 - spread_frac / 2)
-                ask = mid * (1 + spread_frac / 2)
+            bid, ask = _status_bid_ask_from_mid(mid)
 
         pricing_out = {"bid": bid, "mid": mid, "ask": ask}
 
@@ -1703,14 +1841,20 @@ def api_status():
                 slog("API_STATUS", f"Coin tracking RPC failed: {e}", level="warning")
 
         # --- Spread BPS for Close the Gap modal ---
+        # Prefer last bot-loop value / config. Never recompute via
+        # get_adjusted_spread on the status poll (see pricing block above).
         spread_bps_val = "0"
         if hasattr(bot, "_bot_state") and bot._bot_state.get("spread_bps"):
-            spread_bps_val = bot._bot_state["spread_bps"]
-        elif hasattr(bot, "risk_manager") and bot.risk_manager:
+            spread_bps_val = str(bot._bot_state["spread_bps"])
+        else:
             try:
-                bs = bot.risk_manager.get_adjusted_spread("buy")
-                ss = bot.risk_manager.get_adjusted_spread("sell")
-                spread_bps_val = str(int((bs + ss) / 2 * Decimal("10000")))
+                _cfg_bps = int(
+                    getattr(cfg, "BASE_SPREAD_BPS", 0)
+                    or getattr(cfg, "SPREAD_BPS", 200)
+                    or 200
+                )
+                if _cfg_bps > 0:
+                    spread_bps_val = str(_cfg_bps)
             except Exception:
                 pass
 

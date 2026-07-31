@@ -1016,20 +1016,29 @@ class CoinPrepWorker:
         if not coins:
             return
 
+        protected = (
+            self._protected_xch_coin_ids()
+            if wallet_type == "xch" and self._xch_selective_reshape_enabled()
+            else set()
+        )
         for c in coins:
             coin_id = self._ensure_0x(c.get("coin_id", ""))
             amount = c.get("amount", 0)
-            if coin_id:
-                try:
-                    upsert_coin(coin_id, wallet_type, amount)
-                    designate_reserve(coin_id, wallet_type, amount)
-                    _mark_coin_already_advised(coin_id)
-                    self.log(
-                        f"   DB: post-consolidation {wallet_type} topup pool coin → "
-                        f"{coin_id[:16]}... ({amount:,} mojos)"
-                    )
-                except Exception as e:
-                    self.log(f"   DB: topup pool designation failed: {e}")
+            if not coin_id:
+                continue
+            if protected and self._is_protected_xch_coin(coin_id, protected):
+                # Leave foreign/shared UTXOs alone — do not re-tag as reserve.
+                continue
+            try:
+                upsert_coin(coin_id, wallet_type, amount)
+                designate_reserve(coin_id, wallet_type, amount)
+                _mark_coin_already_advised(coin_id)
+                self.log(
+                    f"   DB: post-consolidation {wallet_type} topup pool coin → "
+                    f"{coin_id[:16]}... ({amount:,} mojos)"
+                )
+            except Exception as e:
+                self.log(f"   DB: topup pool designation failed: {e}")
 
     def _build_tier_amount_plan(self, wallet_type: str):
         """Build exact per-amount tier expectations for the current prep mode."""
@@ -1328,13 +1337,14 @@ class CoinPrepWorker:
         try:
             from database import get_connection
 
-            gc = get_connection()
-            gone_result = gc.execute(
-                "UPDATE coins SET status='gone' WHERE status='free'"
-            )
-            gc.commit()
+            gone_count = self._mark_stale_coins_gone_for_prep()
             self.log(
-                f"   DB: reset {gone_result.rowcount} coins to 'gone' before re-scan"
+                f"   DB: reset {gone_count} coins to 'gone' before re-scan"
+                + (
+                    " (protected foreign/shared XCH preserved)"
+                    if self._xch_selective_reshape_enabled()
+                    else ""
+                )
             )
         except Exception as ge:
             self.log(f"   DB: pre-sweep reset failed: {ge}")
@@ -2506,12 +2516,296 @@ class CoinPrepWorker:
             self.log(f"   {traceback.format_exc()}")
             return False
 
+    # ------------------------------------------------------------------
+    # Multi-pair selective XCH reshape helpers
+    # ------------------------------------------------------------------
+    def _prep_owner_asset_id(self) -> Optional[str]:
+        """CAT asset id for this prep run (drives XCH ownership filtering)."""
+        aid = (
+            str(os.getenv("CAT_ASSET_ID") or "")
+            .strip()
+            .lower()
+            .replace("0x", "")
+        )
+        return aid if len(aid) == 64 else None
+
+    def _xch_selective_reshape_enabled(self) -> bool:
+        """True when prep should leave foreign/shared XCH UTXOs untouched."""
+        return bool(self._prep_owner_asset_id())
+
+    def _protected_xch_coin_ids(self) -> set:
+        """Normalized coin IDs that must not be melted this prep run."""
+        if not self._xch_selective_reshape_enabled():
+            return set()
+        try:
+            from database import get_xch_coins_protected_from_prep
+
+            return set(
+                get_xch_coins_protected_from_prep(self._prep_owner_asset_id()) or set()
+            )
+        except Exception as exc:
+            self.log(f"   ⚠️ Could not load protected XCH coin IDs: {exc}")
+            return set()
+
+    @staticmethod
+    def _norm_prep_coin_id(cid: str) -> str:
+        try:
+            from database import norm_coin_id
+
+            return norm_coin_id(cid)
+        except Exception:
+            raw = str(cid or "").strip().lower()
+            if raw and not raw.startswith("0x"):
+                raw = "0x" + raw
+            return raw
+
+    def _is_protected_xch_coin(self, cid: str, protected: Optional[set] = None) -> bool:
+        if not cid:
+            return False
+        prot = protected if protected is not None else self._protected_xch_coin_ids()
+        return self._norm_prep_coin_id(cid) in prot
+
+    def _filter_xch_inputs_for_reshape(
+        self, inputs: list
+    ) -> tuple:
+        """Split ``[(cid, amount), ...]`` into (reshapeable, protected)."""
+        protected = self._protected_xch_coin_ids()
+        if not protected:
+            return list(inputs), []
+        keep = []
+        skip = []
+        for item in inputs:
+            if isinstance(item, tuple):
+                cid, amount = item[0], item[1]
+            else:
+                cid, amount = item, 0
+            if self._is_protected_xch_coin(cid, protected):
+                skip.append((cid, amount))
+            else:
+                keep.append((cid, amount))
+        return keep, skip
+
+    def get_reshapeable_coin_count(self, wallet_id: int) -> int:
+        """Spendable coins eligible for melt/reshape.
+
+        For CAT (or legacy single-pair XCH) this equals ``get_coin_count``.
+        Under multi-pair selective XCH reshape, foreign-owned and shared-pool
+        UTXOs are excluded so leftover protected coins do not force a melt.
+        """
+        if wallet_id != self.xch_wallet_id or not self._xch_selective_reshape_enabled():
+            return self.get_coin_count(wallet_id)
+        try:
+            from wallet_sage import get_spendable_coins_rpc
+
+            result = get_spendable_coins_rpc(wallet_id) or {}
+            records = (
+                result.get("confirmed_records")
+                or result.get("records")
+                or result.get("coins")
+                or []
+            )
+            protected = self._protected_xch_coin_ids()
+            count = 0
+            for rec in records:
+                if not isinstance(rec, dict):
+                    continue
+                if int(rec.get("spent_block_index", 0) or 0) != 0:
+                    continue
+                coin = rec.get("coin") if isinstance(rec.get("coin"), dict) else {}
+                amount = int(
+                    rec.get("amount")
+                    or coin.get("amount")
+                    or 0
+                )
+                if amount <= 0:
+                    continue
+                raw = (
+                    rec.get("coin_id")
+                    or rec.get("name")
+                    or coin.get("coin_id")
+                    or coin.get("name")
+                    or ""
+                )
+                if self._is_protected_xch_coin(str(raw), protected):
+                    continue
+                count += 1
+            return count
+        except Exception as exc:
+            self.log(f"   ⚠️ Reshapeable XCH count fallback to full count: {exc}")
+            return self.get_coin_count(wallet_id)
+
+    def _sum_reshapeable_xch_mojos(self) -> Optional[int]:
+        """Sum mojos of non-protected spendable XCH; None on RPC failure."""
+        try:
+            from wallet_sage import get_spendable_coins_rpc
+
+            result = get_spendable_coins_rpc(self.xch_wallet_id) or {}
+            records = (
+                result.get("confirmed_records")
+                or result.get("records")
+                or result.get("coins")
+                or []
+            )
+            protected = self._protected_xch_coin_ids()
+            total = 0
+            for rec in records:
+                if not isinstance(rec, dict):
+                    continue
+                if int(rec.get("spent_block_index", 0) or 0) != 0:
+                    continue
+                coin = rec.get("coin") if isinstance(rec.get("coin"), dict) else {}
+                amount = int(
+                    rec.get("amount")
+                    or coin.get("amount")
+                    or 0
+                )
+                if amount <= 0:
+                    continue
+                raw = (
+                    rec.get("coin_id")
+                    or rec.get("name")
+                    or coin.get("coin_id")
+                    or coin.get("name")
+                    or ""
+                )
+                if self._is_protected_xch_coin(str(raw), protected):
+                    continue
+                total += amount
+            return total
+        except Exception:
+            return None
+
+    def _xch_consolidated_ready(self, observed_count: Optional[int] = None) -> bool:
+        """True when reshapeable XCH is consolidated (tolerates protected leftovers)."""
+        reshapeable = (
+            int(observed_count)
+            if observed_count is not None
+            else self.get_reshapeable_coin_count(self.xch_wallet_id)
+        )
+        allow_extra_fee = self._tx_fee_mojos() > 0
+        if allow_extra_fee:
+            return 1 <= reshapeable <= 2
+        return reshapeable == 1
+
+    def _credit_existing_shared_xch_tiers(self) -> Dict[str, int]:
+        """Skip recreating shared fees/sniper when protected pools already exist.
+
+        Only runs under selective multi-pair reshape. Mutates
+        ``self.xch_tier_counts`` / ``self.xch_target_coins`` in place.
+        Returns ``{tier: credited_count}``.
+        """
+        if not self.tier_enabled or not self._xch_selective_reshape_enabled():
+            return {}
+        if not getattr(self, "xch_tier_counts", None):
+            return {}
+        try:
+            from database import credit_shared_xch_tier_targets
+        except Exception as exc:
+            self.log(f"   ⚠️ Shared-tier credit skipped (import): {exc}")
+            return {}
+
+        before = dict(self.xch_tier_counts)
+        try:
+            result = credit_shared_xch_tier_targets(self.xch_tier_counts) or {}
+        except Exception as exc:
+            self.log(f"   ⚠️ Shared-tier credit failed: {exc}")
+            return {}
+
+        adjusted = result.get("adjusted_counts") or {}
+        credited = {
+            k: int(v)
+            for k, v in (result.get("credited") or {}).items()
+            if int(v or 0) > 0
+        }
+        if not credited:
+            return {}
+
+        self.xch_tier_counts = {
+            str(k): int(v)
+            for k, v in adjusted.items()
+            if int(v or 0) > 0
+        }
+        # Keep legacy combined view in sync for partition helpers.
+        if getattr(self, "tier_counts", None) is not None:
+            for tier in ("fees", "sniper"):
+                if tier in before:
+                    self.tier_counts[tier] = int(self.xch_tier_counts.get(tier, 0) or 0)
+        self.xch_target_coins = sum(int(v or 0) for v in self.xch_tier_counts.values())
+        for tier, n in credited.items():
+            have = int((result.get("existing") or {}).get(tier, 0) or 0)
+            still = int(self.xch_tier_counts.get(tier, 0) or 0)
+            if still <= 0:
+                self.log(
+                    f"   ✅ Shared {tier} pool already has {have} coin(s) — "
+                    f"skipping recreate (credited {n})"
+                )
+            else:
+                self.log(
+                    f"   ✅ Shared {tier}: keeping {have} existing, "
+                    f"creating {still} more (credited {n})"
+                )
+        return credited
+
+    def _mark_stale_coins_gone_for_prep(self) -> int:
+        """Mark free coins gone before reshape, preserving protected XCH rows."""
+        from database import get_connection
+
+        conn = get_connection()
+        owner = self._prep_owner_asset_id()
+        if not self._xch_selective_reshape_enabled() or not owner:
+            result = conn.execute(
+                "UPDATE coins SET status='gone' WHERE status='free'"
+            )
+            conn.commit()
+            return int(result.rowcount or 0)
+
+        protected = self._protected_xch_coin_ids()
+        if not protected:
+            # Still scope CAT wipe to this pair even when nothing is protected.
+            result = conn.execute(
+                "UPDATE coins SET status='gone' WHERE status='free' AND ("
+                "wallet_type='xch' OR "
+                "(wallet_type='cat' AND ("
+                "asset_id=? OR asset_id IS NULL OR asset_id='')))",
+                (owner,),
+            )
+            conn.commit()
+            return int(result.rowcount or 0)
+
+        placeholders = ",".join("?" for _ in protected)
+        # Preserve foreign-owned + shared-pool XCH; wipe this pair's CAT
+        # (and untagged CAT rows) plus reshapeable XCH.
+        result = conn.execute(
+            f"UPDATE coins SET status='gone' WHERE status='free' AND ("
+            f"(wallet_type='xch' AND coin_id NOT IN ({placeholders})) OR "
+            f"(wallet_type='cat' AND ("
+            f"asset_id=? OR asset_id IS NULL OR asset_id='')))",
+            [*list(protected), owner],
+        )
+        conn.commit()
+        return int(result.rowcount or 0)
+
     def consolidate_wallet(self, wallet_id: int, name: str) -> bool:
-        """Consolidate all coins in wallet to single coin"""
+        """Consolidate coins in wallet to a single reshapeable coin.
+
+        Under multi-pair selective XCH reshape, foreign-owned and shared
+        fee/sniper/reserve UTXOs are left untouched.
+        """
         self.log(f"🔄 Consolidating {name} wallet...")
 
         if self.is_sage:
             return self._consolidate_wallet_sage(wallet_id, name)
+
+        if (
+            wallet_id == self.xch_wallet_id
+            and self._xch_selective_reshape_enabled()
+            and self._protected_xch_coin_ids()
+        ):
+            self.log(
+                "❌ Selective multi-pair XCH reshape requires Sage "
+                "(Chia CLI full-balance send would melt foreign/shared coins)"
+            )
+            return False
 
         # --- Chia CLI path ---
         # Get current address
@@ -2626,8 +2920,16 @@ class CoinPrepWorker:
         so the primary Sage path is the same operation an operator would
         perform manually: send the wallet balance back to our own address.
         """
-        coin_count = self.get_coin_count(wallet_id)
-        self.log(f"Current {name} coins: {coin_count}")
+        if wallet_id == self.xch_wallet_id and self._xch_selective_reshape_enabled():
+            coin_count = self.get_reshapeable_coin_count(wallet_id)
+            protected_n = len(self._protected_xch_coin_ids())
+            self.log(
+                f"Current {name} reshapeable coins: {coin_count}"
+                + (f" (+{protected_n} protected left untouched)" if protected_n else "")
+            )
+        else:
+            coin_count = self.get_coin_count(wallet_id)
+            self.log(f"Current {name} coins: {coin_count}")
 
         if coin_count <= 1:
             self.log(f"✅ {name} already consolidated ({coin_count} coin)")
@@ -2687,6 +2989,27 @@ class CoinPrepWorker:
             # Filter unspent
             unspent = [r for r in records if r.get("spent_block_index", 0) == 0]
 
+            # Multi-pair: never feed foreign/shared XCH into /combine.
+            if wallet_id == self.xch_wallet_id and self._xch_selective_reshape_enabled():
+                protected = self._protected_xch_coin_ids()
+                if protected:
+                    before = len(unspent)
+                    filtered = []
+                    for r in unspent:
+                        cid = r.get("coin_id", "")
+                        if not cid and r.get("coin"):
+                            cid = r["coin"].get("coin_id", "")
+                        if self._is_protected_xch_coin(str(cid), protected):
+                            continue
+                        filtered.append(r)
+                    skipped = before - len(filtered)
+                    if skipped:
+                        self.log(
+                            f"   Protecting {skipped} foreign/shared {name} "
+                            f"coin(s) from /combine"
+                        )
+                    unspent = filtered
+
             if len(unspent) == 0:
                 self.log(
                     f"{name} has 0 spendable coins for /combine; not treating as consolidated"
@@ -2740,29 +3063,50 @@ class CoinPrepWorker:
         max_wait_seconds: int = 360,
         poll_interval: int = 5,
     ) -> bool:
-        """Wait until a Sage self-send has really reset the wallet to one coin."""
+        """Wait until a Sage self-send has really reset reshapeable coins to one."""
         saw_pending_lock = False
         restored_for = 0
         last_count = None
+        selective_xch = (
+            wallet_id == self.xch_wallet_id and self._xch_selective_reshape_enabled()
+        )
 
         for elapsed in range(0, max_wait_seconds + poll_interval, poll_interval):
             if elapsed:
                 time.sleep(poll_interval)
 
-            observed_count = self.get_coin_count(wallet_id)
-            if wallet_id == self.xch_wallet_id:
-                self._set_status_coin_counts(xch_total=observed_count)
+            if selective_xch:
+                observed_count = self.get_reshapeable_coin_count(wallet_id)
+                # Full wallet count for GUI only — separate RPC, not the
+                # reshapeable probe used for readiness.
+                total_visible = self.get_coin_count(wallet_id)
             else:
-                self._set_status_coin_counts(cat_total=observed_count)
+                observed_count = self.get_coin_count(wallet_id)
+                total_visible = observed_count
+            if wallet_id == self.xch_wallet_id:
+                self._set_status_coin_counts(xch_total=total_visible)
+            else:
+                self._set_status_coin_counts(cat_total=total_visible)
             self.update_status(
                 PrepPhase.CONSOLIDATING,
                 0.20,
-                f"Consolidating {name}: {observed_count} coins",
+                f"Consolidating {name}: {observed_count}"
+                + (
+                    f" reshapeable / {total_visible} total"
+                    if selective_xch and total_visible != observed_count
+                    else " coins"
+                ),
             )
 
-            if observed_count == 1:
+            ready = (
+                self._xch_consolidated_ready(observed_count)
+                if selective_xch
+                else (observed_count == 1)
+            )
+            if ready:
                 self.log(
-                    f"OK: {name} consolidation confirmed: {before_count} -> 1 coin"
+                    f"OK: {name} consolidation confirmed: {before_count} -> "
+                    f"{observed_count} reshapeable coin(s)"
                 )
                 return True
 
@@ -2808,10 +3152,13 @@ class CoinPrepWorker:
             if elapsed > 0 and elapsed % 30 == 0:
                 self.log(
                     f"Waiting for {name} consolidation confirmation "
-                    f"({elapsed}s, {observed_count} coins visible)"
+                    f"({elapsed}s, {observed_count} reshapeable coins)"
                 )
 
-        final_count = self.get_coin_count(wallet_id)
+        if selective_xch:
+            final_count = self.get_reshapeable_coin_count(wallet_id)
+        else:
+            final_count = self.get_coin_count(wallet_id)
         self.log(
             f"ERROR: {name} consolidation did not complete within {max_wait_seconds}s "
             f"({before_count} -> {final_count} coins)"
@@ -2842,19 +3189,33 @@ class CoinPrepWorker:
                 if elapsed:
                     time.sleep(5)
 
-                observed_count = self.get_coin_count(wallet_id)
+                selective_xch = (
+                    wallet_id == self.xch_wallet_id
+                    and self._xch_selective_reshape_enabled()
+                )
+                if selective_xch:
+                    observed_count = self.get_reshapeable_coin_count(wallet_id)
+                    total_visible = self.get_coin_count(wallet_id)
+                else:
+                    observed_count = self.get_coin_count(wallet_id)
+                    total_visible = observed_count
                 self._sage_consolidation_resync_last_count = observed_count
                 if wallet_id == self.xch_wallet_id:
-                    self._set_status_coin_counts(xch_total=observed_count)
+                    self._set_status_coin_counts(xch_total=total_visible)
                 else:
-                    self._set_status_coin_counts(cat_total=observed_count)
+                    self._set_status_coin_counts(cat_total=total_visible)
                 self.update_status(
                     PrepPhase.CONSOLIDATING,
                     0.22,
                     f"Resyncing Sage {name} view: {observed_count} coins",
                 )
 
-                if observed_count == 1:
+                ready = (
+                    self._xch_consolidated_ready(observed_count)
+                    if selective_xch
+                    else (observed_count == 1)
+                )
+                if ready:
                     self.log(f"OK: Sage resync recovered {name} consolidation view")
                     return True
 
@@ -2963,6 +3324,30 @@ class CoinPrepWorker:
                 )
                 return False
 
+            # Multi-pair: melt only unowned + this pair's XCH; leave foreign
+            # and shared fee/sniper/reserve UTXOs alone.
+            if wallet_id == self.xch_wallet_id and self._xch_selective_reshape_enabled():
+                keep, skip = self._filter_xch_inputs_for_reshape(target_inputs)
+                if skip:
+                    self.log(
+                        f"   Protecting {len(skip)} foreign/shared {name} "
+                        f"coin(s) from send-to-self melt "
+                        f"({sum(a for _, a in skip) / 1e12:.4f} XCH)"
+                    )
+                target_inputs = keep
+                if not target_inputs:
+                    self.log(
+                        f"ERROR: {name} has no reshapeable coins to consolidate "
+                        "(all spendable XCH is foreign-owned or shared-pool)"
+                    )
+                    return False
+                if len(target_inputs) <= 1:
+                    self.log(
+                        f"✅ {name} already consolidated among reshapeable coins "
+                        f"({len(target_inputs)} coin; {len(skip)} protected)"
+                    )
+                    return True
+
             before_count = len(target_inputs)
             fee_mojos = self._priority_combine_fee_mojos(before_count)
             source_coin_ids = [cid for cid, _amount in target_inputs]
@@ -2994,7 +3379,9 @@ class CoinPrepWorker:
                 return False
 
             self._sage_consolidation_submitted = True
-            self.log(f"OK: {name} send-to-self submitted; waiting for one-coin reset")
+            self.log(
+                f"OK: {name} send-to-self submitted; waiting for one-coin reset"
+            )
             return self._wait_for_sage_consolidation(wallet_id, name, before_count)
 
         except Exception as e:
@@ -3094,11 +3481,62 @@ class CoinPrepWorker:
             else:
                 mojos = int(amount * Decimal("1000000000000"))
 
+            source_coin_ids = None
+            if (
+                (not is_cat)
+                and wallet_id == self.xch_wallet_id
+                and self._xch_selective_reshape_enabled()
+            ):
+                try:
+                    from wallet_sage import get_spendable_coins_rpc
+
+                    spend = get_spendable_coins_rpc(wallet_id) or {}
+                    records = (
+                        spend.get("confirmed_records") or spend.get("records") or []
+                    )
+                    prot = self._protected_xch_coin_ids()
+                    source_coin_ids = []
+                    for rec in records:
+                        if not isinstance(rec, dict):
+                            continue
+                        if int(rec.get("spent_block_index", 0) or 0) != 0:
+                            continue
+                        coin = (
+                            rec.get("coin") if isinstance(rec.get("coin"), dict) else {}
+                        )
+                        amt = int(rec.get("amount") or coin.get("amount") or 0)
+                        if amt <= 0:
+                            continue
+                        cid = (
+                            rec.get("coin_id")
+                            or rec.get("name")
+                            or coin.get("coin_id")
+                            or coin.get("name")
+                            or ""
+                        )
+                        if self._is_protected_xch_coin(str(cid), prot):
+                            continue
+                        source_coin_ids.append(
+                            str(cid).replace("0x", "").strip().lower()
+                        )
+                    if source_coin_ids:
+                        self.log(
+                            f"   🔒 Pinning {len(source_coin_ids)} reshapeable "
+                            f"XCH coin(s) for pool creation"
+                        )
+                except Exception as pin_err:
+                    self.log(f"   ⚠️ Could not pin XCH pool inputs: {pin_err}")
+                    source_coin_ids = None
+
             self.log(
                 f"Submitting pool creation transaction ({amount} {name} = {mojos} mojos)..."
             )
             result = send_transaction(
-                wallet_id, mojos, address, fee_mojos=self._tx_fee_mojos()
+                wallet_id,
+                mojos,
+                address,
+                fee_mojos=self._tx_fee_mojos(),
+                source_coin_ids=source_coin_ids,
             )
 
             if self._sage_submit_succeeded(result):
@@ -3872,12 +4310,94 @@ class CoinPrepWorker:
             for i, (tn, cnt, pm) in enumerate(tier_details):
                 self.log(f"      Payment {i + 1}: {tn} = {pm:,} mojos ({cnt} coins)")
 
+            # Multi-pair XCH: pin inputs to reshapeable coins so Sage cannot
+            # auto-select foreign-owned or shared-pool UTXOs for the pool TX.
+            selected_xch_ids = []
+            if (
+                (not is_cat)
+                and wallet_id == self.xch_wallet_id
+                and self._xch_selective_reshape_enabled()
+            ):
+                try:
+                    from wallet_sage import get_spendable_coins_rpc
+
+                    _spend = get_spendable_coins_rpc(wallet_id) or {}
+                    _recs = (
+                        _spend.get("confirmed_records")
+                        or _spend.get("records")
+                        or []
+                    )
+                    _prot = self._protected_xch_coin_ids()
+                    for _r in _recs:
+                        if not isinstance(_r, dict):
+                            continue
+                        if int(_r.get("spent_block_index", 0) or 0) != 0:
+                            continue
+                        _coin = (
+                            _r.get("coin") if isinstance(_r.get("coin"), dict) else {}
+                        )
+                        _amt = int(_r.get("amount") or _coin.get("amount") or 0)
+                        if _amt <= 0:
+                            continue
+                        _cid = (
+                            _r.get("coin_id")
+                            or _r.get("name")
+                            or _coin.get("coin_id")
+                            or _coin.get("name")
+                            or ""
+                        )
+                        if self._is_protected_xch_coin(str(_cid), _prot):
+                            continue
+                        selected_xch_ids.append(
+                            str(_cid).replace("0x", "").strip().lower()
+                        )
+                    if selected_xch_ids:
+                        self.log(
+                            f"   🔒 Pinning {len(selected_xch_ids)} reshapeable "
+                            f"XCH coin(s) for {side_label} multi-send"
+                        )
+                    else:
+                        self.log(
+                            f"   ⚠️ No reshapeable XCH inputs found to pin for "
+                            f"{side_label} multi-send"
+                        )
+                except Exception as _pin_err:
+                    self.log(
+                        f"   ⚠️ Could not pin XCH inputs for multi-send: {_pin_err}"
+                    )
+
             send_ok = False
             for attempt in range(3):
                 try:
                     if is_cat:
                         result = send_cat_multi(
                             payments, fee_mojos=self._tx_fee_mojos()
+                        )
+                    elif selected_xch_ids:
+                        # Prefer /create_transaction with forced coin selection
+                        # (multi_send does not accept coin_ids).
+                        from wallet_sage import create_transaction_rpc
+
+                        actions = []
+                        for p in payments:
+                            actions.append(
+                                {
+                                    "type": "send",
+                                    "id": {"type": "xch"},
+                                    "address": p["address"],
+                                    "amount": str(int(p["amount"])),
+                                    "memos": [],
+                                }
+                            )
+                        fee_mojos = int(self._tx_fee_mojos() or 0)
+                        if fee_mojos > 0:
+                            actions.append(
+                                {"type": "fee", "amount": str(fee_mojos)}
+                            )
+                        result = create_transaction_rpc(
+                            selected_coin_ids=selected_xch_ids,
+                            actions=actions,
+                            auto_submit=True,
                         )
                     else:
                         result = send_transaction_multi(
@@ -6976,25 +7496,29 @@ class CoinPrepWorker:
             self._log_coin_snapshot(self.xch_wallet_id, "XCH", "INITIAL")
             self._log_coin_snapshot(self.cat_wallet_id, "CAT", "INITIAL")
 
-            # Clean stale DB rows: mark ALL existing coins as 'gone' before we start.
-            # Consolidation destroys every coin. The final sweep will re-insert
-            # only the coins that actually exist after prep, keeping the DB clean.
+            # Clean stale DB rows before reshape. Under multi-pair selective
+            # XCH prep, foreign-owned and shared-pool rows stay free so their
+            # owner_asset_id / tier tags survive. Final sweep re-inserts the
+            # reshapeable inventory that actually exists after prep.
             if self._db_ready:
                 try:
-                    from database import get_connection
-
-                    conn = get_connection()
-                    result = conn.execute(
-                        "UPDATE coins SET status='gone' WHERE status='free'"
-                    )
-                    conn.commit()
-                    stale_count = result.rowcount
+                    stale_count = self._mark_stale_coins_gone_for_prep()
                     if stale_count > 0:
                         self.log(
                             f"   DB: marked {stale_count} stale coins as 'gone' (fresh start)"
+                            + (
+                                " — protected foreign/shared XCH preserved"
+                                if self._xch_selective_reshape_enabled()
+                                else ""
+                            )
                         )
                 except Exception as e:
                     self.log(f"   DB: stale cleanup failed: {e}")
+
+            # Multi-pair: if shared fee/sniper pools already exist (protected
+            # from melt), credit them against this run's targets so we do not
+            # recreate a second global fee inventory.
+            self._credit_existing_shared_xch_tiers()
 
             self._set_status_coin_counts(xch_total=xch_coins, cat_total=cat_coins)
             self.update_status(
@@ -7069,6 +7593,18 @@ class CoinPrepWorker:
                 )
                 _xch_avail_mojos = max(0, _xch_total_mojos - _xch_reserve_mojos)
                 _cat_avail_mojos = max(0, _cat_total_mojos - _cat_reserve_mojos)
+                # Multi-pair: only count reshapeable XCH (unowned + this pair),
+                # and hard-cap by the pair's XCH budget when stamped.
+                if self._xch_selective_reshape_enabled():
+                    _reshape_mojos = self._sum_reshapeable_xch_mojos()
+                    if _reshape_mojos is not None:
+                        _xch_avail_mojos = min(_xch_avail_mojos, max(0, _reshape_mojos))
+                    try:
+                        _budget = int(os.getenv("XCH_BUDGET_MOJOS") or 0)
+                    except (TypeError, ValueError):
+                        _budget = 0
+                    if _budget > 0:
+                        _xch_avail_mojos = min(_xch_avail_mojos, _budget)
                 _xch_pool_mojos = int(
                     (Decimal(str(xch_pool_amount)) * Decimal("1000000000000")).quantize(
                         Decimal("1")
@@ -7086,10 +7622,30 @@ class CoinPrepWorker:
                     self.log("OVERSHOOT: coin prep pool exceeds available wallet")
                     self.log("=" * 60)
                     if _xch_overshoot:
+                        _detail = (
+                            f"(total {_xch_total_mojos / 1e12:.4f} - "
+                            f"reserve {_xch_reserve_mojos / 1e12:.4f}"
+                        )
+                        if self._xch_selective_reshape_enabled():
+                            _rm = (
+                                _reshape_mojos
+                                if "_reshape_mojos" in locals()
+                                and _reshape_mojos is not None
+                                else None
+                            )
+                            if _rm is not None:
+                                _detail += f"; reshapeable {_rm / 1e12:.4f}"
+                            try:
+                                _b = int(os.getenv("XCH_BUDGET_MOJOS") or 0)
+                            except (TypeError, ValueError):
+                                _b = 0
+                            if _b > 0:
+                                _detail += f"; budget {_b / 1e12:.4f}"
+                        _detail += ")"
                         self.log(
                             f"  XCH: pool wants {_xch_pool_mojos / 1e12:.4f} XCH, "
                             f"wallet has {_xch_avail_mojos / 1e12:.4f} XCH avail "
-                            f"(total {_xch_total_mojos / 1e12:.4f} - reserve {_xch_reserve_mojos / 1e12:.4f})"
+                            f"{_detail}"
                         )
                     if _cat_overshoot:
                         self.log(
@@ -7201,20 +7757,36 @@ class CoinPrepWorker:
             # The initial coin count (before cancellation) is stale and unreliable
             self.log("\n📊 Re-counting coins after cancellation...")
             time.sleep(5)  # Brief pause for wallet to update
-            xch_coins = self.get_coin_count(self.xch_wallet_id)
+            xch_total_visible = self.get_coin_count(self.xch_wallet_id)
+            xch_coins = self.get_reshapeable_coin_count(self.xch_wallet_id)
             cat_coins = self.get_coin_count(self.cat_wallet_id)
-            self.log(f"   XCH: {xch_coins} coins (post-cancel)")
+            if (
+                self._xch_selective_reshape_enabled()
+                and xch_total_visible != xch_coins
+            ):
+                self.log(
+                    f"   XCH: {xch_coins} reshapeable / {xch_total_visible} total "
+                    f"(post-cancel; foreign/shared protected)"
+                )
+            else:
+                self.log(f"   XCH: {xch_coins} coins (post-cancel)")
             self.log(f"   CAT: {cat_coins} coins (post-cancel)")
 
             # Push updated counts to status so GUI reflects post-cancellation reality
-            self._set_status_coin_counts(xch_total=xch_coins, cat_total=cat_coins)
-            self.update_status(message=f"Post-cancel: XCH={xch_coins}, CAT={cat_coins}")
+            self._set_status_coin_counts(
+                xch_total=xch_total_visible, cat_total=cat_coins
+            )
+            self.update_status(
+                message=f"Post-cancel: XCH={xch_coins} reshapeable, CAT={cat_coins}"
+            )
 
             self.log(f"\n{'=' * 60}")
             self.log("⚡ PARALLEL CONSOLIDATION")
             self.log(f"{'=' * 60}")
 
-            # ALWAYS consolidate after cancellation (cancels release locked coins)
+            # ALWAYS consolidate after cancellation (cancels release locked coins).
+            # XCH uses reshapeable count under multi-pair so leftover protected
+            # UTXOs do not force a full-wallet melt.
             xch_needs_consolidation = xch_coins > 1 or xch_coins == 0
             cat_needs_consolidation = cat_coins > 1
 
@@ -7298,6 +7870,7 @@ class CoinPrepWorker:
             elapsed_verify = 0
             allow_extra_xch_fee_coin = self._tx_fee_mojos() > 0
             xch_target_label = "1-2" if allow_extra_xch_fee_coin else "1"
+            selective_xch = self._xch_selective_reshape_enabled()
 
             prev_xch_check = None
             prev_cat_check = None
@@ -7309,29 +7882,49 @@ class CoinPrepWorker:
                         f"Consolidation verification timeout after {elapsed_verify}s"
                     )
                     self.log(
-                        f"   XCH: {self.get_coin_count(self.xch_wallet_id)} coins, CAT: {self.get_coin_count(self.cat_wallet_id)} coins"
+                        f"   XCH reshapeable: "
+                        f"{self.get_reshapeable_coin_count(self.xch_wallet_id)}, "
+                        f"total: {self.get_coin_count(self.xch_wallet_id)}, "
+                        f"CAT: {self.get_coin_count(self.cat_wallet_id)}"
                     )
                     self.log(
                         "   Final check will abort if consolidation is still incomplete"
                     )
                     break
 
-                xch_check = self.get_coin_count(self.xch_wallet_id)
+                xch_check = self.get_reshapeable_coin_count(self.xch_wallet_id)
+                xch_total_visible = self.get_coin_count(self.xch_wallet_id)
                 cat_check = self.get_coin_count(self.cat_wallet_id)
 
-                self._set_status_coin_counts(xch_total=xch_check, cat_total=cat_check)
+                self._set_status_coin_counts(
+                    xch_total=xch_total_visible, cat_total=cat_check
+                )
                 self.update_status(
-                    message=f"Consolidating: XCH={xch_check}, CAT={cat_check}"
+                    message=(
+                        f"Consolidating: XCH={xch_check} reshapeable"
+                        f"{f'/{xch_total_visible}' if selective_xch else ''}, "
+                        f"CAT={cat_check}"
+                    )
                 )
 
                 xch_ready = (
-                    (1 <= xch_check <= 2)
-                    if allow_extra_xch_fee_coin
-                    else (xch_check == 1)
+                    self._xch_consolidated_ready(xch_check)
+                    if selective_xch
+                    else (
+                        (1 <= xch_check <= 2)
+                        if allow_extra_xch_fee_coin
+                        else (xch_check == 1)
+                    )
                 )
                 if xch_ready and cat_check == 1:
                     self.log(
-                        f"Consolidation verified! XCH: {xch_check} coin(s), CAT: 1 coin"
+                        f"Consolidation verified! XCH: {xch_check} reshapeable "
+                        f"coin(s), CAT: 1 coin"
+                        + (
+                            f" ({xch_total_visible} XCH total with protected leftovers)"
+                            if selective_xch and xch_total_visible != xch_check
+                            else ""
+                        )
                     )
                     break
 
@@ -7350,7 +7943,8 @@ class CoinPrepWorker:
                         and not xch_consolidation_submitted
                     ):
                         self.log(
-                            f"\nXCH has {xch_check} coins but no consolidation was submitted!"
+                            f"\nXCH has {xch_check} reshapeable coins but no "
+                            "consolidation was submitted!"
                         )
                         self.log("   Submitting XCH consolidation now...")
                         if self.consolidate_wallet(self.xch_wallet_id, "XCH"):
@@ -7401,26 +7995,37 @@ class CoinPrepWorker:
                 if elapsed_verify % 15 == 0:
                     self.check_wallet_sync("consolidation")
 
-            # Final check
-            final_xch = self.get_coin_count(self.xch_wallet_id)
+            # Final check (reshapeable XCH under multi-pair)
+            final_xch = self.get_reshapeable_coin_count(self.xch_wallet_id)
+            final_xch_total = self.get_coin_count(self.xch_wallet_id)
             final_cat = self.get_coin_count(self.cat_wallet_id)
 
             # Update status with confirmed counts after consolidation
-            self._set_status_coin_counts(xch_total=final_xch, cat_total=final_cat)
+            self._set_status_coin_counts(
+                xch_total=final_xch_total, cat_total=final_cat
+            )
 
             # Write to file so GUI sees updated counts
             self.update_status(
                 PrepPhase.CONSOLIDATING,
                 0.20,
-                f"Consolidation complete! XCH: {final_xch} coin(s), CAT: {final_cat} coin(s)",
+                f"Consolidation complete! XCH: {final_xch} reshapeable "
+                f"({final_xch_total} total), CAT: {final_cat}",
             )
 
             xch_final_ready = (
-                (1 <= final_xch <= 2) if self._tx_fee_mojos() > 0 else (final_xch == 1)
+                self._xch_consolidated_ready(final_xch)
+                if selective_xch
+                else (
+                    (1 <= final_xch <= 2)
+                    if self._tx_fee_mojos() > 0
+                    else (final_xch == 1)
+                )
             )
             if not xch_final_ready or final_cat != 1:
                 message = (
-                    f"Consolidation did not complete: XCH={final_xch}, CAT={final_cat}. "
+                    f"Consolidation did not complete: XCH reshapeable={final_xch} "
+                    f"(total={final_xch_total}), CAT={final_cat}. "
                     "Wait for Sage transactions to settle, then retry coin prep."
                 )
                 self.log(f"❌ {message}")

@@ -6,6 +6,7 @@ Routes:
   * `/api/token_overview` — Dexie asset description + website lookup.
   * `/api/dexie/v3-pairs` — exposed Dexie v3 pairs with summary stats.
   * `/api/cats` — discover wallet CATs and match against Dexie pairs.
+  * `/api/pairs` — multi-pair overview (profiles + balances + open offers).
   * `/api/cat/select` — persist active-CAT choice to .env and _active_cat.
   * `/api/cat/refresh` — force a config reload.
   * `/api/balances/refresh` — fetch fresh wallet balances.
@@ -451,6 +452,151 @@ def api_cats():
     return jsonify({"success": True, "cats": cats})
 
 
+@bp.route("/api/pairs", methods=["GET"])
+def api_pairs():
+    """Multi-pair overview: profiles, balances, open offers, budgets, running."""
+    try:
+        import pair_store as _pair_store
+
+        with api_server._active_cat_lock:
+            active = dict(api_server._active_cat)
+        payload = _pair_store.build_pairs_overview(active_cat=active)
+        return jsonify(payload)
+    except Exception as exc:
+        log_event("error", "pairs_overview_failed", f"GET /api/pairs failed: {exc}")
+        return jsonify({"success": False, "error": str(exc), "pairs": []}), 500
+
+
+@bp.route("/api/pairs/<asset_id>/budget", methods=["PATCH", "POST"])
+def api_pair_budget(asset_id: str):
+    """Set the hard XCH budget for a pair (shared-wallet capital slice)."""
+    import pair_store as _pair_store
+    from shared_xch_ledger import ledger as _ledger
+    from decimal import Decimal
+
+    data = request.get_json(silent=True) or {}
+    budget_mojos = data.get("xch_budget_mojos")
+    if budget_mojos is None and data.get("xch_budget") is not None:
+        try:
+            budget_mojos = _ledger.xch_to_mojos(Decimal(str(data.get("xch_budget"))))
+        except Exception:
+            return jsonify({"success": False, "error": "Invalid xch_budget"}), 400
+    try:
+        budget_mojos = int(budget_mojos or 0)
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Invalid xch_budget_mojos"}), 400
+    if budget_mojos < 0:
+        return jsonify({"success": False, "error": "Budget cannot be negative"}), 400
+
+    aid = _pair_store._normalize_asset_id(asset_id)
+    if not aid:
+        return jsonify({"success": False, "error": "Invalid asset_id"}), 400
+
+    # Validate against shared capital (exclude this pair's old budget).
+    try:
+        from pair_registry import get_registry
+
+        running = get_registry().list_running()
+    except Exception:
+        running = []
+    ok, reason = _ledger.can_allocate(
+        aid, budget_mojos, cfg=api_server.cfg, running_asset_ids=running
+    )
+    # Allow saving a budget even when wallet spendable is temporarily 0
+    # (offline), but reject clearly impossible over-allocation when we can
+    # see spendable capital.
+    if not ok and _ledger.spendable_xch_mojos() > 0:
+        return jsonify({"success": False, "error": reason}), 400
+
+    if not _pair_store.set_xch_budget_mojos(aid, budget_mojos):
+        return jsonify({"success": False, "error": "Failed to save budget"}), 500
+
+    # Keep running snapshot in sync if this pair is live.
+    try:
+        from pair_registry import get_registry
+
+        rt = get_registry().get_runtime(aid)
+        if rt is not None:
+            rt.snapshot.xch_budget_mojos = budget_mojos
+    except Exception:
+        pass
+
+    log_event(
+        "info",
+        "pair_budget_set",
+        f"XCH budget for {aid[:12]}... set to {_ledger.mojos_to_xch(budget_mojos)} XCH",
+    )
+    return jsonify(
+        {
+            "success": True,
+            "asset_id": aid,
+            "xch_budget_mojos": budget_mojos,
+            "xch_budget": float(_ledger.mojos_to_xch(budget_mojos)),
+        }
+    )
+
+
+@bp.route("/api/pairs/<asset_id>/start", methods=["POST"])
+def api_pair_start(asset_id: str):
+    """Start trading one pair (incremental multi-pair start)."""
+    from pair_registry import get_registry
+    import pair_store as _pair_store
+
+    aid = _pair_store._normalize_asset_id(asset_id)
+    if not aid:
+        return jsonify({"success": False, "error": "Invalid asset_id"}), 400
+
+    with api_server._active_cat_lock:
+        active = dict(api_server._active_cat)
+
+    # Persist current focus economics before starting so the snapshot is fresh.
+    try:
+        if _pair_store._normalize_asset_id(getattr(api_server.cfg, "CAT_ASSET_ID", None)) == aid:
+            _pair_store.persist_current_pair_overlay(api_server.cfg)
+    except Exception:
+        pass
+
+    result = get_registry().start_pair(
+        aid, cfg=api_server.cfg, active_cat=active
+    )
+    if result.get("success"):
+        # Keep legacy api_server.bot pointing at a live bot for status/SSE.
+        rt = get_registry().get_runtime(aid)
+        if rt and rt.bot is not None:
+            api_server.bot = rt.bot
+        api_server._fresh_start_clear()
+        api_server.events.emit(
+            "bot_control", {"action": "started", "asset_id": aid, "multi_pair": True}
+        )
+        return jsonify(result)
+    return jsonify(result), 400
+
+
+@bp.route("/api/pairs/<asset_id>/stop", methods=["POST"])
+def api_pair_stop(asset_id: str):
+    """Stop one pair. Open offers are left resting (no auto-cancel)."""
+    from pair_registry import get_registry
+    import pair_store as _pair_store
+
+    aid = _pair_store._normalize_asset_id(asset_id)
+    if not aid:
+        return jsonify({"success": False, "error": "Invalid asset_id"}), 400
+
+    result = get_registry().stop_pair(aid)
+    # Point legacy bot handle at another running pair if available.
+    focus_bot = get_registry().get_focus_bot(
+        api_server._active_cat.get("asset_id")
+        if isinstance(api_server._active_cat, dict)
+        else None
+    )
+    if focus_bot is not None:
+        api_server.bot = focus_bot
+    api_server.events.emit(
+        "bot_control", {"action": "stopped", "asset_id": aid, "multi_pair": True}
+    )
+    return jsonify(result)
+
+
 @bp.route("/api/cat/select", methods=["POST"])
 def api_cat_select():
     """Select active CAT token — stores wallet_id so balance lookups work."""
@@ -526,9 +672,21 @@ def api_cat_select():
         except (ValueError, TypeError):
             return jsonify({"success": False, "error": "Invalid decimals"}), 400
 
-    # Safety: never change the trading pair while the bot is running.
+    # Safety: do not change focus onto a different CAT while THAT focused
+    # bot is the only legacy singleton running without a registry. With the
+    # multi-pair registry, focus may change so the operator can configure /
+    # start the next pair while others keep running.
     try:
-        if bot is not None and bot.is_running():
+        from pair_registry import get_registry
+
+        registry = get_registry()
+        multi_pair_mode = registry.any_running()
+    except Exception:
+        registry = None
+        multi_pair_mode = False
+
+    try:
+        if (not multi_pair_mode) and bot is not None and bot.is_running():
             return jsonify(
                 {
                     "success": False,
@@ -536,8 +694,42 @@ def api_cat_select():
                     "Switching CAT mid-run would cause offers for the wrong token.",
                 }
             ), 409
+        # Still block changing the asset identity of a pair that is itself running
+        # if the request tries to select a different asset while that pair runs —
+        # allowed: select B while A runs. Blocked: no-op. Running pairs use frozen
+        # snapshots so focus overlay swaps are safe for the GUI.
     except Exception:
         pass
+
+    # Phase 1 multi-pair: persist the outgoing pair's economics before focus changes.
+    pair_profile_loaded = False
+    try:
+        import pair_store as _pair_store
+
+        with api_server._active_cat_lock:
+            _old_asset = (
+                api_server._active_cat.get("asset_id")
+                or getattr(cfg, "CAT_ASSET_ID", None)
+                or ""
+            )
+        _old_norm = str(_old_asset or "").strip().lower().replace("0x", "")
+        if _old_norm and len(_old_norm) == 64 and _old_norm != asset_id:
+            _pair_store.save_pair_overlay(
+                _old_norm, _pair_store.capture_pair_overlay_from_cfg(cfg)
+            )
+            _pair_store.upsert_pair_identity(
+                _old_norm,
+                name=getattr(cfg, "CAT_NAME", None) or None,
+                ticker_id=getattr(cfg, "CAT_TICKER_ID", None) or None,
+                decimals=getattr(cfg, "CAT_DECIMALS", None),
+                tibet_pair_id=getattr(cfg, "TIBET_PAIR_ID", None) or None,
+            )
+    except Exception as _pair_save_err:
+        log_event(
+            "warning",
+            "pair_profile_save_failed",
+            f"Could not save outgoing pair profile: {_pair_save_err}",
+        )
 
     with api_server._active_cat_lock:
         api_server._active_cat["asset_id"] = asset_id
@@ -557,6 +749,31 @@ def api_cat_select():
         cfg.update("CAT_DECIMALS", str(int(decimals)))
     if ticker_id:
         cfg.update("CAT_TICKER_ID", ticker_id)
+
+    # Restore this pair's saved economics (if any) into the active cfg slot.
+    if asset_id:
+        try:
+            import pair_store as _pair_store
+
+            _pair_store.upsert_pair_identity(
+                asset_id,
+                name=name or None,
+                ticker_id=ticker_id or None,
+                decimals=int(decimals) if decimals is not None else None,
+            )
+            _row = _pair_store.get_pair_config(asset_id)
+            _overlay = (_row or {}).get("config") or {}
+            if _overlay:
+                _applied = _pair_store.apply_pair_overlay_to_cfg(
+                    cfg, _overlay, source="pair_switch"
+                )
+                pair_profile_loaded = bool(_applied)
+        except Exception as _pair_load_err:
+            log_event(
+                "warning",
+                "pair_profile_load_failed",
+                f"Could not load pair profile for {asset_id[:12]}...: {_pair_load_err}",
+            )
 
     # Reset risk manager so stale inventory/CB state doesn't leak into the new CAT.
     if bot is not None:
@@ -581,6 +798,7 @@ def api_cat_select():
         def _resolve_new_cat_tibet():
             try:
                 import cat_resolver as _cr
+                import pair_store as _pair_store
 
                 _cr._cache = None
                 _cr._last_resolve_at = 0
@@ -596,6 +814,12 @@ def api_cat_select():
                     print(
                         f"[CAT SELECT] TIBET_PAIR_ID resolved: {meta['pair_id'][:20]}..."
                     )
+                    try:
+                        _pair_store.upsert_pair_identity(
+                            asset_id, tibet_pair_id=meta.get("pair_id")
+                        )
+                    except Exception:
+                        pass
                 else:
                     log_event(
                         "info",
@@ -627,7 +851,14 @@ def api_cat_select():
     log_event(
         "info", "cat_selected", f"Trading pair selected: {name} (wallet {wallet_id})"
     )
-    return jsonify({"success": True, "asset_id": asset_id, "wallet_id": wallet_id})
+    return jsonify(
+        {
+            "success": True,
+            "asset_id": asset_id,
+            "wallet_id": wallet_id,
+            "pair_profile_loaded": pair_profile_loaded,
+        }
+    )
 
 
 @bp.route("/api/cat/refresh", methods=["POST"])

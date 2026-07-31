@@ -5083,6 +5083,127 @@
         .live-activity-panel:hover {
             border-color: var(--border-default);
         }
+        /* Phase 2 multi-pair overview */
+        .pairs-overview-panel {
+            background: var(--bg-surface);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius-lg);
+            margin: 0 0 16px 0;
+            overflow: hidden;
+        }
+        .pairs-overview-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 10px 14px;
+            border-bottom: 1px solid var(--border-subtle);
+            background: rgba(255,255,255,0.02);
+        }
+        .pairs-overview-title {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-secondary);
+            font-weight: 600;
+        }
+        .pairs-overview-meta {
+            font-size: 11px;
+            color: var(--text-tertiary);
+        }
+        .pairs-overview-list {
+            display: flex;
+            flex-direction: column;
+        }
+        .pairs-overview-row {
+            display: grid;
+            grid-template-columns: minmax(140px, 1.3fr) minmax(120px, 1fr) minmax(100px, 0.9fr) minmax(90px, 0.8fr) auto;
+            gap: 10px;
+            align-items: center;
+            padding: 10px 14px;
+            border-bottom: 1px solid var(--border-subtle);
+            text-align: left;
+            background: transparent;
+            color: inherit;
+            width: 100%;
+        }
+        .pairs-overview-pnl.positive { color: var(--status-success); }
+        .pairs-overview-pnl.negative { color: var(--sell-color); }
+        .pairs-overview-pnl.neutral { color: var(--text-secondary); }
+        .pairs-overview-row:last-child { border-bottom: none; }
+        .pairs-overview-row:hover { background: rgba(255,255,255,0.03); }
+        .pairs-overview-row.is-focus {
+            background: rgba(255,255,255,0.04);
+        }
+        .pairs-overview-row.is-running {
+            box-shadow: inset 3px 0 0 var(--status-success);
+        }
+        .pairs-overview-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            justify-content: flex-end;
+        }
+        .pairs-overview-action {
+            padding: 4px 10px !important;
+            font-size: 11px !important;
+        }
+        .pairs-overview-name {
+            font-weight: 600;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 0;
+        }
+        .pairs-overview-name span {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .pairs-overview-badge {
+            flex-shrink: 0;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: var(--accent-primary);
+            border: 1px solid color-mix(in srgb, var(--accent-primary) 45%, transparent);
+            border-radius: 4px;
+            padding: 1px 6px;
+        }
+        .pairs-overview-metric {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+        .pairs-overview-metric strong {
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+        .pairs-overview-note {
+            font-size: 11px;
+            color: var(--text-tertiary);
+            white-space: nowrap;
+        }
+        .pairs-overview-empty {
+            padding: 14px;
+            font-size: 12px;
+            color: var(--text-tertiary);
+        }
+        @media (max-width: 720px) {
+            .pairs-overview-row {
+                grid-template-columns: 1fr 1fr;
+                grid-template-areas:
+                    "name name"
+                    "bal budget"
+                    "pnl actions";
+            }
+            .pairs-overview-name { grid-area: name; }
+            .pairs-overview-row .pairs-overview-metric:nth-of-type(1) { grid-area: bal; }
+            .pairs-overview-row .pairs-overview-metric:nth-of-type(2) { grid-area: budget; }
+            .pairs-overview-row .pairs-overview-metric:nth-of-type(3) { grid-area: pnl; }
+            .pairs-overview-actions { grid-area: actions; justify-content: flex-start; }
+        }
         .la-header {
             display: flex;
             align-items: center;
@@ -9187,6 +9308,17 @@
                          closing the console window killed the bot. -->
                     <div id="consoleWarningBanner" style="display:none;" aria-hidden="true"></div>
 
+                    <!-- Phase 2: multi-pair overview (focus editable; others read-only) -->
+                    <div class="pairs-overview-panel" id="pairsOverviewPanel" style="display:none;">
+                        <div class="pairs-overview-header">
+                            <div class="pairs-overview-title">Trading Pairs</div>
+                            <div class="pairs-overview-meta" id="pairsOverviewMeta">Up to 4 pairs · focus one to configure</div>
+                        </div>
+                        <div class="pairs-overview-list" id="pairsOverviewList">
+                            <div class="pairs-overview-empty" id="pairsOverviewEmpty">Saved and wallet pairs will show here after you choose a CAT.</div>
+                        </div>
+                    </div>
+
                     <!-- ===== SPLIT PANEL: merged Guidance (Recommendations+Advisor) on the left, Activity on the right ===== -->
                     <div id="dashboardActivityRow" class="v4-dashboard-panels-row">
                         <!-- LEFT: Guidance — actionable alerts first, then advisor notes -->
@@ -10538,7 +10670,7 @@
                             <div class="v4-settings-pair-card" id="settingsPairDisplayCard">
                                 <div class="v4-settings-pair-copy">
                                     <div class="v4-settings-pair-name" id="settingsPairDisplayName">No Trading Pair Selected</div>
-                                    <div class="v4-settings-pair-meta" id="settingsPairDisplayMeta">Trading pair is chosen once for the whole app. Pick it from the dashboard, then configure this run here.</div>
+                                    <div class="v4-settings-pair-meta" id="settingsPairDisplayMeta">Pick a trading pair from the dashboard, then configure it here. Settings are remembered per CAT when you save.</div>
                                     <div class="v4-settings-pair-status" id="settingsPairDisplayStatus">Waiting for pair selection</div>
                                 </div>
                                 <button type="button" class="btn btn-config v4-settings-pair-trigger" id="settingsPairChangeBtn" onclick="beginSettingsPairChange()">Choose Trading Pair</button>
@@ -12109,18 +12241,18 @@
                     <div>
                         <div class="v4-modal-kicker">Session Recovery</div>
                         <h3 class="v4-modal-title">Previous session detected</h3>
-                        <p class="v4-modal-copy">Active offers from a prior run are still live. Load a quick session overview and then choose when to resume the bot, or start fresh and review settings again.</p>
+                        <p class="v4-modal-copy" id="resumeModalCopy">A prior trading session left live offers and/or pair XCH budgets. Continue with that setup, or start fresh to release owned XCH and re-run Smart Settings / Coin Prep.</p>
                     </div>
                 </div>
             
             <!-- Offer counts -->
             <div class="v4-modal-grid" style="margin-bottom: 16px;">
                 <div class="v4-modal-stat" style="background: rgba(16,185,129,0.10); border-color: rgba(16,185,129,0.40);">
-                    <div class="v4-modal-stat-label">Buy Offers</div>
+                    <div class="v4-modal-stat-label">Focus Buy Offers</div>
                     <div class="v4-modal-stat-value" style="color: var(--status-success);" id="resumeBuyCount">0</div>
                 </div>
                 <div class="v4-modal-stat" style="background: rgba(239,68,68,0.10); border-color: rgba(239,68,68,0.40);">
-                    <div class="v4-modal-stat-label">Sell Offers</div>
+                    <div class="v4-modal-stat-label">Focus Sell Offers</div>
                     <div class="v4-modal-stat-value" style="color: var(--sell-color);" id="resumeSellCount">0</div>
                 </div>
             </div>
@@ -12129,6 +12261,10 @@
             <div id="resumeSettingsSummary" class="v4-modal-panel" style="font-size: 0.88em; text-align: left; line-height: 1.7;">
                 Loading settings...
             </div>
+
+            <!-- Multi-pair leftover state -->
+            <div id="resumePairsSessionInfo" class="v4-modal-panel" style="display: none; text-align: left; margin-top: 12px; font-size: 0.85em; line-height: 1.6;">
+            </div>
             
             <!-- Gap closer info (shown only if gap closer was active) -->
             <div id="resumeGapCloserInfo" class="v4-modal-panel v4-modal-panel--violet" style="display: none; text-align: left;">
@@ -12136,13 +12272,17 @@
                 <div id="resumeGapCloserDetails" style="font-size: 0.85em; line-height: 1.6; opacity: 0.9;"></div>
             </div>
 
-            <div id="resumeAgeInfo" style="opacity: 0.6; margin-bottom: 20px; font-size: 0.85em; color: var(--text-secondary);">
+            <div id="resumeAgeInfo" style="opacity: 0.6; margin-bottom: 12px; font-size: 0.85em; color: var(--text-secondary);">
                 Last active: checking...
+            </div>
+            <div id="resumeFreshHint" style="opacity: 0.75; margin-bottom: 20px; font-size: 0.8em; color: var(--text-secondary); text-align: left;">
+                <strong>Continue</strong> keeps live offers, pair budgets, and owned XCH.
+                <strong>Start Fresh</strong> clears pair XCH budgets and ownership tags so you can reallocate capital (Dexie offers stay resting until you cancel them).
             </div>
             
             <div class="v4-modal-actions v4-modal-actions--center">
                 <button class="btn btn-config btn-secondary" onclick="dismissResumeFresh()" style="flex: 1; max-width: 190px;">⚙️ Start Fresh</button>
-                <button class="btn" onclick="resumeSession()" style="flex: 1; max-width: 190px; background: var(--status-success); color: white; border: none; cursor: pointer; padding: 10px 20px; border-radius: 8px; font-weight: bold;">✅ Load Previous Session</button>
+                <button class="btn" onclick="resumeSession()" style="flex: 1; max-width: 190px; background: var(--status-success); color: white; border: none; cursor: pointer; padding: 10px 20px; border-radius: 8px; font-weight: bold;">✅ Continue Session</button>
                 </div>
             </div>
         </div>
@@ -12763,8 +12903,93 @@
         let TAURI_CLOSE_HANDLER_BOUND = false;
         let TAURI_CLOSE_HANDLER_RETRY_TIMER = null;
 
+        // PyWebView on Qt WebEngine injects window.pywebview early, but
+        // QWebChannel is assigned later in finish.js. Calling api.* before
+        // that throws: Cannot read properties of undefined (reading 'objects').
+        function _isPywebviewBridgeReady() {
+            const pw = window.pywebview;
+            if (!pw || !pw.api) return false;
+            if (pw.platform === 'qtwebengine') {
+                try {
+                    return !!(pw._QWebChannel && pw._QWebChannel.objects && pw._QWebChannel.objects.external);
+                } catch (_) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        function _hardenPywebviewQtBridge() {
+            const pw = window.pywebview;
+            if (!pw || pw.platform !== 'qtwebengine' || pw._catalystQtHardened) return;
+            if (typeof pw._jsApiCallback !== 'function') return;
+            pw._catalystQtHardened = true;
+            const orig = pw._jsApiCallback.bind(pw);
+            pw._jsApiCallback = function (funcName, params, id) {
+                if (pw._QWebChannel && pw._QWebChannel.objects && pw._QWebChannel.objects.external) {
+                    return orig(funcName, params, id);
+                }
+                // Upstream pywebview retries once after 100ms without re-checking
+                // _QWebChannel, which throws on .objects. Retry with a re-check
+                // and reject the bridge promise if the channel never appears.
+                let attempts = 0;
+                const maxAttempts = 50; // ~5s
+                const tick = function () {
+                    attempts += 1;
+                    if (pw._QWebChannel && pw._QWebChannel.objects && pw._QWebChannel.objects.external) {
+                        try {
+                            pw._QWebChannel.objects.external.call(
+                                funcName,
+                                (typeof pywebview !== 'undefined' && pywebview.stringify)
+                                    ? pywebview.stringify(params)
+                                    : JSON.stringify(params),
+                                id
+                            );
+                        } catch (err) {
+                            _rejectPywebviewBridgeCall(funcName, id, err);
+                        }
+                        return;
+                    }
+                    if (attempts < maxAttempts) {
+                        setTimeout(tick, 100);
+                        return;
+                    }
+                    _rejectPywebviewBridgeCall(
+                        funcName,
+                        id,
+                        new Error('QWebChannel not ready')
+                    );
+                };
+                setTimeout(tick, 50);
+            };
+        }
+
+        function _rejectPywebviewBridgeCall(funcName, id, err) {
+            try {
+                const cbs = window.pywebview && window.pywebview._returnValuesCallbacks;
+                const slot = cbs && cbs[funcName] && cbs[funcName][id];
+                if (typeof slot === 'function') {
+                    slot({
+                        value: JSON.stringify({
+                            message: String((err && err.message) || err || 'QWebChannel not ready'),
+                            name: 'Error',
+                            stack: String((err && err.stack) || ''),
+                        }),
+                        isError: true,
+                    });
+                }
+            } catch (_) {}
+        }
+
         function _activateDesktopMode(bridgeName) {
             if (IS_DESKTOP) return;  // Already activated
+            if (bridgeName === 'PyWebView') {
+                _hardenPywebviewQtBridge();
+                if (!_isPywebviewBridgeReady()) {
+                    // Keep browser/HTTP path until QWebChannel is actually up.
+                    return;
+                }
+            }
             IS_DESKTOP = true;
             document.body.classList.add('desktop-mode');
             debugLog('[V4] Desktop mode activated - ' + bridgeName + ' bridge ready');
@@ -12846,13 +13071,15 @@
             }
         }
 
-        // Method 1: pywebview fires this custom event when the bridge is injected
+        // Method 1: pywebview fires this after QWebChannel is assigned (finish.js)
         window.addEventListener('pywebviewready', function() {
+            _hardenPywebviewQtBridge();
             _activateDesktopMode('PyWebView');
         });
 
         // Method 2: If pywebview was already injected before our script ran
         if (typeof window.pywebview !== 'undefined') {
+            _hardenPywebviewQtBridge();
             _activateDesktopMode('PyWebView');
         }
 
@@ -12861,21 +13088,31 @@
             _activateTauriMode();
         }
 
-        // Method 4: Fallback poll — some backends are slow to inject
+        // Method 4: Fallback poll — Qt often exposes window.pywebview before
+        // QWebChannel; keep polling until the channel (or Tauri) is ready.
         (function _pollForPyWebView() {
             let attempts = 0;
-            const maxAttempts = 30;  // 3 seconds max
+            const maxAttempts = 80;  // 8 seconds — Qt channel can lag past 3s
             const interval = setInterval(function() {
                 attempts++;
                 if (typeof window.pywebview !== 'undefined') {
-                    clearInterval(interval);
-                    _activateDesktopMode('PyWebView');
-                } else if (!IS_TAURI && typeof window.__TAURI__ !== 'undefined') {
+                    _hardenPywebviewQtBridge();
+                    if (_isPywebviewBridgeReady()) {
+                        clearInterval(interval);
+                        _activateDesktopMode('PyWebView');
+                        return;
+                    }
+                }
+                if (!IS_TAURI && typeof window.__TAURI__ !== 'undefined') {
                     clearInterval(interval);
                     _activateTauriMode();
                 } else if (attempts >= maxAttempts) {
                     clearInterval(interval);
-                    debugLog('[V4] Browser mode — no desktop bridge detected after 3s');
+                    if (typeof window.pywebview !== 'undefined' && !IS_DESKTOP) {
+                        debugWarn('[V4] PyWebView present but Qt bridge not ready — using HTTP');
+                    } else if (!IS_DESKTOP) {
+                        debugLog('[V4] Browser mode — no desktop bridge detected after 8s');
+                    }
                 }
             }, 100);
         })();
@@ -12888,7 +13125,7 @@
                 TAURI_WINDOW.minimize();
                 return;
             }
-            if (IS_DESKTOP && window.pywebview && window.pywebview.api) {
+            if (IS_DESKTOP && _isPywebviewBridgeReady()) {
                 window.pywebview.api.minimize_window();
             }
         }
@@ -12897,7 +13134,7 @@
                 TAURI_WINDOW.toggleMaximize();
                 return;
             }
-            if (IS_DESKTOP && window.pywebview && window.pywebview.api) {
+            if (IS_DESKTOP && _isPywebviewBridgeReady()) {
                 window.pywebview.api.maximize_window();
             }
         }
@@ -12920,7 +13157,7 @@
 
             document.querySelectorAll('.resize-handle').forEach(function(el) {
                 el.addEventListener('mousedown', function(e) {
-                    if (!IS_DESKTOP || !window.pywebview || !window.pywebview.api) return;
+                    if (!IS_DESKTOP || !_isPywebviewBridgeReady()) return;
                     e.preventDefault();
                     e.stopPropagation();
                     _dir = el.dataset.resize;
@@ -15017,6 +15254,10 @@
             // --- Wallet / CAT ---
             if (m === 'GET'  && clean === 'fingerprint')        return 'get_fingerprint';
             if (m === 'GET'  && clean === 'cats')               return 'get_cats';
+            if (m === 'GET'  && clean === 'pairs')              return 'get_pairs';
+            if (m === 'POST' && /^pairs\/[^/]+\/start$/.test(clean)) return 'start_pair';
+            if (m === 'POST' && /^pairs\/[^/]+\/stop$/.test(clean))  return 'stop_pair';
+            if ((m === 'POST' || m === 'PATCH') && /^pairs\/[^/]+\/budget$/.test(clean)) return 'set_pair_budget';
             if (m === 'POST' && clean === 'cat/select')         return 'select_cat';
             if (m === 'POST' && clean === 'cat/refresh')        return 'refresh_cat';
             if (m === 'POST' && clean === 'balances/refresh')   return 'refresh_balances';
@@ -15075,8 +15316,10 @@
         async function apiFetch(path, options) {
             options = options || {};
 
-            // Only intercept in desktop mode with a working bridge
-            if (IS_DESKTOP && window.pywebview && window.pywebview.api) {
+            // Only intercept in desktop mode with a working bridge.
+            // On Qt, window.pywebview.api exists before QWebChannel — calling
+            // it then throws Uncaught TypeError on `.objects` outside our try.
+            if (IS_DESKTOP && _isPywebviewBridgeReady()) {
                 const httpMethod = options.method || 'GET';
                 const bridgeMethod = _apiBridgeMethod(path, httpMethod);
 
@@ -15106,6 +15349,15 @@
                             bodyArg = params;
                         }
 
+                        // Multi-pair routes carry the asset id in the path.
+                        // Bridge methods expect (asset_id, body?) so extract it.
+                        let pathAssetId = null;
+                        try {
+                            const bare = String(path || '').replace(/^\/?api\//, '').split('?')[0];
+                            const m = bare.match(/^pairs\/([0-9a-fA-F]{64})\/(start|stop|budget)$/);
+                            if (m) pathAssetId = m[1].toLowerCase();
+                        } catch (_) {}
+
                         // Call the bridge method.
                         // IMPORTANT: do NOT pass bodyArg when it's undefined —
                         // PyWebView serialises undefined to a positional Python
@@ -15113,11 +15365,20 @@
                         // Python side (TypeError: takes 1 positional argument
                         // but 2 were given). Only forward an argument when we
                         // actually have one to forward.
-                        const result = await (
-                            bodyArg === undefined
-                                ? window.pywebview.api[bridgeMethod]()
-                                : window.pywebview.api[bridgeMethod](bodyArg)
-                        );
+                        let result;
+                        if (pathAssetId && (bridgeMethod === 'start_pair' || bridgeMethod === 'stop_pair' || bridgeMethod === 'set_pair_budget')) {
+                            result = await (
+                                bodyArg === undefined
+                                    ? window.pywebview.api[bridgeMethod](pathAssetId)
+                                    : window.pywebview.api[bridgeMethod](pathAssetId, bodyArg)
+                            );
+                        } else {
+                            result = await (
+                                bodyArg === undefined
+                                    ? window.pywebview.api[bridgeMethod]()
+                                    : window.pywebview.api[bridgeMethod](bodyArg)
+                            );
+                        }
 
                         // Return a fetch-compatible response.
                         // null/undefined bridge results are treated as errors
@@ -17270,7 +17531,7 @@
         }
 
         function desktopSageCertBrowseAvailable() {
-            return !!(IS_DESKTOP && window.pywebview && window.pywebview.api &&
+            return !!(IS_DESKTOP && _isPywebviewBridgeReady() &&
                 typeof window.pywebview.api.browse_sage_cert === 'function');
         }
 
@@ -17732,15 +17993,15 @@
                 if (!hasPair) {
                     metaEl.textContent = 'Choose the CAT token on the dashboard first. Settings, balances, pricing, and coin prep will then prepare for that token.';
                 } else if (!pairReady) {
-                    metaEl.textContent = `${pairName} has been selected for this run. Waiting for fresh balances and market data before settings can be saved.`;
+                    metaEl.textContent = `${pairName} is focused. Waiting for fresh balances and market data before settings can be saved.`;
                 } else {
-                    metaEl.textContent = `${pairName} is the active trading pair for this run. All settings on this page apply to that token against XCH.`;
+                    metaEl.textContent = `${pairName} is the focused trading pair. Settings on this page apply to that token against XCH and are remembered when you save.`;
                 }
             }
             if (statusEl) {
                 statusEl.textContent = !hasPair
                     ? 'Waiting for pair selection'
-                    : (pairReady ? 'App-wide trading pair confirmed' : 'Refreshing pair data');
+                    : (pairReady ? 'Focused trading pair ready' : 'Refreshing pair data');
             }
             if (btn) {
                 btn.disabled = locked;
@@ -17749,7 +18010,7 @@
                     : (hasPair ? 'Change Trading Pair' : 'Choose Trading Pair');
                 btn.title = locked
                     ? 'Stop the bot before changing the trading pair for this run.'
-                    : 'Trading pair is chosen once for the whole app.';
+                    : 'Switch focus to another CAT. Saved settings are restored per pair.';
             }
         }
 
@@ -19434,9 +19695,21 @@
                         extreme: parseFloat(_sellExt)   || 0,
                     };
                 }
-                // Offer counts from capital sizing
-                if (data.max_active_buy !== undefined) document.getElementById('configMaxBuy').value = data.max_active_buy || '';
-                if (data.max_active_sell !== undefined) document.getElementById('configMaxSell').value = data.max_active_sell || '';
+                // Offer counts from capital sizing. Preserve explicit 0
+                // (CAT cannot fund sells) — `|| ''` would blank the field and
+                // leave stale tier/spare counts driving a fake prep bill.
+                if (data.max_active_buy !== undefined && data.max_active_buy !== null) {
+                    document.getElementById('configMaxBuy').value = data.max_active_buy;
+                }
+                if (data.max_active_sell !== undefined && data.max_active_sell !== null) {
+                    document.getElementById('configMaxSell').value = data.max_active_sell;
+                }
+                if (Number(data.max_active_sell) === 0) {
+                    ['configInnerTierCount', 'configMidTierCount', 'configOuterTierCount', 'configExtremeTierCount',
+                     'configInnerTierSpareCount', 'configMidTierSpareCount', 'configOuterTierSpareCount', 'configExtremeTierSpareCount']
+                        .forEach((id) => { const el = document.getElementById(id); if (el) el.value = 0; });
+                    window._topupBufferCat = 0;
+                }
                 // Per-tier counts (market-adaptive distribution).
                 // Sell row first — Smart Settings sizes by SIZE column, which
                 // matches the sell ladder directly (no reversal).
@@ -19635,6 +19908,34 @@
                         const tradeXch = (cp.trading_xch || 0);
                         const pct = (v) => totalXch > 0 ? (v / totalXch * 100).toFixed(1) : '0';
                         const catLimited = cp.n_sell_limited_by_cat ? ' <span style="color:var(--orange-400);">⚠ CAT limited</span>' : '';
+                        const shared = cp.shared_allocation || {};
+                        const proposedBudget = Number(
+                            data.proposed_xch_budget_xch != null
+                                ? data.proposed_xch_budget_xch
+                                : (cp.proposed_xch_budget_xch != null ? cp.proposed_xch_budget_xch : cp.available_xch)
+                        ) || 0;
+                        let sharedRow = '';
+                        if (shared && (shared.clamped || Number(shared.other_budgets_xch) > 0 || proposedBudget > 0)) {
+                            const otherBudgets = Number(shared.other_budgets_xch) || 0;
+                            const sharedRemain = Number(shared.shared_remaining_xch);
+                            const reshapeableXch = Number(shared.reshapeable_xch);
+                            const reshapeKnown = Number.isFinite(reshapeableXch);
+                            const reshapeTight = reshapeKnown
+                                && Number.isFinite(sharedRemain)
+                                && reshapeableXch + 1e-9 < (Number(shared.budget_headroom_xch) || sharedRemain + 1);
+                            sharedRow = `<div style="margin-top:6px;padding:6px 8px;border-radius:4px;background:rgba(56,189,248,0.08);border:1px solid rgba(56,189,248,0.22);">
+                                <div style="color:var(--info-300);font-size:0.78em;text-transform:uppercase;letter-spacing:0.04em;">Shared wallet budget</div>
+                                <div style="margin-top:3px;">Pair budget <strong>${proposedBudget.toFixed(4)} XCH</strong>`
+                                + (otherBudgets > 0 ? ` · other pairs hold <strong>${otherBudgets.toFixed(4)} XCH</strong>` : '')
+                                + (Number.isFinite(sharedRemain) ? ` · <strong>${sharedRemain.toFixed(4)} XCH</strong> free to allocate` : '')
+                                + (reshapeKnown ? ` · <strong>${reshapeableXch.toFixed(4)} XCH</strong> reshapeable for prep` : '')
+                                + (shared.clamped
+                                    ? (reshapeTight
+                                        ? ` <span style="color:var(--orange-400);">· clamped to reshapeable leftover</span>`
+                                        : ` <span style="color:var(--orange-400);">· clamped to leftover capital</span>`)
+                                    : '')
+                                + `</div></div>`;
+                        }
                         _lastSmartCapitalPlan = Object.assign({}, cp);
                         capitalRow = `<div data-smart-capital style="margin-bottom:6px;">
                             <span style="color:var(--slate-400);font-size:0.8em;text-transform:uppercase;letter-spacing:0.05em;">Capital  <span style="font-weight:normal;color:var(--slate-500);text-transform:none;letter-spacing:0;">${totalXch.toFixed(3)} XCH total</span></span>
@@ -19664,10 +19965,26 @@
                                     <div style="font-weight:600;color:var(--success-200);">${tradeXch.toFixed(3)} XCH</div>
                                     <div style="color:var(--slate-500);font-size:0.78em;">${pct(tradeXch)}%</div>
                                 </div>
-                            </div>${catLimited}
+                            </div>${catLimited}${sharedRow}
                         </div>`;
                     } else if (cp.insufficient) {
-                        capitalRow = `<div style="color:var(--sell-color);margin-bottom:6px;">⚠ Insufficient capital after reserve — lower reserve % or add funds</div>`;
+                        const msgs = Array.isArray(src.messages) ? src.messages : [];
+                        const reshapeMsg = msgs.find((m) => /reshapeable/i.test(String(m || '')));
+                        const shared = cp.shared_allocation || {};
+                        const reshapeableXch = Number(shared.reshapeable_xch);
+                        const detail = reshapeMsg
+                            ? escapeHtml(String(reshapeMsg))
+                            : (Number.isFinite(reshapeableXch) && reshapeableXch <= 0
+                                ? 'No reshapeable XCH left for this pair — another pair still owns the prep coins.'
+                                : 'Insufficient capital after reserve — lower reserve % or add funds.');
+                        capitalRow = `<div style="color:var(--sell-color);margin-bottom:6px;">⚠ ${detail}</div>`
+                            + `<div style="margin:8px 0 4px 0;">`
+                            + `<button type="button" class="btn btn-secondary" id="smartDefaultsReleaseXchBtn" `
+                            + `style="font-size:0.85em;padding:6px 12px;">`
+                            + `Release XCH &amp; Start Fresh</button>`
+                            + `<div style="margin-top:4px;font-size:0.8em;color:var(--text-secondary);">`
+                            + `Stops keeping old pair budgets/ownership so this pair can re-run Smart Settings. `
+                            + `Stop other running pairs first; Dexie offers stay resting.</div></div>`;
                     }
 
                     // Ladder row
@@ -19722,12 +20039,25 @@
                     const profileLabel = escapeHtml(appliedProfile.charAt(0).toUpperCase() + appliedProfile.slice(1));
                     const profileBadge = `<span style="background:${profileColour}22;color:${profileColour};border:1px solid ${profileColour}55;border-radius:4px;padding:1px 7px;font-size:0.82em;font-weight:600;">${profileLabel}</span>`;
 
-                    resultTitle.innerHTML = `\u2713 Smart Settings applied &nbsp;${qBadge}&nbsp;${profileBadge}`;
+                    resultTitle.innerHTML = (cp.insufficient
+                        ? `Smart Settings needs capital &nbsp;${qBadge}&nbsp;${profileBadge}`
+                        : `\u2713 Smart Settings applied &nbsp;${qBadge}&nbsp;${profileBadge}`);
                     resultBody.innerHTML = `<div style="margin-bottom:8px;line-height:1.8;">${srcBadges}</div>
                         <div style="border-top:1px solid rgba(255,255,255,0.06);padding-top:8px;display:flex;flex-direction:column;gap:8px;">
                             ${marketRow}${capitalRow}${ladderRow}${spreadRow}${diffRow}
                         </div>`;
                     resultBox.style.display = 'block';
+                    const releaseBtn = document.getElementById('smartDefaultsReleaseXchBtn');
+                    if (releaseBtn) {
+                        releaseBtn.addEventListener('click', async () => {
+                            releaseBtn.disabled = true;
+                            const ok = await releaseXchForNewPairSetup();
+                            releaseBtn.disabled = false;
+                            if (ok) {
+                                showToast('XCH released — run Smart Settings again for this pair.', 'success');
+                            }
+                        });
+                    }
 
                     // Show quick-rerun strip and highlight active profile button
                     const rerunStrip = document.getElementById('riskProfileRerunStrip');
@@ -19749,6 +20079,35 @@
                 // "settings changed since Smart Settings" banner and snapshots
                 // current input values so subsequent edits can be detected.
                 markSmartSettingsApplied();
+
+                // Multi-pair: apply the proposed shared XCH budget for this pair.
+                try {
+                    const _budgetAsset = selectedCAT?.asset_id || '';
+                    const _proposedBudget = Number(
+                        data.proposed_xch_budget_xch != null
+                            ? data.proposed_xch_budget_xch
+                            : (data._capital_plan && data._capital_plan.proposed_xch_budget_xch)
+                    );
+                    if (_budgetAsset && Number.isFinite(_proposedBudget) && _proposedBudget > 0) {
+                        const budgetResp = await apiFetch(`${API_URL}/pairs/${_budgetAsset}/budget`, {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ xch_budget: _proposedBudget }),
+                        });
+                        const budgetResult = await budgetResp.json().catch(() => ({}));
+                        if (!budgetResp.ok || budgetResult.success === false) {
+                            showToast(
+                                budgetResult.error || 'Smart Settings applied, but pair XCH budget was not saved',
+                                'warning'
+                            );
+                        } else {
+                            try { await refreshPairsOverview(true); } catch (_) {}
+                        }
+                    }
+                } catch (_budgetErr) {
+                    debugWarn('[SmartDefaults] pair budget apply failed:', _budgetErr);
+                    showToast('Smart Settings applied, but pair XCH budget was not saved', 'warning');
+                }
 
             } catch (error) {
                 debugError('Failed to get smart settings:', error);
@@ -20472,6 +20831,13 @@
             const hasCustomSpareCounts = ['inner', 'mid', 'outer', 'extreme'].some(
                 tier => Number(explicitSpareCounts?.[tier] || 0) > 0
             );
+            // No live offers on this side → no spare coins either. Otherwise
+            // leftover Smart Settings spare fields with maxSell/maxBuy=0 still
+            // inflate CAT/XCH prep totals and trip "not enough token" warnings.
+            if (!maxOffersPerSide || maxOffersPerSide <= 0) {
+                return { inner: 0, mid: 0, outer: 0, extreme: 0 };
+            }
+
             const spareCounts = hasCustomSpareCounts
                 ? {
                     inner: Math.max(0, parseInt(explicitSpareCounts.inner) || 0),
@@ -21023,11 +21389,15 @@
             };
 
             if (tierEnabled) {
+                // Explicit 0 is valid (disabled tier after Smart Settings
+                // drops extreme/outer). `|| fallback` would revive a fake
+                // size and over-bill coin prep.
+                const _sizeOr = (v, fb) => (Number.isFinite(v) && v >= 0 ? v : fb);
                 plan.offerTierSizesXch = {
-                    inner: innerSize || tradeSize * 2,
-                    mid: midSize || tradeSize,
-                    outer: outerSize || tradeSize * 0.5,
-                    extreme: extremeSize || tradeSize * 0.2
+                    inner: _sizeOr(innerSize, tradeSize * 2),
+                    mid: _sizeOr(midSize, tradeSize),
+                    outer: _sizeOr(outerSize, tradeSize * 0.5),
+                    extreme: _sizeOr(extremeSize, tradeSize * 0.2)
                 };
                 // F62 (2026-04-09): per-side size resolution. When Smart
                 // Settings has stashed buy/sell dicts, use them for each
@@ -21784,7 +22154,10 @@
             const _buyMidInput     = parseFloat(document.getElementById('configBuyMidSizeXch')?.value);
             const _buyOuterInput   = parseFloat(document.getElementById('configBuyOuterSizeXch')?.value);
             const _buyExtremeInput = parseFloat(document.getElementById('configBuyExtremeSizeXch')?.value);
-            const _hasBuyInputs = (_buyInnerInput > 0 && _buyMidInput > 0 && _buyOuterInput > 0 && _buyExtremeInput > 0);
+            const _buySizeInputs = [_buyInnerInput, _buyMidInput, _buyOuterInput, _buyExtremeInput];
+            // Explicit 0 = disabled tier (valid). Require at least one live size.
+            const _hasBuyInputs = _buySizeInputs.every(v => Number.isFinite(v) && v >= 0)
+                && _buySizeInputs.some(v => v > 0);
             const _buySizesForPrep = _hasBuyInputs ? {
                 inner:   _buyInnerInput,
                 mid:     _buyMidInput,
@@ -21800,7 +22173,9 @@
             const _sellMidInput     = parseFloat(document.getElementById('configMidSizeXch')?.value);
             const _sellOuterInput   = parseFloat(document.getElementById('configOuterSizeXch')?.value);
             const _sellExtremeInput = parseFloat(document.getElementById('configExtremeSizeXch')?.value);
-            const _hasSellInputs = (_sellInnerInput > 0 && _sellMidInput > 0 && _sellOuterInput > 0 && _sellExtremeInput > 0);
+            const _sellSizeInputs = [_sellInnerInput, _sellMidInput, _sellOuterInput, _sellExtremeInput];
+            const _hasSellInputs = _sellSizeInputs.every(v => Number.isFinite(v) && v >= 0)
+                && _sellSizeInputs.some(v => v > 0);
             const _sellSizesForPrep = _hasSellInputs ? {
                 inner:   _sellInnerInput,
                 mid:     _sellMidInput,
@@ -21808,6 +22183,10 @@
                 extreme: _sellExtremeInput,
             } : (window._smartSellSizes && window._smartSellSizes.inner > 0
                 ? { ...window._smartSellSizes } : null);
+            const _tierSizeInput = (id, fb) => {
+                const v = parseFloat(document.getElementById(id)?.value);
+                return Number.isFinite(v) && v >= 0 ? v : fb;
+            };
             const plan = buildCoinPrepPlan({
                 liquidityMode: getLiquidityMode(),
                 tradeSize,
@@ -21817,10 +22196,10 @@
                 tierEnabled,
                 midPrice,
                 headroomPct: prepHeadroomPct,
-                innerSize: parseFloat(document.getElementById('configInnerSizeXch')?.value) || tradeSize * 2,
-                midSize: parseFloat(document.getElementById('configMidSizeXch')?.value) || tradeSize,
-                outerSize: parseFloat(document.getElementById('configOuterSizeXch')?.value) || tradeSize * 0.5,
-                extremeSize: parseFloat(document.getElementById('configExtremeSizeXch')?.value) || tradeSize * 0.2,
+                innerSize: _tierSizeInput('configInnerSizeXch', tradeSize * 2),
+                midSize: _tierSizeInput('configMidSizeXch', tradeSize),
+                outerSize: _tierSizeInput('configOuterSizeXch', tradeSize * 0.5),
+                extremeSize: _tierSizeInput('configExtremeSizeXch', tradeSize * 0.2),
                 buyTierSizes: _buySizesForPrep,
                 sellTierSizes: _sellSizesForPrep,
                 tierCountInner: parseInt(document.getElementById('configInnerTierCount')?.value) || 0,
@@ -22776,14 +23155,23 @@
                     updateStartupChecklist(bot_state);
                     clearPairScopedDashboardState(name);
 
-                    // New pair selected — reset session state for the new pair.
-                    // This ensures trading-size fields (Smart Defaults output) are blank
-                    // on next settings open rather than showing the previous pair's values.
-                    // Also clears coin prep so the check runs for the new pair's coin sizes.
-                    setFreshStartTemplateState(true);
-                    setSettingsReviewedState(false);
+                    // Phase 1 multi-pair: if the server restored a saved profile for
+                    // this CAT, keep those economics and reload Settings from /api/config.
+                    // First visit to a CAT still uses the fresh-start blank template.
+                    const profileLoaded = !!result.pair_profile_loaded;
+                    if (profileLoaded) {
+                        setFreshStartTemplateState(false);
+                        setSettingsReviewedState(true);
+                        userHasSavedSettings = true;
+                        try { _settingsSnapshot = null; } catch (_) {}
+                    } else {
+                        // New pair — blank market-derived fields so previous pair
+                        // values do not show until Smart Settings / save.
+                        setFreshStartTemplateState(true);
+                        setSettingsReviewedState(false);
+                        userHasSavedSettings = false;
+                    }
                     setCoinPrepStatus('none');
-                    userHasSavedSettings = false;
                     resetSmartDefaultsPanel();
                     
                     // Update labels
@@ -22796,7 +23184,13 @@
                     if (catRows) catRows.style.display = 'block';
                     if (catPlaceholder) catPlaceholder.style.display = 'none';
                     
-                    showToast(`Switched to ${name}!`, 'success');
+                    showToast(
+                        profileLoaded
+                            ? `Switched to ${name} — restored saved settings`
+                            : `Switched to ${name}! Run Smart Settings to configure.`,
+                        'success'
+                    );
+                    try { refreshPairsOverview(true); } catch (_) {}
                     
                     // Sync settings modal selector if open
                     const settingsSelector = document.getElementById('configCatSelector');
@@ -23242,6 +23636,233 @@
             }
         }
 
+        let _pairsOverviewCache = null;
+        let _pairsOverviewLastFetch = 0;
+        let _pairsOverviewInFlight = null;
+
+        function _fmtPairAmount(value, digits = 3) {
+            const n = Number(value);
+            if (!Number.isFinite(n)) return '—';
+            if (Math.abs(n) >= 1000) return n.toLocaleString(undefined, { maximumFractionDigits: 1 });
+            return n.toLocaleString(undefined, { maximumFractionDigits: digits });
+        }
+
+        function _pairsOverviewPnlClass(value) {
+            const n = Number(value);
+            if (!Number.isFinite(n) || n === 0) return 'neutral';
+            return n > 0 ? 'positive' : 'negative';
+        }
+
+        function renderPairsOverview(payload) {
+            const panel = document.getElementById('pairsOverviewPanel');
+            const list = document.getElementById('pairsOverviewList');
+            const meta = document.getElementById('pairsOverviewMeta');
+            if (!panel || !list) return;
+
+            const pairs = Array.isArray(payload?.pairs) ? payload.pairs : [];
+            const maxPairs = Number(payload?.max_concurrent_pairs || 4);
+            const xchSpendable = payload?.xch?.spendable;
+            const aggPnl = payload?.pnl?.realised_pnl_xch;
+            const aggPnlBit = (aggPnl != null && typeof formatPnlXch === 'function')
+                ? ` · ${formatPnlXch(aggPnl)} XCH PnL`
+                : '';
+            if (meta) {
+                const xchBit = Number.isFinite(Number(xchSpendable))
+                    ? ` · ${_fmtPairAmount(xchSpendable, 4)} XCH spendable`
+                    : '';
+                meta.textContent = `Up to ${maxPairs} pairs · focus one to configure${xchBit}${aggPnlBit}`;
+            }
+
+            if (!pairs.length) {
+                panel.style.display = 'none';
+                list.innerHTML = '<div class="pairs-overview-empty">Saved and wallet pairs will show here after you choose a CAT.</div>';
+                return;
+            }
+
+            panel.style.display = '';
+            const anyRunning = pairs.some((p) => !!p.running) || !!(bot_state && bot_state.running);
+            list.innerHTML = pairs.map((pair) => {
+                const name = escapeHtml(pair.name || pair.ticker_id || 'CAT');
+                const ticker = pair.ticker_id ? escapeHtml(pair.ticker_id) : '';
+                const label = ticker && ticker !== name ? `${name} <span style="color:var(--text-tertiary);font-weight:500;">/${ticker}</span>` : name;
+                const bal = _fmtPairAmount(pair.balances?.spendable ?? pair.balances?.total, 3);
+                const buys = Number(pair.open_offers?.buy || 0);
+                const sells = Number(pair.open_offers?.sell || 0);
+                const focus = !!pair.is_focus;
+                const running = !!pair.running;
+                const budget = Number(pair.xch_budget || 0);
+                const remaining = Number(pair.xch_budget_remaining || 0);
+                const budgetLabel = budget > 0
+                    ? `${_fmtPairAmount(remaining, 4)} / ${_fmtPairAmount(budget, 4)} XCH`
+                    : 'No XCH budget';
+                const pnlRaw = pair.realised_pnl_xch;
+                const pnlText = (typeof formatPnlXch === 'function')
+                    ? formatPnlXch(pnlRaw)
+                    : String(pnlRaw ?? '0');
+                const pnlClass = _pairsOverviewPnlClass(pnlRaw);
+                const trips = Number(pair.round_trips || 0);
+                const assetAttr = escapeHtml(pair.asset_id || '');
+                const startStopBtn = running
+                    ? `<button type="button" class="btn btn-secondary pairs-overview-action" data-action="stop" data-asset-id="${assetAttr}">Stop</button>`
+                    : `<button type="button" class="btn btn-primary pairs-overview-action" data-action="start" data-asset-id="${assetAttr}">Start</button>`;
+                const budgetBtn = `<button type="button" class="btn btn-secondary pairs-overview-action" data-action="budget" data-asset-id="${assetAttr}" data-budget="${budget}">Budget</button>`;
+                const focusBtn = focus
+                    ? ''
+                    : `<button type="button" class="btn btn-secondary pairs-overview-action" data-action="focus" data-asset-id="${assetAttr}">Focus</button>`;
+                return (
+                    `<div class="pairs-overview-row${focus ? ' is-focus' : ''}${running ? ' is-running' : ''}" data-asset-id="${assetAttr}">` +
+                    `<div class="pairs-overview-name"><span>${label}</span>` +
+                    `${focus ? '<span class="pairs-overview-badge">Focus</span>' : ''}` +
+                    `${running ? '<span class="pairs-overview-badge">Running</span>' : ''}</div>` +
+                    `<div class="pairs-overview-metric"><strong>${bal}</strong> CAT · <strong>${buys}</strong>/<strong>${sells}</strong> offers</div>` +
+                    `<div class="pairs-overview-metric" title="Remaining / allocated XCH budget for this pair">${escapeHtml(budgetLabel)}</div>` +
+                    `<div class="pairs-overview-metric pairs-overview-pnl ${pnlClass}" title="Session realised PnL · ${trips} round trip${trips === 1 ? '' : 's'}"><strong>${escapeHtml(pnlText)}</strong> XCH</div>` +
+                    `<div class="pairs-overview-actions">${budgetBtn}${focusBtn}${startStopBtn}</div>` +
+                    `</div>`
+                );
+            }).join('');
+
+            list.querySelectorAll('.pairs-overview-action').forEach((btn) => {
+                btn.addEventListener('click', (ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    const action = btn.getAttribute('data-action');
+                    const assetId = btn.getAttribute('data-asset-id');
+                    if (action === 'focus') focusPairFromOverview(assetId);
+                    else if (action === 'start') startPairFromOverview(assetId);
+                    else if (action === 'stop') stopPairFromOverview(assetId);
+                    else if (action === 'budget') editPairBudgetFromOverview(assetId, btn.getAttribute('data-budget'));
+                });
+            });
+            if (meta) {
+                const runningCount = pairs.filter((p) => p.running).length;
+                const base = anyRunning
+                    ? `${runningCount} running · up to ${Number(payload?.max_concurrent_pairs || 4)} · shared XCH budgets`
+                    : `Up to ${Number(payload?.max_concurrent_pairs || 4)} pairs · set XCH budget, then Start`;
+                meta.textContent = base + aggPnlBit;
+            }
+        }
+
+        async function startPairFromOverview(assetId) {
+            if (!assetId) return;
+            try {
+                const resp = await apiFetch(`${API_URL}/pairs/${assetId}/start`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({}),
+                });
+                const result = await resp.json();
+                if (!resp.ok || result.success === false) {
+                    showToast(result.error || result.errors?.[0] || 'Could not start pair', 'error');
+                    return;
+                }
+                showToast('Pair started', 'success');
+                await refreshPairsOverview(true);
+                try { await fetchStatus(); } catch (_) {}
+            } catch (e) {
+                showToast('Could not start pair', 'error');
+            }
+        }
+
+        async function stopPairFromOverview(assetId) {
+            if (!assetId) return;
+            try {
+                const resp = await apiFetch(`${API_URL}/pairs/${assetId}/stop`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({}),
+                });
+                const result = await resp.json();
+                if (!resp.ok || result.success === false) {
+                    showToast(result.error || 'Could not stop pair', 'error');
+                    return;
+                }
+                showToast('Pair stopped — open offers left resting', 'success');
+                await refreshPairsOverview(true);
+                try { await fetchStatus(); } catch (_) {}
+            } catch (e) {
+                showToast('Could not stop pair', 'error');
+            }
+        }
+
+        async function editPairBudgetFromOverview(assetId, currentBudget) {
+            if (!assetId) return;
+            const current = Number(currentBudget || 0);
+            const raw = window.prompt(
+                'XCH budget for this pair (shared wallet capital). Other pairs cannot use this slice.',
+                Number.isFinite(current) && current > 0 ? String(current) : ''
+            );
+            if (raw === null) return;
+            const value = Number(raw);
+            if (!Number.isFinite(value) || value < 0) {
+                showToast('Enter a valid XCH budget', 'warning');
+                return;
+            }
+            try {
+                const resp = await apiFetch(`${API_URL}/pairs/${assetId}/budget`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ xch_budget: value }),
+                });
+                const result = await resp.json();
+                if (!resp.ok || result.success === false) {
+                    showToast(result.error || 'Could not save budget', 'error');
+                    return;
+                }
+                showToast(`Budget set to ${_fmtPairAmount(value, 4)} XCH`, 'success');
+                await refreshPairsOverview(true);
+            } catch (e) {
+                showToast('Could not save budget', 'error');
+            }
+        }
+
+        async function focusPairFromOverview(assetId) {
+            if (!assetId) return;
+            const selector = document.getElementById('catSelector');
+            if (!selector) return;
+            if (!selectorHasAssetId(selector, assetId)) {
+                try { await (typeof loadCATs === 'function' ? loadCATs() : Promise.resolve()); } catch (_) {}
+            }
+            if (!selectorHasAssetId(selector, assetId)) {
+                showToast('That CAT is not in the wallet list yet. Refresh pairs and try again.', 'warning');
+                return;
+            }
+            selector.value = assetId;
+            try {
+                await selectCAT();
+                await refreshPairsOverview(true);
+            } catch (e) {
+                debugWarn('[pairs overview] focus switch failed:', e);
+            }
+        }
+
+        async function refreshPairsOverview(force = false) {
+            const now = Date.now();
+            if (!force && now - _pairsOverviewLastFetch < 8000 && _pairsOverviewCache) {
+                renderPairsOverview(_pairsOverviewCache);
+                return _pairsOverviewCache;
+            }
+            if (_pairsOverviewInFlight) return _pairsOverviewInFlight;
+            _pairsOverviewInFlight = (async () => {
+                try {
+                    const resp = await apiFetch(`${API_URL}/pairs`);
+                    if (!resp.ok) return null;
+                    const payload = await resp.json();
+                    if (!payload || payload.success === false) return null;
+                    _pairsOverviewCache = payload;
+                    _pairsOverviewLastFetch = Date.now();
+                    renderPairsOverview(payload);
+                    return payload;
+                } catch (e) {
+                    debugWarn('[pairs overview] fetch failed:', e?.message || e);
+                    return null;
+                } finally {
+                    _pairsOverviewInFlight = null;
+                }
+            })();
+            return _pairsOverviewInFlight;
+        }
+
         async function fetchStatus() {
             if (isWalletSwitchBusy()) return null;
             try {
@@ -23276,6 +23897,7 @@
             updateWalletPickerAvailability();
                 updateUI(data);
                 syncCommandCentreFromStatus(data);
+                try { refreshPairsOverview(false); } catch (_) {}
                 
                 let appliedStatusCatAssetId = currentCAT?.asset_id || '';
                 if (data.current_cat && data.current_cat.name) {
@@ -26646,9 +27268,33 @@
             return (icon ? icon + ' ' : '') + String(message || '');
         }
 
+        function _normalizeSseAssetId(value) {
+            return String(value || '').trim().toLowerCase().replace(/^0x/, '');
+        }
+
+        function _sseEventAssetId(data) {
+            if (!data || typeof data !== 'object') return '';
+            return _normalizeSseAssetId(data.asset_id || data.cat_asset_id || '');
+        }
+
+        function _isFocusPairSseEvent(data) {
+            // Process-wide events (no asset) always apply. Pair-scoped events
+            // only update focus-pair dashboard widgets so concurrent pairs
+            // don't clobber each other's mid/ladder/health panels.
+            const eventAid = _sseEventAssetId(data);
+            if (!eventAid) return true;
+            const focusAid = _normalizeSseAssetId(currentCAT && currentCAT.asset_id);
+            if (!focusAid) return true;
+            return eventAid === focusAid;
+        }
+
         function handleSSEEvent(msg) {
             const type = msg.type;
             const data = msg.data;
+
+            if ((type === 'price_update' || type === 'dashboard_update') && data && !_isFocusPairSseEvent(data)) {
+                return;
+            }
 
             if (type === 'price_update' && data) {
                 // Update price display instantly
@@ -28887,9 +29533,14 @@
             const rotatorHint = (list.length > 1)
                 ? `<span class="la-rotator-hint">${idx + 1} / ${list.length} &#9656;</span>`
                 : '';
+            const pairLabel = String(a.pair_ticker || a.pair_name || '').trim();
+            const titleAlreadyTagged = pairLabel && String(a.title || '').indexOf('[' + pairLabel + ']') >= 0;
+            const pairBadge = (pairLabel && !titleAlreadyTagged)
+                ? `<span class="la-rotator-hint" style="opacity:1;color:var(--info-300);">[${escapeHtml(pairLabel)}]</span>`
+                : '';
             body.innerHTML = `<div class="alert-item alert-${escapeHtml(a.severity)}" data-alert-id="${alertId}">
                 <div class="alert-content">
-                    <div class="alert-title">${escapeHtml(a.title)} ${sevLabel} ${rotatorHint}</div>
+                    <div class="alert-title">${pairBadge} ${escapeHtml(a.title)} ${sevLabel} ${rotatorHint}</div>
                     <div class="alert-msg">${escapeHtml(a.message)}</div>
                     <div class="alert-actions-row">
                         ${actionBtn}
@@ -30156,9 +30807,42 @@
                     summaryHtml += `<div>↔️ Spread: ${(settings.spread_bps / 100).toFixed(1)}%</div>`;
                 }
                 if (!summaryHtml) {
-                    summaryHtml = '<div style="opacity: 0.6;">No saved settings found</div>';
+                    summaryHtml = '<div style="opacity: 0.6;">No saved focus-pair settings found — multi-pair capital may still be allocated below.</div>';
                 }
                 document.getElementById('resumeSettingsSummary').innerHTML = summaryHtml;
+
+                const pairsSession = data.pairs_session || {};
+                const pairsInfo = document.getElementById('resumePairsSessionInfo');
+                if (pairsInfo) {
+                    const pairs = Array.isArray(pairsSession.pairs) ? pairsSession.pairs : [];
+                    if (pairs.length > 0 || pairsSession.has_multi_pair_state) {
+                        let pairsHtml = `<div style="font-weight:600;margin-bottom:6px;">Saved pair capital</div>`;
+                        pairsHtml += `<div style="opacity:0.85;margin-bottom:8px;">`
+                            + `${Number(pairsSession.pairs_with_budget || 0)} with XCH budget · `
+                            + `${Number(pairsSession.pairs_with_owned_xch || 0)} with owned prep coins · `
+                            + `${Number(pairsSession.total_owned_xch || 0).toFixed(4)} XCH owned</div>`;
+                        pairs.slice(0, 4).forEach((p) => {
+                            const label = escapeHtml(p.name || p.ticker_id || (p.asset_id || '').slice(0, 12));
+                            pairsHtml += `<div>• <strong>${label}</strong> — budget ${Number(p.xch_budget || 0).toFixed(4)} XCH, `
+                                + `owned ${Number(p.xch_owned || 0).toFixed(4)} XCH, `
+                                + `offers ${Number(p.open_buy || 0)}/${Number(p.open_sell || 0)}</div>`;
+                        });
+                        if (pairs.length > 4) {
+                            pairsHtml += `<div style="opacity:0.7;">…and ${pairs.length - 4} more</div>`;
+                        }
+                        pairsInfo.innerHTML = pairsHtml;
+                        pairsInfo.style.display = 'block';
+                    } else {
+                        pairsInfo.style.display = 'none';
+                        pairsInfo.innerHTML = '';
+                    }
+                }
+                const resumeCopy = document.getElementById('resumeModalCopy');
+                if (resumeCopy) {
+                    resumeCopy.textContent = pairsSession.has_multi_pair_state
+                        ? 'A prior multi-pair setup left XCH budgets and/or owned prep coins. Continue to keep that allocation, or Start Fresh to release XCH for a new Smart Settings / Coin Prep pass.'
+                        : 'Active offers from a prior run are still live. Continue to resume this setup, or Start Fresh to release owned XCH and reconfigure.';
+                }
 
                 // Gap closer info
                 const gcInfo = data.gap_closer || {};
@@ -30184,7 +30868,7 @@
 
                 // Show the modal
                 document.getElementById('resumeSessionModal').classList.add('active');
-                debugLog(`[RESUME] Showing modal: ${data.offer_count} offers (${data.buy_count} buy, ${data.sell_count} sell)`);
+                debugLog(`[RESUME] Showing modal: ${data.offer_count} offers (${data.buy_count} buy, ${data.sell_count} sell), pairs_state=${!!pairsSession.has_multi_pair_state}`);
                 return true;
                 
             } catch (error) {
@@ -30461,13 +31145,26 @@
             try {
                 const response = await apiFetch(`${API_URL}/session/fresh-start`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' }
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ release_xch: true })
                 });
                 const result = await response.json();
                 if (!response.ok || result?.success === false) {
                     throw new Error(result?.error || 'Fresh-start reset failed');
                 }
                 debugLog('[RESUME] Fresh-start session reset:', result);
+                const ownedCleared = Number(result?.ownership_cleared_coins || 0);
+                const budgetsCleared = Number(result?.budgets_cleared_pairs || 0);
+                if (ownedCleared > 0 || budgetsCleared > 0) {
+                    showToast(
+                        `Fresh start — released ${ownedCleared} owned XCH coin${ownedCleared === 1 ? '' : 's'}`
+                        + (budgetsCleared ? ` and ${budgetsCleared} pair budget${budgetsCleared === 1 ? '' : 's'}` : '')
+                        + '. Re-run Smart Settings + Coin Prep.',
+                        'info'
+                    );
+                } else {
+                    showToast('Fresh run started — review settings and run coin prep for the new setup.', 'info');
+                }
             } catch (err) {
                 debugWarn('[RESUME] Fresh-start reset failed:', err);
                 showToast('Start Fresh reset failed: ' + formatError(err), 'warning');
@@ -30480,12 +31177,38 @@
             resetTierTemplateInputsForFreshStart();
             document.getElementById('resumeSessionModal').classList.remove('active');
             const startBtn = document.getElementById('startBtn');
-            if (startBtn) { startBtn.disabled = true; startBtn.innerHTML = 'â–¶ Start Bot'; }
+            if (startBtn) { startBtn.disabled = true; startBtn.innerHTML = '▶ Start Bot'; }
             updateStartupChecklist(bot_state);
             updateDashboardStartupLayout(bot_state);
+            try { await refreshPairsOverview(true); } catch (_) {}
             fetchDashboard();
-            debugLog('[RESUME] User chose Start Fresh \u2014 settingsReviewed:', settingsReviewed);
-            showToast('Fresh run started \u2014 review settings and run coin prep for the new setup.', 'info');
+            debugLog('[RESUME] User chose Start Fresh — settingsReviewed:', settingsReviewed);
+        }
+
+        /** Operator escape hatch: release owned XCH / budgets while keeping focus. */
+        async function releaseXchForNewPairSetup() {
+            try {
+                const response = await apiFetch(`${API_URL}/session/fresh-start`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ release_xch: true })
+                });
+                const result = await response.json();
+                if (!response.ok || result?.success === false) {
+                    throw new Error(result?.error || 'Could not release XCH');
+                }
+                setCoinPrepStatus('none');
+                setSettingsReviewedState(false);
+                try { await refreshPairsOverview(true); } catch (_) {}
+                showToast(
+                    'Released pair XCH ownership and budgets. Stop other pairs if they are still running, then re-run Smart Settings + Coin Prep.',
+                    'info'
+                );
+                return true;
+            } catch (err) {
+                showToast('Could not release XCH: ' + formatError(err), 'warning');
+                return false;
+            }
         }
 
         function resumeSkip() {
@@ -33432,6 +34155,16 @@ function closeCtgErrorModal() {
             const configuredTierCountsXch = getConfiguredTierCountsFromConfigXch(config);
             const configuredTierSpares = getConfiguredTierSpareCountsFromConfig(config);
             const configuredTierSparesXch = getConfiguredTierSpareCountsFromConfigXch(config);
+            const _cfgSize = (key, fb) => {
+                const v = parseFloat(config[key]);
+                return Number.isFinite(v) && v >= 0 ? v : fb;
+            };
+            const _cfgSideSize = (key, stashVal) => {
+                const v = parseFloat(config[key]);
+                if (Number.isFinite(v) && v >= 0) return v;
+                const s = parseFloat(stashVal);
+                return Number.isFinite(s) && s >= 0 ? s : 0;
+            };
             const plan = buildCoinPrepPlan({
                 liquidityMode: config.liquidity_mode || getLiquidityMode(),
                 tradeSize,
@@ -33441,24 +34174,25 @@ function closeCtgErrorModal() {
                 tierEnabled,
                 midPrice,
                 headroomPct: prepHeadroomPct,
-                innerSize: parseFloat(config.inner_size_xch) || tradeSize * 2,
-                midSize: parseFloat(config.mid_size_xch) || tradeSize,
-                outerSize: parseFloat(config.outer_size_xch) || tradeSize * 0.5,
-                extremeSize: parseFloat(config.extreme_size_xch) || tradeSize * 0.2,
+                innerSize: _cfgSize('inner_size_xch', tradeSize * 2),
+                midSize: _cfgSize('mid_size_xch', tradeSize),
+                outerSize: _cfgSize('outer_size_xch', tradeSize * 0.5),
+                extremeSize: _cfgSize('extreme_size_xch', tradeSize * 0.2),
                 // F62 (2026-04-09): per-side sizes come from the saved config
                 // (or from Smart Settings via the stash). When unset, the
                 // plan builder falls back to the single shared row.
+                // Explicit 0 = disabled tier — do not revive via `||`.
                 buyTierSizes: {
-                    inner:   parseFloat(config.buy_inner_size_xch)   || (window._smartBuySizes?.inner   ?? 0),
-                    mid:     parseFloat(config.buy_mid_size_xch)     || (window._smartBuySizes?.mid     ?? 0),
-                    outer:   parseFloat(config.buy_outer_size_xch)   || (window._smartBuySizes?.outer   ?? 0),
-                    extreme: parseFloat(config.buy_extreme_size_xch) || (window._smartBuySizes?.extreme ?? 0),
+                    inner:   _cfgSideSize('buy_inner_size_xch', window._smartBuySizes?.inner),
+                    mid:     _cfgSideSize('buy_mid_size_xch', window._smartBuySizes?.mid),
+                    outer:   _cfgSideSize('buy_outer_size_xch', window._smartBuySizes?.outer),
+                    extreme: _cfgSideSize('buy_extreme_size_xch', window._smartBuySizes?.extreme),
                 },
                 sellTierSizes: {
-                    inner:   parseFloat(config.sell_inner_size_xch)   || (window._smartSellSizes?.inner   ?? 0),
-                    mid:     parseFloat(config.sell_mid_size_xch)     || (window._smartSellSizes?.mid     ?? 0),
-                    outer:   parseFloat(config.sell_outer_size_xch)   || (window._smartSellSizes?.outer   ?? 0),
-                    extreme: parseFloat(config.sell_extreme_size_xch) || (window._smartSellSizes?.extreme ?? 0),
+                    inner:   _cfgSideSize('sell_inner_size_xch', window._smartSellSizes?.inner),
+                    mid:     _cfgSideSize('sell_mid_size_xch', window._smartSellSizes?.mid),
+                    outer:   _cfgSideSize('sell_outer_size_xch', window._smartSellSizes?.outer),
+                    extreme: _cfgSideSize('sell_extreme_size_xch', window._smartSellSizes?.extreme),
                 },
                 tierCountInner: configuredTierCounts.inner,
                 tierCountMid: configuredTierCounts.mid,
@@ -33766,6 +34500,9 @@ function closeCtgErrorModal() {
             try {
                 // Send the spare coin multiplier from the GUI to the API
                 const coinMultiplier = parseFloat(document.getElementById('configCoinPrepMultiplier')?.value) || 2;
+                const prepAssetId = (currentCAT && currentCAT.asset_id)
+                    || (typeof getSettingsSelectedCAT === 'function' && getSettingsSelectedCAT()?.asset_id)
+                    || '';
                 const response = await apiFetch(`${API_URL}/coin-prep/trigger`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -33774,11 +34511,16 @@ function closeCtgErrorModal() {
                         reset_pnl: !!resets.pnl,
                         reset_offer_history: !!resets.offers,
                         reset_counters: !!resets.counters,
+                        asset_id: prepAssetId,
                     })
                 });
                 const data = await response.json();
 
-                if (data.success) {
+                if (data.success && data.status === 'queued') {
+                    showToast(data.message || 'Coin prep queued for this pair', 'info');
+                    if (btn) { btn.disabled = false; btn.textContent = 'Yes, Prepare Coins'; }
+                    try { closeCoinPrepConfirm(); } catch (_) {}
+                } else if (data.success) {
                     // Reset rolling log history for new run
                     _coinPrepMsgHistory = [];
                     _coinPrepLastMsg = '';
@@ -34985,7 +35727,7 @@ async function closeDesktopWindowAfterShutdown({ backendStopped = false, extraWa
     }
 
     try {
-        if (IS_DESKTOP && window.pywebview && window.pywebview.api) {
+        if (IS_DESKTOP && _isPywebviewBridgeReady()) {
             // Prefer confirm_close_window — it flips the Python-side
             // confirmed-close flag so the on_closing handler doesn't
             // re-open the shutdown modal in a loop.
@@ -36846,6 +37588,10 @@ document.addEventListener('DOMContentLoaded', () => {
         el.focus();
         // execCommand('paste') is blocked by WebView2 — read via Python bridge instead
         try {
+            if (!_isPywebviewBridgeReady() || typeof window.pywebview.api.read_clipboard !== 'function') {
+                document.execCommand('paste');
+                return;
+            }
             const res = await window.pywebview.api.read_clipboard();
             if (res && res.success && res.text) {
                 const start = el.selectionStart ?? el.value.length;

@@ -423,6 +423,12 @@ def api_config_update():
                 event_payload["apply_mode"] = notice["apply_mode"]
                 event_payload["warning"] = notice["warning"]
             api_server.events.emit("config_changed", event_payload)
+            try:
+                import pair_store as _pair_store
+
+                _pair_store.persist_current_pair_overlay(cfg)
+            except Exception:
+                pass
             return jsonify(response)
         return jsonify({"success": False, "error": f"Failed to update {key}"}), 500
 
@@ -557,6 +563,13 @@ def api_config_update():
         extra = _apply_sage_change_address_setting()
 
     response["change_address_result"] = extra
+    if updated:
+        try:
+            import pair_store as _pair_store
+
+            _pair_store.persist_current_pair_overlay(cfg)
+        except Exception:
+            pass
     return jsonify(response)
 
 
@@ -1008,15 +1021,139 @@ def api_settings_validate():
     )
 
 
+def _pairs_session_summary() -> dict:
+    """Multi-pair leftover state for the resume / start-fresh modal."""
+    summary = {
+        "pair_count": 0,
+        "pairs_with_budget": 0,
+        "pairs_with_owned_xch": 0,
+        "pairs_with_open_offers": 0,
+        "total_budget_xch": 0.0,
+        "total_owned_xch": 0.0,
+        "unowned_trading_xch": 0.0,
+        "pairs": [],
+        "has_multi_pair_state": False,
+    }
+    try:
+        from database import count_open_offers_by_cat, summarize_xch_ownership
+        from pair_store import list_pair_configs
+
+        ownership = summarize_xch_ownership() or {}
+        offer_counts = count_open_offers_by_cat() or {}
+        configs = list_pair_configs() or []
+        owned_pairs = ownership.get("pairs") or {}
+        shared = ownership.get("shared") or {}
+        # Unowned free XCH that is not in shared fee/sniper/reserve buckets
+        # is what a new pair can reshape — approximate from shared.other_coins
+        # mojos is not split; expose total shared mojos for operator context.
+        try:
+            summary["unowned_trading_xch"] = round(
+                float(shared.get("mojos") or 0) / 1e12, 4
+            )
+        except (TypeError, ValueError):
+            summary["unowned_trading_xch"] = 0.0
+
+        rows = []
+        for cfg_row in configs:
+            aid = (
+                str(cfg_row.get("cat_asset_id") or "")
+                .strip()
+                .lower()
+                .replace("0x", "")
+            )
+            if len(aid) != 64:
+                continue
+            try:
+                budget_mojos = int(cfg_row.get("xch_budget_mojos") or 0)
+            except (TypeError, ValueError):
+                budget_mojos = 0
+            budget_xch = round(budget_mojos / 1e12, 4) if budget_mojos else 0.0
+            owned = owned_pairs.get(aid) or {}
+            try:
+                owned_xch = round(float(owned.get("mojos") or 0) / 1e12, 4)
+            except (TypeError, ValueError):
+                owned_xch = 0.0
+            offers = offer_counts.get(aid) or {}
+            buy_n = int(offers.get("buy") or 0)
+            sell_n = int(offers.get("sell") or 0)
+            if budget_xch <= 0 and owned_xch <= 0 and (buy_n + sell_n) <= 0:
+                continue
+            rows.append(
+                {
+                    "asset_id": aid,
+                    "name": cfg_row.get("name") or cfg_row.get("ticker_id") or aid[:12],
+                    "ticker_id": cfg_row.get("ticker_id") or "",
+                    "xch_budget": budget_xch,
+                    "xch_owned": owned_xch,
+                    "open_buy": buy_n,
+                    "open_sell": sell_n,
+                }
+            )
+            if budget_xch > 0:
+                summary["pairs_with_budget"] += 1
+                summary["total_budget_xch"] = round(
+                    summary["total_budget_xch"] + budget_xch, 4
+                )
+            if owned_xch > 0:
+                summary["pairs_with_owned_xch"] += 1
+                summary["total_owned_xch"] = round(
+                    summary["total_owned_xch"] + owned_xch, 4
+                )
+            if buy_n + sell_n > 0:
+                summary["pairs_with_open_offers"] += 1
+
+        # Also surface owned pairs that have no pair_configs row yet.
+        known = {r["asset_id"] for r in rows}
+        for aid, owned in owned_pairs.items():
+            if aid in known or len(str(aid)) != 64:
+                continue
+            try:
+                owned_xch = round(float(owned.get("mojos") or 0) / 1e12, 4)
+            except (TypeError, ValueError):
+                owned_xch = 0.0
+            if owned_xch <= 0:
+                continue
+            offers = offer_counts.get(aid) or {}
+            rows.append(
+                {
+                    "asset_id": aid,
+                    "name": aid[:12],
+                    "ticker_id": "",
+                    "xch_budget": 0.0,
+                    "xch_owned": owned_xch,
+                    "open_buy": int(offers.get("buy") or 0),
+                    "open_sell": int(offers.get("sell") or 0),
+                }
+            )
+            summary["pairs_with_owned_xch"] += 1
+            summary["total_owned_xch"] = round(
+                summary["total_owned_xch"] + owned_xch, 4
+            )
+
+        summary["pairs"] = rows
+        summary["pair_count"] = len(rows)
+        summary["has_multi_pair_state"] = (
+            summary["pair_count"] > 1
+            or summary["pairs_with_owned_xch"] > 0
+            or summary["pairs_with_budget"] > 0
+        )
+    except Exception:
+        pass
+    return summary
+
+
 @bp.route("/api/check-resume")
 def api_check_resume():
     """Check if there are existing offers from a previous session.
 
     Returns can_resume + offer details so the GUI can show a resume modal.
+    Also includes ``pairs_session`` (budgets / owned XCH / open offers) so
+    operators can choose Continue vs Start Fresh for multi-pair leftovers.
     """
     server = _api_server()
     bot = server.bot
     cfg = server.cfg
+    pairs_session = _pairs_session_summary()
     if bot and getattr(bot, "_loop_count", 0) > 0:
         return jsonify(
             {
@@ -1025,6 +1162,7 @@ def api_check_resume():
                 "buy_count": 0,
                 "sell_count": 0,
                 "reason": "bot_already_running",
+                "pairs_session": pairs_session,
             }
         )
     if server._fresh_start_is_set():
@@ -1035,6 +1173,7 @@ def api_check_resume():
                 "buy_count": 0,
                 "sell_count": 0,
                 "reason": "fresh_start_chosen",
+                "pairs_session": pairs_session,
             }
         )
     try:
@@ -1045,7 +1184,10 @@ def api_check_resume():
             cfg.CAT_ASSET_ID if hasattr(cfg, "CAT_ASSET_ID") else ""
         )
         offers = get_all_offers(include_completed=False, start=0, end=200)
-        if not offers:
+        # Multi-pair leftover state (budgets / ownership) can warrant a
+        # session chooser even when the focus pair has no live offers.
+        multi_state = bool(pairs_session.get("has_multi_pair_state"))
+        if not offers and not multi_state:
             return jsonify(
                 {
                     "can_resume": False,
@@ -1053,12 +1195,13 @@ def api_check_resume():
                     "buy_count": 0,
                     "sell_count": 0,
                     "reason": "no offers",
+                    "pairs_session": pairs_session,
                 }
             )
 
-        open_buy, open_sell, _ = classify_offers_from_list(offers, asset_id)
+        open_buy, open_sell, _ = classify_offers_from_list(offers or [], asset_id)
         total = len(open_buy) + len(open_sell)
-        can_resume = total > 0
+        can_resume = total > 0 or multi_state
 
         saved = {}
         if hasattr(cfg, "DEFAULT_TRADE_XCH"):
@@ -1190,6 +1333,7 @@ def api_check_resume():
                 },
                 "gap_closer": gap_closer_info,
                 "last_active": _resume_last_active_label(open_buy + open_sell),
+                "pairs_session": pairs_session,
             }
         )
     except Exception as e:
@@ -1205,5 +1349,6 @@ def api_check_resume():
                 "has_session": False,
                 "error": "Internal server error",
                 "code": "SERVER_ERROR",
+                "pairs_session": pairs_session,
             }
         )

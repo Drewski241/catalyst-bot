@@ -187,14 +187,18 @@ _RATE_LIMIT_EXEMPT_WRITE_ROUTES = {
 }
 
 # Dedicated limiter for /api/splash/incoming so an unbounded webhook flood
-# cannot amplify into runaway DB writes. 200/sec per process is still
-# generous for a local webhook but prevents a pathological flood.
-_SPLASH_RATE_LIMIT = {"window_s": 1.0, "max": 200, "hits": [], "lock": threading.Lock()}
+# cannot amplify into runaway DB writes / thread+socket exhaustion.
+# Splash can gossip far faster than we need for sniper ingest; keep this
+# modest so a P2P burst cannot hit EMFILE / SQLite lock storms on Linux.
+# 15/s is enough for sniper ingest and stays under serialized DB write cost.
+_SPLASH_RATE_LIMIT = {"window_s": 1.0, "max": 15, "hits": [], "lock": threading.Lock()}
+_SPLASH_RATE_LIMIT_LOG_TS = 0.0
 
 
 def _splash_incoming_rate_limited() -> bool:
     import time as _t
 
+    global _SPLASH_RATE_LIMIT_LOG_TS
     now = _t.time()
     with _SPLASH_RATE_LIMIT["lock"]:
         hits = _SPLASH_RATE_LIMIT["hits"]
@@ -203,9 +207,48 @@ def _splash_incoming_rate_limited() -> bool:
         while hits and hits[0] < cutoff:
             hits.pop(0)
         if len(hits) >= _SPLASH_RATE_LIMIT["max"]:
+            # Log at most once per 10s — Splash floods make per-hit logs useless.
+            if now - _SPLASH_RATE_LIMIT_LOG_TS >= 10.0:
+                _SPLASH_RATE_LIMIT_LOG_TS = now
+                try:
+                    from database import log_event
+
+                    log_event(
+                        "warning",
+                        "splash_incoming_rate_limited",
+                        f"Splash offer-hook rate limit "
+                        f"({_SPLASH_RATE_LIMIT['max']}/s) — dropping excess",
+                    )
+                except Exception:
+                    pass
             return True
         hits.append(now)
         return False
+
+
+def raise_nofile_limit(min_soft: int = 8192) -> None:
+    """Best-effort raise of the process soft RLIMIT_NOFILE (Linux/macOS).
+
+    Splash offer-hook bursts and threaded Flask can burn FDs quickly. Raising
+    the soft limit (up to the hard cap) reduces EMFILE flake during gossip
+    storms. No-op on Windows or when ``resource`` is unavailable.
+    """
+    try:
+        import resource
+    except ImportError:
+        return
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except Exception:
+        return
+    target = min(max(int(min_soft), soft), hard if hard > 0 else int(min_soft))
+    if target <= soft:
+        return
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+        print(f"[STARTUP] Raised RLIMIT_NOFILE soft limit {soft} -> {target}")
+    except Exception as exc:
+        print(f"[STARTUP] Could not raise RLIMIT_NOFILE ({soft}/{hard}): {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -1145,6 +1188,9 @@ class EventBus:
         action: str = None,
         action_label: str = None,
         action_value: str = None,
+        asset_id: str = None,
+        pair_name: str = None,
+        pair_ticker: str = None,
     ):
         """Convenience: set a persistent alert and emit it.
 
@@ -1154,7 +1200,16 @@ class EventBus:
         """
         if hasattr(self, "_alert_store"):
             self._alert_store.set_alert(
-                alert_id, severity, title, message, action, action_label, action_value
+                alert_id,
+                severity,
+                title,
+                message,
+                action,
+                action_label,
+                action_value,
+                asset_id=asset_id,
+                pair_name=pair_name,
+                pair_ticker=pair_ticker,
             )
 
     @property
@@ -1183,12 +1238,16 @@ class AlertStore:
         action: str = None,
         action_label: str = None,
         action_value: str = None,
+        asset_id: str = None,
+        pair_name: str = None,
+        pair_ticker: str = None,
     ):
         """Create or update an alert. Severity: 'error', 'warning', 'info', 'success'.
 
         ``action_value`` is an opaque payload passed to the action handler
         (e.g. a comma-separated list of trade_ids). Optional.
         """
+        aid = str(asset_id or "").strip().lower().replace("0x", "")
         with self._lock:
             self._alerts[alert_id] = {
                 "id": alert_id,
@@ -1198,6 +1257,10 @@ class AlertStore:
                 "action": action,  # optional action ID handled client-side
                 "action_label": action_label,  # button text
                 "action_value": action_value,  # optional payload for the action
+                "asset_id": aid or None,
+                "cat_asset_id": aid or None,
+                "pair_name": pair_name or None,
+                "pair_ticker": pair_ticker or None,
                 "created_at": time.time(),
                 "dismissed": False,
             }
@@ -1278,6 +1341,12 @@ def _get_live_mid_price_str() -> Optional[str]:
 def create_bot() -> BotLoop:
     """Create and return the bot loop instance."""
     global bot
+    try:
+        from pair_context import install_config_overlay_hook
+
+        install_config_overlay_hook()
+    except Exception:
+        pass
     bot = BotLoop()
     # Wire up event bus to bot loop for push updates
     bot._event_bus = events
@@ -1649,6 +1718,7 @@ def _reset_fresh_run_session(
     cancel_open_offers: bool = False,
     preserve_history: bool = False,
     reason: str = "fresh_start",
+    cat_asset_id: str = None,
 ) -> Dict:
     """Reset session-facing bot state.
 
@@ -1668,12 +1738,24 @@ def _reset_fresh_run_session(
         trading history survives the re-prep. This is the 2026-04-19
         default for the Prepare Coins flow; users who actually want a
         full wipe can pick the explicit Start Fresh button.
+
+    When ``cat_asset_id`` is set (multi-pair prep), coin/offer cleanup is
+    scoped to that CAT plus XCH coins owned by it (or still unowned). Other
+    pairs' CAT rows and owned XCH inventory are left alone.
     """
     global _run_history_cutoff, _session_start_time
 
     from database import _sqlite_ts
 
     reset_at = _sqlite_ts(datetime.now(timezone.utc))
+    aid = (
+        str(cat_asset_id or "")
+        .strip()
+        .lower()
+        .replace("0x", "")
+    )
+    if len(aid) != 64:
+        aid = ""
     summary = {
         "reset_at": reset_at,
         "preserve_history": bool(preserve_history),
@@ -1683,6 +1765,7 @@ def _reset_fresh_run_session(
         "open_offers_cancelled": 0,
         "price_history_cleared": False,
         "inventory_cleared": False,
+        "scoped_asset_id": aid or None,
     }
 
     conn = get_connection()
@@ -1695,36 +1778,131 @@ def _reset_fresh_run_session(
 
         if not preserve_history:
             # Only count rows we're actually going to delete.
-            summary["fills_cleared"] = int(
-                (conn.execute("SELECT COUNT(*) as cnt FROM fills").fetchone()["cnt"])
-                or 0
-            )
-            if has_round_trips:
-                summary["round_trips_cleared"] = int(
+            if aid:
+                summary["fills_cleared"] = int(
                     (
                         conn.execute(
-                            "SELECT COUNT(*) as cnt FROM round_trips"
+                            "SELECT COUNT(*) as cnt FROM fills WHERE cat_asset_id=?",
+                            (aid,),
                         ).fetchone()["cnt"]
                     )
                     or 0
                 )
+                if has_round_trips:
+                    try:
+                        summary["round_trips_cleared"] = int(
+                            (
+                                conn.execute(
+                                    "SELECT COUNT(*) as cnt FROM round_trips "
+                                    "WHERE cat_asset_id=?",
+                                    (aid,),
+                                ).fetchone()["cnt"]
+                            )
+                            or 0
+                        )
+                    except Exception:
+                        summary["round_trips_cleared"] = int(
+                            (
+                                conn.execute(
+                                    "SELECT COUNT(*) as cnt FROM round_trips"
+                                ).fetchone()["cnt"]
+                            )
+                            or 0
+                        )
+            else:
+                summary["fills_cleared"] = int(
+                    (conn.execute("SELECT COUNT(*) as cnt FROM fills").fetchone()["cnt"])
+                    or 0
+                )
+                if has_round_trips:
+                    summary["round_trips_cleared"] = int(
+                        (
+                            conn.execute(
+                                "SELECT COUNT(*) as cnt FROM round_trips"
+                            ).fetchone()["cnt"]
+                        )
+                        or 0
+                    )
 
         if clear_coins:
-            summary["coins_cleared"] = int(
-                (conn.execute("SELECT COUNT(*) as cnt FROM coins").fetchone()["cnt"])
-                or 0
-            )
+            if aid:
+                # CAT rows for this pair + XCH owned by this pair or still unowned.
+                try:
+                    summary["coins_cleared"] = int(
+                        (
+                            conn.execute(
+                                "SELECT COUNT(*) as cnt FROM coins WHERE "
+                                "(wallet_type='cat' AND asset_id=?) OR "
+                                "(wallet_type='xch' AND ("
+                                "owner_asset_id=? OR owner_asset_id IS NULL "
+                                "OR owner_asset_id=''))",
+                                (aid, aid),
+                            ).fetchone()["cnt"]
+                        )
+                        or 0
+                    )
+                except Exception:
+                    summary["coins_cleared"] = int(
+                        (
+                            conn.execute(
+                                "SELECT COUNT(*) as cnt FROM coins WHERE "
+                                "wallet_type='cat' AND asset_id=?",
+                                (aid,),
+                            ).fetchone()["cnt"]
+                        )
+                        or 0
+                    )
+            else:
+                summary["coins_cleared"] = int(
+                    (conn.execute("SELECT COUNT(*) as cnt FROM coins").fetchone()["cnt"])
+                    or 0
+                )
 
         if not preserve_history:
-            conn.execute("DELETE FROM fills")
-            if has_round_trips:
-                conn.execute("DELETE FROM round_trips")
+            if aid:
+                conn.execute("DELETE FROM fills WHERE cat_asset_id=?", (aid,))
+                if has_round_trips:
+                    try:
+                        conn.execute(
+                            "DELETE FROM round_trips WHERE cat_asset_id=?", (aid,)
+                        )
+                    except Exception:
+                        pass
+            else:
+                conn.execute("DELETE FROM fills")
+                if has_round_trips:
+                    conn.execute("DELETE FROM round_trips")
         if clear_coins:
-            conn.execute("DELETE FROM coins")
+            if aid:
+                try:
+                    conn.execute(
+                        "DELETE FROM coins WHERE "
+                        "(wallet_type='cat' AND asset_id=?) OR "
+                        "(wallet_type='xch' AND ("
+                        "owner_asset_id=? OR owner_asset_id IS NULL "
+                        "OR owner_asset_id=''))",
+                        (aid, aid),
+                    )
+                except Exception:
+                    # owner_asset_id column may not exist yet on very old DBs
+                    # mid-migration — fall back to CAT-only scoped delete.
+                    conn.execute(
+                        "DELETE FROM coins WHERE wallet_type='cat' AND asset_id=?",
+                        (aid,),
+                    )
+            else:
+                conn.execute("DELETE FROM coins")
         if cancel_open_offers:
-            cursor = conn.execute(
-                "UPDATE offers SET status='cancelled' WHERE status='open'"
-            )
+            if aid:
+                cursor = conn.execute(
+                    "UPDATE offers SET status='cancelled' "
+                    "WHERE status='open' AND cat_asset_id=?",
+                    (aid,),
+                )
+            else:
+                cursor = conn.execute(
+                    "UPDATE offers SET status='cancelled' WHERE status='open'"
+                )
             summary["open_offers_cancelled"] = int(cursor.rowcount or 0)
         if clear_price_history:
             try:
@@ -3043,6 +3221,10 @@ from blueprints.cat import (
     api_token_overview,
     api_dexie_v3_pairs,
     api_cats,
+    api_pairs,
+    api_pair_budget,
+    api_pair_start,
+    api_pair_stop,
     api_cat_select,
     api_cat_refresh,
     api_balances_refresh,

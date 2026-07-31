@@ -41,6 +41,8 @@ class CoinPrepConsolidationTests(unittest.TestCase):
         os.environ["MAX_ACTIVE_SELL"] = ""
         os.environ["CAT_DECIMALS"] = ""
         os.environ["MZ_DECIMALS"] = ""
+        # Force legacy (non-selective) reshape unless a test opts in.
+        os.environ["CAT_ASSET_ID"] = ""
 
         fake_wallet = types.ModuleType("wallet")
         fake_wallet.get_all_offers = lambda *args, **kwargs: {"offers": []}
@@ -62,6 +64,17 @@ class CoinPrepConsolidationTests(unittest.TestCase):
         fake_database.designate_reserve = lambda *args, **kwargs: True
         fake_database.get_reserve_coins = lambda *args, **kwargs: []
         fake_database.mark_coins_gone = lambda *args, **kwargs: True
+
+        def _norm_coin_id(cid):
+            raw = str(cid or "").strip().lower()
+            if raw and not raw.startswith("0x"):
+                raw = "0x" + raw
+            return raw
+
+        fake_database.norm_coin_id = _norm_coin_id
+        fake_database.get_xch_coins_protected_from_prep = lambda owner=None: set()
+        fake_database.get_foreign_owned_xch_coin_ids = lambda owner=None: set()
+        fake_database.get_shared_pool_xch_coin_ids = lambda: set()
         sys.modules["database"] = fake_database
 
         fake_dotenv = types.ModuleType("dotenv")
@@ -474,6 +487,65 @@ class CoinPrepConsolidationTests(unittest.TestCase):
         worker._consolidate_wallet_sage_fallback = lambda wallet_id, name: False
 
         self.assertFalse(worker._consolidate_wallet_sage_combine(1, "XCH"))
+
+    def test_selective_xch_melt_skips_protected_coin_ids(self):
+        """Multi-pair prep must not include foreign/shared coins in source_coin_ids."""
+        owner = "a" * 64
+        foreign = "0x" + ("11" * 32)
+        ownable_a = "0x" + ("22" * 32)
+        ownable_b = "0x" + ("33" * 32)
+        os.environ["CAT_ASSET_ID"] = owner
+
+        calls = {"send": []}
+        reshape_counts = iter([2, 0, 1])
+
+        fake_wallet_sage = types.ModuleType("wallet_sage")
+        fake_wallet_sage.get_current_key = lambda: {"fingerprint": "123"}
+        fake_wallet_sage.get_spendable_coin_count = lambda wallet_id: 3
+        fake_wallet_sage.get_next_address = lambda wallet_id, new_address=False: {
+            "address": "xch1self",
+        }
+        fake_wallet_sage.get_spendable_coins_rpc = lambda wallet_id: {
+            "success": True,
+            "confirmed_records": [
+                {"coin_id": foreign, "spent_block_index": 0, "amount": 500},
+                {"coin_id": ownable_a, "spent_block_index": 0, "amount": 400},
+                {"coin_id": ownable_b, "spent_block_index": 0, "amount": 600},
+            ],
+        }
+
+        def send_transaction(
+            wallet_id, amount_mojos, address, fee_mojos=0, source_coin_ids=None
+        ):
+            calls["send"].append(
+                {
+                    "amount_mojos": amount_mojos,
+                    "fee_mojos": fee_mojos,
+                    "source_coin_ids": list(source_coin_ids or []),
+                }
+            )
+            return {"success": True, "submitted": True}
+
+        fake_wallet_sage.send_transaction = send_transaction
+        sys.modules["wallet_sage"] = fake_wallet_sage
+
+        worker = self.coin_prep_worker.CoinPrepWorker()
+        worker.xch_wallet_id = 1
+        worker._protected_xch_coin_ids = lambda: {foreign}
+        worker.get_coin_count = lambda wallet_id: 3  # total incl. protected
+        worker.get_reshapeable_coin_count = lambda wallet_id: next(reshape_counts, 1)
+        worker._tx_fee_mojos = lambda: 10
+
+        with patch.object(self.coin_prep_worker.time, "sleep", return_value=None):
+            self.assertTrue(worker._consolidate_wallet_sage_fallback(1, "XCH"))
+
+        self.assertEqual(len(calls["send"]), 1)
+        sent = calls["send"][0]
+        # Fee subtracted from ownable sum only (400+600-10).
+        self.assertEqual(sent["amount_mojos"], 990)
+        sent_ids = {cid.replace("0x", "") for cid in sent["source_coin_ids"]}
+        self.assertEqual(sent_ids, {"22" * 32, "33" * 32})
+        self.assertNotIn("11" * 32, sent_ids)
 
 
 if __name__ == "__main__":

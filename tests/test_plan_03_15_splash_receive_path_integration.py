@@ -192,6 +192,49 @@ class TestSplashReceiveStats(_TempDB):
 
 
 # ---------------------------------------------------------------------------
+# Concurrent webhook writers
+# ---------------------------------------------------------------------------
+
+
+@unittest.skipIf(_SKIP is not None, f"modules unavailable: {_SKIP}")
+class TestSplashReceiveConcurrency(_TempDB):
+    """Many concurrent record_splash_incoming calls must not raise lock storms."""
+
+    def test_parallel_distinct_offers_all_persist(self):
+        import concurrent.futures
+        import hashlib
+
+        offers = [f"offer1{chr(97 + (i % 26))}{i:04d}" + ("x" * 80) for i in range(40)]
+
+        def _write(offer: str) -> bool:
+            fp = hashlib.sha256(offer.encode("utf-8")).hexdigest()
+            return bool(_db.record_splash_incoming(offer, fp, source_ip="127.0.0.1"))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+            results = list(pool.map(_write, offers))
+
+        self.assertEqual(sum(1 for r in results if r), 40)
+        rows = _db.get_splash_incoming_offers(limit=100)
+        self.assertEqual(len(rows), 40)
+
+    def test_parallel_duplicate_offer_dedups(self):
+        import concurrent.futures
+        import hashlib
+
+        offer = "offer1" + ("dup" * 40)
+        fp = hashlib.sha256(offer.encode("utf-8")).hexdigest()
+
+        def _write(_: int) -> bool:
+            return bool(_db.record_splash_incoming(offer, fp, source_ip="127.0.0.1"))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+            results = list(pool.map(_write, range(24)))
+
+        self.assertEqual(sum(1 for r in results if r), 1)
+        self.assertEqual(len(_db.get_splash_incoming_offers()), 1)
+
+
+# ---------------------------------------------------------------------------
 # Bot-present path: SSE emit
 # ---------------------------------------------------------------------------
 

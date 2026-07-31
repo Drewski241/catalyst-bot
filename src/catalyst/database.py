@@ -24,7 +24,7 @@ import threading
 import time
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
-from typing import Optional, List, Dict
+from typing import Any, Optional, List, Dict
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +86,19 @@ def _missing_splash_table(exc: Exception) -> bool:
         isinstance(exc, sqlite3.OperationalError)
         and "no such table: splash_incoming_offers" in str(exc).lower()
     )
+
+
+def _is_db_locked(exc: Exception) -> bool:
+    msg = str(exc or "").lower()
+    return "database is locked" in msg or "database is busy" in msg
+
+
+# Serialize Splash webhook inserts. Flask threads + gossip bursts otherwise
+# stampede SQLite writers; each failure also used to call log_event() which
+# wrote *another* row and amplified the lock storm.
+_splash_incoming_write_lock = threading.Lock()
+_splash_db_error_log_ts = 0.0
+_SPLASH_DB_ERROR_LOG_INTERVAL_S = 10.0
 
 
 def get_connection() -> sqlite3.Connection:
@@ -493,7 +506,11 @@ CREATE TABLE IF NOT EXISTS coins (
                     CHECK(status IN ('free', 'locked', 'spent', 'gone')),
     trade_id        TEXT,
     first_seen      TEXT NOT NULL,
-    last_seen       TEXT NOT NULL
+    last_seen       TEXT NOT NULL,
+    -- Multi-pair Phase 2: 'xch' for native, 64-hex CAT asset id for CATs
+    asset_id        TEXT,
+    -- Multi-pair Phase 4: which pair "owns" this XCH prep coin (NULL = shared)
+    owner_asset_id  TEXT
 );
 
 -- Indexes for common queries
@@ -513,6 +530,9 @@ CREATE INDEX IF NOT EXISTS idx_events_time ON events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_coins_status ON coins(status);
 CREATE INDEX IF NOT EXISTS idx_coins_wallet ON coins(wallet_type);
 CREATE INDEX IF NOT EXISTS idx_coins_trade ON coins(trade_id);
+-- NOTE: idx_coins_wallet_asset_status is created in init_database() AFTER the
+-- asset_id ADD COLUMN migration. Putting it in SCHEMA_SQL breaks upgrades of
+-- older DBs where CREATE TABLE IF NOT EXISTS is a no-op and asset_id is missing.
 
 -- Simple key-value settings table (persists across restarts)
 CREATE TABLE IF NOT EXISTS bot_settings (
@@ -564,6 +584,21 @@ CREATE TABLE IF NOT EXISTS market_analysis_cache (
 
 CREATE INDEX IF NOT EXISTS idx_market_cache_asset ON market_analysis_cache(asset_id);
 CREATE INDEX IF NOT EXISTS idx_market_cache_type ON market_analysis_cache(analysis_type);
+
+-- Multi-pair: per-CAT trading profile overlays + XCH budget
+CREATE TABLE IF NOT EXISTS pair_configs (
+    cat_asset_id    TEXT PRIMARY KEY,
+    ticker_id       TEXT,
+    name            TEXT,
+    decimals        INTEGER NOT NULL DEFAULT 3,
+    tibet_pair_id   TEXT,
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    auto_start      INTEGER NOT NULL DEFAULT 0,
+    xch_budget_mojos INTEGER NOT NULL DEFAULT 0,
+    config_json     TEXT NOT NULL DEFAULT '{}',
+    updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pair_configs_updated ON pair_configs(updated_at);
 """
 
 
@@ -582,6 +617,12 @@ def init_database():
         _db_initialized_path = DB_PATH
     conn = get_connection()
     conn.executescript(SCHEMA_SQL)
+    try:
+        from pair_store import ensure_pair_configs_schema
+
+        ensure_pair_configs_schema(conn)
+    except Exception:
+        pass
 
     # The boost tier CHECK migration runs AFTER all ADD COLUMN migrations
     # (see _migrate_offers_tier_check_for_boost below). Older revisions of
@@ -649,6 +690,74 @@ def init_database():
         conn.execute("ALTER TABLE coins ADD COLUMN assigned_tier TEXT DEFAULT 'none'")
         conn.commit()
         log_event("info", "db_migration", "Added 'assigned_tier' column to coins table")
+
+    # Migration: multi-pair Phase 2 — tag coins with asset_id so CAT rows
+    # from different tokens do not collide under wallet_type='cat'.
+    try:
+        conn.execute("SELECT asset_id FROM coins LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE coins ADD COLUMN asset_id TEXT")
+        conn.commit()
+        log_event("info", "db_migration", "Added 'asset_id' column to coins table")
+    try:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_coins_wallet_asset_status "
+            "ON coins(wallet_type, asset_id, status)"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+    try:
+        # Backfill XCH rows.
+        conn.execute(
+            "UPDATE coins SET asset_id = 'xch' "
+            "WHERE wallet_type = 'xch' AND (asset_id IS NULL OR asset_id = '')"
+        )
+        # Backfill untagged CAT rows to the current focus CAT (best effort).
+        _focus_cat = ""
+        try:
+            from config import cfg as _cfg_for_coins
+
+            _focus_cat = (
+                str(getattr(_cfg_for_coins, "CAT_ASSET_ID", "") or "")
+                .strip()
+                .lower()
+                .replace("0x", "")
+            )
+        except Exception:
+            _focus_cat = ""
+        if len(_focus_cat) == 64:
+            conn.execute(
+                "UPDATE coins SET asset_id = ? "
+                "WHERE wallet_type = 'cat' AND (asset_id IS NULL OR asset_id = '')",
+                (_focus_cat,),
+            )
+        conn.commit()
+    except Exception as _asset_backfill_err:
+        log_event(
+            "warning",
+            "db_migration",
+            f"coins.asset_id backfill skipped: {_asset_backfill_err}",
+        )
+
+    # Migration: multi-pair Phase 4 — XCH ownership so pairs prefer their
+    # own prep inventory (unowned XCH remains shared/available).
+    try:
+        conn.execute("SELECT owner_asset_id FROM coins LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE coins ADD COLUMN owner_asset_id TEXT")
+        conn.commit()
+        log_event(
+            "info", "db_migration", "Added 'owner_asset_id' column to coins table"
+        )
+    try:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_coins_owner_status "
+            "ON coins(owner_asset_id, status)"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
 
     # Migration: create trading_pace table for adaptive replenishment
     conn.executescript("""
@@ -2281,6 +2390,30 @@ def get_trade_dexie_map(cat_asset_id: str = None) -> Dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
+def _normalize_coin_asset_id(wallet_type: str, asset_id: str = None) -> str:
+    """Resolve asset_id for a coin row ('xch' or 64-hex CAT id)."""
+    wt = str(wallet_type or "").strip().lower()
+    if wt == "xch":
+        return "xch"
+    raw = str(asset_id or "").strip().lower().replace("0x", "")
+    if len(raw) == 64 and all(c in "0123456789abcdef" for c in raw):
+        return raw
+    try:
+        from config import cfg as _cfg
+
+        fallback = (
+            str(getattr(_cfg, "CAT_ASSET_ID", "") or "")
+            .strip()
+            .lower()
+            .replace("0x", "")
+        )
+        if len(fallback) == 64:
+            return fallback
+    except Exception:
+        pass
+    return raw or ""
+
+
 def upsert_coin(
     coin_id: str,
     wallet_type: str,
@@ -2288,6 +2421,7 @@ def upsert_coin(
     tier: str = None,
     designation: str = None,
     assigned_tier: str = None,
+    asset_id: str = None,
     **kwargs,
 ) -> bool:
     """Insert a new coin or update last_seen if it already exists.
@@ -2307,6 +2441,7 @@ def upsert_coin(
         tier: Classification tier (inner/mid/outer/extreme/reserve/small/unknown)
         designation: Role designation (reserve/tier_spare/tier_active/dust/unknown)
         assigned_tier: Which tier this coin serves (inner/mid/outer/extreme/none)
+        asset_id: 'xch' for native, or 64-hex CAT asset id (multi-pair Phase 2)
     """
     try:
         conn = get_connection()
@@ -2314,6 +2449,7 @@ def upsert_coin(
         # Default designation for new coins
         desig = designation or "unknown"
         atier = assigned_tier or "none"
+        resolved_asset = _normalize_coin_asset_id(wallet_type, asset_id)
         # Normalize coin_id before any DB operation — ensures consistency
         # with reconcile_coins_with_wallet() which also normalizes.
         coin_id = norm_coin_id(coin_id)
@@ -2328,10 +2464,12 @@ def upsert_coin(
         # - NEW coins: get the provided designation (or 'unknown')
         # - EXISTING coins: keep their current designation (COALESCE preserves it)
         # - REAPPEARING coins (was 'gone'): reset designation to 'unknown'
+        # - asset_id: fill when missing; refresh when a non-empty value is provided
         conn.execute(
             """INSERT INTO coins (coin_id, wallet_type, amount_mojos, tier, status,
-                                  first_seen, last_seen, designation, assigned_tier)
-               VALUES (?, ?, ?, ?, 'free', ?, ?, ?, ?)
+                                  first_seen, last_seen, designation, assigned_tier,
+                                  asset_id)
+               VALUES (?, ?, ?, ?, 'free', ?, ?, ?, ?, ?)
                ON CONFLICT(coin_id) DO UPDATE SET
                    last_seen = ?,
                    tier = COALESCE(?, tier),
@@ -2347,6 +2485,10 @@ def upsert_coin(
                    assigned_tier = CASE
                        WHEN coins.status = 'gone' THEN 'none'
                        ELSE COALESCE(coins.assigned_tier, 'none')
+                   END,
+                   asset_id = CASE
+                       WHEN ? != '' THEN ?
+                       ELSE COALESCE(coins.asset_id, ?)
                    END""",
             (
                 coin_id,
@@ -2357,9 +2499,13 @@ def upsert_coin(
                 now,
                 desig,
                 atier,
+                resolved_asset or None,
                 now,
                 tier,
                 amount_mojos,
+                resolved_asset,
+                resolved_asset,
+                resolved_asset or None,
             ),
         )
         if not kwargs.get("_skip_commit"):
@@ -2408,12 +2554,15 @@ def upsert_coin(
         return False
 
 
-def batch_upsert_coins(coins: list, wallet_type: str = "xch") -> int:
+def batch_upsert_coins(
+    coins: list, wallet_type: str = "xch", asset_id: str = None
+) -> int:
     """Batch upsert multiple coins with a single commit.
 
     Args:
         coins: List of dicts with keys: coin_id, amount_mojos, tier
         wallet_type: 'xch' or 'cat'
+        asset_id: Optional shared asset id for the batch (per-coin asset_id wins)
 
     Returns number of coins successfully upserted.
     """
@@ -2428,6 +2577,7 @@ def batch_upsert_coins(coins: list, wallet_type: str = "xch") -> int:
                 wallet_type,
                 c["amount_mojos"],
                 tier=c.get("tier", "unknown"),
+                asset_id=c.get("asset_id", asset_id),
                 _skip_commit=True,
             )
             count += 1
@@ -2708,7 +2858,9 @@ def mark_coins_gone(coin_ids: List[str]) -> int:
         return 0
 
 
-def get_free_coins(wallet_type: str) -> List[Dict]:
+def get_free_coins(
+    wallet_type: str, asset_id: str = None, owner_asset_id: str = None
+) -> List[Dict]:
     """Get all free (available) coins for a wallet type.
 
     Returns every row from `coins` where status='free', largest first. Callers
@@ -2716,14 +2868,505 @@ def get_free_coins(wallet_type: str) -> List[Dict]:
     `designation` and `assigned_tier` fields — the legacy `tier` column is
     always 'unknown' in current writes (see upsert_coin) and is retained only
     for schema compatibility with older DBs.
+
+    When ``asset_id`` is provided, only coins tagged with that asset (or still
+    untagged, for pre-migration rows) are returned.
+
+    When ``owner_asset_id`` is provided (typically for XCH under multi-pair),
+    only coins owned by that pair or still unowned are returned. Owned coins
+    for the pair are sorted first.
+    """
+    conn = get_connection()
+    resolved = _normalize_coin_asset_id(wallet_type, asset_id) if asset_id else ""
+    owner = (
+        str(owner_asset_id or "")
+        .strip()
+        .lower()
+        .replace("0x", "")
+    )
+    if len(owner) != 64:
+        owner = ""
+
+    if resolved and owner:
+        rows = conn.execute(
+            "SELECT * FROM coins WHERE status='free' AND wallet_type=? "
+            "AND (asset_id = ? OR asset_id IS NULL OR asset_id = '') "
+            "AND (owner_asset_id = ? OR owner_asset_id IS NULL OR owner_asset_id = '') "
+            "ORDER BY CASE WHEN owner_asset_id = ? THEN 0 ELSE 1 END, "
+            "amount_mojos DESC",
+            [wallet_type, resolved, owner, owner],
+        ).fetchall()
+    elif resolved:
+        rows = conn.execute(
+            "SELECT * FROM coins WHERE status='free' AND wallet_type=? "
+            "AND (asset_id = ? OR asset_id IS NULL OR asset_id = '') "
+            "ORDER BY amount_mojos DESC",
+            [wallet_type, resolved],
+        ).fetchall()
+    elif owner:
+        rows = conn.execute(
+            "SELECT * FROM coins WHERE status='free' AND wallet_type=? "
+            "AND (owner_asset_id = ? OR owner_asset_id IS NULL OR owner_asset_id = '') "
+            "ORDER BY CASE WHEN owner_asset_id = ? THEN 0 ELSE 1 END, "
+            "amount_mojos DESC",
+            [wallet_type, owner, owner],
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM coins WHERE status='free' AND wallet_type=? "
+            "ORDER BY amount_mojos DESC",
+            [wallet_type],
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+# Shared-pool XCH tiers must stay unowned so every pair (and FeeCoinPool)
+# can use them. Trading ladder tiers are claimable against a pair budget.
+_SHARED_XCH_TIERS = frozenset({"fees", "fee", "sniper", "reserve", "dust", "none", ""})
+_CLAIMABLE_XCH_TIERS = frozenset({"inner", "mid", "outer", "extreme"})
+
+
+def claim_xch_ownership_for_pair(
+    owner_asset_id: str,
+    *,
+    max_mojos: Optional[int] = None,
+    clear_existing: bool = True,
+) -> Dict[str, Any]:
+    """Claim unowned trading-tier XCH for a pair (budget-aware).
+
+    - Never overwrites another pair's ``owner_asset_id``.
+    - Leaves fees / sniper / reserve / dust unowned (shared pools).
+    - Caps claimed Σ amount at ``max_mojos`` when provided (>0).
+    - Optionally clears this pair's prior trading-tier claims first so a
+      re-prep reallocates cleanly under the current budget.
+
+    Returns a summary dict (``claimed_coins``, ``claimed_mojos``, …).
+    """
+    owner = (
+        str(owner_asset_id or "")
+        .strip()
+        .lower()
+        .replace("0x", "")
+    )
+    summary: Dict[str, Any] = {
+        "owner_asset_id": owner or None,
+        "claimed_coins": 0,
+        "claimed_mojos": 0,
+        "skipped_shared": 0,
+        "skipped_budget": 0,
+        "cleared_coins": 0,
+        "max_mojos": int(max_mojos) if max_mojos is not None else None,
+    }
+    if len(owner) != 64:
+        return summary
+
+    conn = get_connection()
+    try:
+        if clear_existing:
+            # Release only this pair's previous trading claims (keep shared).
+            cur = conn.execute(
+                "UPDATE coins SET owner_asset_id=NULL "
+                "WHERE wallet_type='xch' AND owner_asset_id=? "
+                "AND lower(coalesce(assigned_tier, '')) IN "
+                "('inner','mid','outer','extreme')",
+                (owner,),
+            )
+            summary["cleared_coins"] = int(cur.rowcount or 0)
+
+        rows = conn.execute(
+            "SELECT coin_id, amount_mojos, assigned_tier, designation "
+            "FROM coins "
+            "WHERE status='free' AND wallet_type='xch' "
+            "AND (owner_asset_id IS NULL OR owner_asset_id='') "
+            "ORDER BY amount_mojos DESC, coin_id ASC"
+        ).fetchall()
+
+        cap = int(max_mojos) if max_mojos is not None and int(max_mojos) > 0 else None
+        claimed_mojos = 0
+        claimed_ids: List[str] = []
+        skipped_shared = 0
+        skipped_budget = 0
+
+        for row in rows:
+            tier = str(row["assigned_tier"] or "").strip().lower()
+            if tier in _SHARED_XCH_TIERS or tier not in _CLAIMABLE_XCH_TIERS:
+                skipped_shared += 1
+                continue
+            amt = int(row["amount_mojos"] or 0)
+            if amt <= 0:
+                continue
+            if cap is not None and claimed_mojos + amt > cap:
+                skipped_budget += 1
+                continue
+            claimed_ids.append(str(row["coin_id"]))
+            claimed_mojos += amt
+
+        if claimed_ids:
+            placeholders = ",".join("?" for _ in claimed_ids)
+            conn.execute(
+                f"UPDATE coins SET owner_asset_id=? "
+                f"WHERE coin_id IN ({placeholders}) "
+                f"AND (owner_asset_id IS NULL OR owner_asset_id='')",
+                [owner, *claimed_ids],
+            )
+
+        conn.commit()
+        summary["claimed_coins"] = len(claimed_ids)
+        summary["claimed_mojos"] = claimed_mojos
+        summary["skipped_shared"] = skipped_shared
+        summary["skipped_budget"] = skipped_budget
+        return summary
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        log_event(
+            "warning",
+            "claim_xch_owner_failed",
+            f"Could not claim XCH for {owner[:12]}...: {exc}",
+        )
+        return summary
+
+
+def clear_all_xch_trading_ownership() -> Dict[str, Any]:
+    """Release every pair's trading-tier XCH ownership tags.
+
+    Shared fee / sniper / reserve / dust coins stay unowned (they already
+    should be). Used by Start Fresh so a second pair can re-run Smart
+    Settings + coin prep against the full reshapeable inventory.
+    """
+    summary: Dict[str, Any] = {"cleared_coins": 0, "cleared_mojos": 0}
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) AS cnt, COALESCE(SUM(amount_mojos), 0) AS mojos "
+            "FROM coins WHERE status='free' AND wallet_type='xch' "
+            "AND owner_asset_id IS NOT NULL AND owner_asset_id != '' "
+            "AND lower(coalesce(assigned_tier, '')) IN "
+            "('inner','mid','outer','extreme')"
+        ).fetchone()
+        summary["cleared_coins"] = int((row["cnt"] if row else 0) or 0)
+        summary["cleared_mojos"] = int((row["mojos"] if row else 0) or 0)
+        if summary["cleared_coins"] > 0:
+            conn.execute(
+                "UPDATE coins SET owner_asset_id=NULL "
+                "WHERE status='free' AND wallet_type='xch' "
+                "AND owner_asset_id IS NOT NULL AND owner_asset_id != '' "
+                "AND lower(coalesce(assigned_tier, '')) IN "
+                "('inner','mid','outer','extreme')"
+            )
+        conn.commit()
+        return summary
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        log_event(
+            "warning",
+            "clear_xch_ownership_failed",
+            f"Could not clear XCH ownership tags: {exc}",
+        )
+        return summary
+
+
+def assign_xch_owner_to_free_coins(
+    owner_asset_id: str, max_mojos: Optional[int] = None
+) -> int:
+    """Tag free trading-tier XCH coins as owned by ``owner_asset_id``.
+
+    Budget-aware wrapper around :func:`claim_xch_ownership_for_pair`.
+    Returns number of coins claimed. Shared fee/sniper/reserve coins are
+    never tagged.
+    """
+    result = claim_xch_ownership_for_pair(
+        owner_asset_id, max_mojos=max_mojos, clear_existing=True
+    )
+    return int(result.get("claimed_coins") or 0)
+
+
+def get_xch_coin_owners() -> Dict[str, str]:
+    """Return ``{norm_coin_id: owner_asset_id}`` for owned free XCH coins."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT coin_id, owner_asset_id FROM coins "
+            "WHERE wallet_type='xch' "
+            "AND owner_asset_id IS NOT NULL AND owner_asset_id != ''"
+        ).fetchall()
+    except Exception:
+        return {}
+    out: Dict[str, str] = {}
+    for row in rows:
+        cid = norm_coin_id(row["coin_id"])
+        owner = (
+            str(row["owner_asset_id"] or "")
+            .strip()
+            .lower()
+            .replace("0x", "")
+        )
+        if cid and len(owner) == 64:
+            out[cid] = owner
+    return out
+
+
+def get_foreign_owned_xch_coin_ids(owner_asset_id: Optional[str] = None) -> set:
+    """Coin IDs owned by a *different* pair than ``owner_asset_id``.
+
+    When ``owner_asset_id`` is empty, returns every owned XCH coin id.
+    """
+    owner = (
+        str(owner_asset_id or "")
+        .strip()
+        .lower()
+        .replace("0x", "")
+    )
+    owners = get_xch_coin_owners()
+    if len(owner) != 64:
+        return set(owners.keys())
+    return {cid for cid, oid in owners.items() if oid != owner}
+
+
+def get_shared_pool_xch_coin_ids() -> set:
+    """Unowned fee/sniper/reserve XCH coin IDs (shared pools).
+
+    These must survive multi-pair prep reshape so every pair keeps a
+    usable fee/sniper inventory. Trading-tier coins are not included.
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT coin_id FROM coins "
+            "WHERE wallet_type='xch' AND status='free' "
+            "AND (owner_asset_id IS NULL OR owner_asset_id='') "
+            "AND lower(coalesce(assigned_tier, '')) IN "
+            "('fees', 'fee', 'sniper', 'reserve')"
+        ).fetchall()
+    except Exception:
+        return set()
+    return {norm_coin_id(row["coin_id"]) for row in rows if row["coin_id"]}
+
+
+def count_shared_pool_xch_by_tier() -> Dict[str, int]:
+    """Count unowned free XCH coins in shared-pool tiers.
+
+    Normalises ``fee`` → ``fees``. Used by selective prep to credit
+    already-present fee/sniper inventory instead of recreating it.
+    """
+    conn = get_connection()
+    out: Dict[str, int] = {"fees": 0, "sniper": 0, "reserve": 0}
+    try:
+        rows = conn.execute(
+            "SELECT lower(coalesce(assigned_tier, '')) AS tier, COUNT(*) AS n "
+            "FROM coins "
+            "WHERE wallet_type='xch' AND status='free' "
+            "AND (owner_asset_id IS NULL OR owner_asset_id='') "
+            "AND lower(coalesce(assigned_tier, '')) IN "
+            "('fees', 'fee', 'sniper', 'reserve') "
+            "GROUP BY lower(coalesce(assigned_tier, ''))"
+        ).fetchall()
+    except Exception:
+        return out
+    for row in rows:
+        tier = str(row["tier"] or "").strip().lower()
+        if tier == "fee":
+            tier = "fees"
+        if tier in out:
+            out[tier] += int(row["n"] or 0)
+    return out
+
+
+def credit_shared_xch_tier_targets(
+    xch_tier_counts: Dict[str, int],
+) -> Dict[str, Any]:
+    """Reduce fees/sniper prep targets by already-present shared coins.
+
+    Returns a summary::
+        {
+          "adjusted_counts": {...},
+          "credited": {"fees": n, "sniper": n},
+          "existing": {"fees": n, "sniper": n, "reserve": n},
+        }
+    """
+    existing = count_shared_pool_xch_by_tier()
+    adjusted = {
+        str(k): int(v or 0)
+        for k, v in (xch_tier_counts or {}).items()
+    }
+    credited: Dict[str, int] = {"fees": 0, "sniper": 0}
+    for tier in ("fees", "sniper"):
+        want = int(adjusted.get(tier, 0) or 0)
+        if want <= 0:
+            continue
+        have = int(existing.get(tier, 0) or 0)
+        if have <= 0:
+            continue
+        take = min(want, have)
+        adjusted[tier] = want - take
+        credited[tier] = take
+        if adjusted[tier] <= 0:
+            adjusted.pop(tier, None)
+    return {
+        "adjusted_counts": adjusted,
+        "credited": credited,
+        "existing": existing,
+    }
+
+
+def get_xch_coins_protected_from_prep(
+    owner_asset_id: Optional[str] = None,
+) -> set:
+    """XCH coin IDs that selective prep must not melt.
+
+    When ``owner_asset_id`` is a valid 64-hex pair id, returns the union of:
+      - coins owned by a *different* pair
+      - unowned shared-pool tiers (fees / sniper / reserve)
+
+    When owner is missing (legacy single-pair), returns an empty set so
+    prep keeps its historical full-wallet melt behaviour.
+    """
+    owner = (
+        str(owner_asset_id or "")
+        .strip()
+        .lower()
+        .replace("0x", "")
+    )
+    if len(owner) != 64:
+        return set()
+    return get_foreign_owned_xch_coin_ids(owner) | get_shared_pool_xch_coin_ids()
+
+
+def sum_reshapeable_xch_mojos(
+    owner_asset_id: Optional[str] = None,
+) -> Optional[int]:
+    """Sum free XCH mojos selective prep may melt for ``owner_asset_id``.
+
+    Matches coin-prep's protect filter: when a 64-hex owner is provided,
+    foreign-owned UTXOs and unowned fee/sniper/reserve coins are excluded.
+
+    Returns ``None`` when the coins table has no free XCH rows (inventory
+    not synced yet) so callers can fall back to wallet-balance accounting
+    instead of incorrectly treating reshapeable capital as zero.
+    """
+    protected = get_xch_coins_protected_from_prep(owner_asset_id)
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT coin_id, amount_mojos FROM coins "
+            "WHERE status='free' AND wallet_type='xch'"
+        ).fetchall()
+    except Exception:
+        return None
+    if not rows:
+        return None
+    total = 0
+    for row in rows:
+        cid = norm_coin_id(row["coin_id"])
+        if cid and cid in protected:
+            continue
+        try:
+            total += max(0, int(row["amount_mojos"] or 0))
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def summarize_xch_ownership() -> Dict[str, Any]:
+    """Aggregate free XCH ownership for the pairs overview / diagnostics."""
+    conn = get_connection()
+    result: Dict[str, Any] = {
+        "shared": {
+            "coins": 0,
+            "mojos": 0,
+            "fees_coins": 0,
+            "sniper_coins": 0,
+            "reserve_coins": 0,
+            "other_coins": 0,
+        },
+        "pairs": {},
+        "total_owned_mojos": 0,
+        "total_owned_coins": 0,
+    }
+    try:
+        rows = conn.execute(
+            "SELECT owner_asset_id, assigned_tier, amount_mojos "
+            "FROM coins WHERE status='free' AND wallet_type='xch'"
+        ).fetchall()
+    except Exception:
+        return result
+
+    for row in rows:
+        owner = (
+            str(row["owner_asset_id"] or "")
+            .strip()
+            .lower()
+            .replace("0x", "")
+        )
+        tier = str(row["assigned_tier"] or "").strip().lower()
+        amt = int(row["amount_mojos"] or 0)
+        if len(owner) == 64:
+            bucket = result["pairs"].setdefault(
+                owner, {"coins": 0, "mojos": 0, "tiers": {}}
+            )
+            bucket["coins"] += 1
+            bucket["mojos"] += amt
+            bucket["tiers"][tier or "unknown"] = (
+                int(bucket["tiers"].get(tier or "unknown", 0)) + 1
+            )
+            result["total_owned_coins"] += 1
+            result["total_owned_mojos"] += amt
+        else:
+            shared = result["shared"]
+            shared["coins"] += 1
+            shared["mojos"] += amt
+            if tier in ("fees", "fee"):
+                shared["fees_coins"] += 1
+            elif tier == "sniper":
+                shared["sniper_coins"] += 1
+            elif tier == "reserve":
+                shared["reserve_coins"] += 1
+            else:
+                shared["other_coins"] += 1
+    return result
+
+
+def count_open_offers_by_cat() -> Dict[str, Dict[str, int]]:
+    """Return open-offer counts grouped by cat_asset_id.
+
+    Shape: ``{asset_id: {"buy": n, "sell": n, "total": n}}``.
+    Excludes cancel_requested / cancel_sent / mempool_observed lifecycle states
+    (same default filter as get_open_offers).
     """
     conn = get_connection()
     rows = conn.execute(
-        "SELECT * FROM coins WHERE status='free' AND wallet_type=? "
-        "ORDER BY amount_mojos DESC",
-        [wallet_type],
+        """
+        SELECT lower(coalesce(cat_asset_id, '')) AS asset_id,
+               side,
+               COUNT(*) AS cnt
+        FROM offers
+        WHERE status = 'open'
+          AND (
+              lifecycle_state IS NULL
+              OR lifecycle_state NOT IN (
+                  'cancel_requested', 'cancel_sent', 'mempool_observed'
+              )
+          )
+        GROUP BY lower(coalesce(cat_asset_id, '')), side
+        """
     ).fetchall()
-    return [dict(row) for row in rows]
+    out: Dict[str, Dict[str, int]] = {}
+    for row in rows:
+        asset_id = str(row["asset_id"] or "").replace("0x", "")
+        if not asset_id:
+            continue
+        bucket = out.setdefault(asset_id, {"buy": 0, "sell": 0, "total": 0})
+        side = str(row["side"] or "").lower()
+        cnt = int(row["cnt"] or 0)
+        if side in ("buy", "sell"):
+            bucket[side] += cnt
+        bucket["total"] += cnt
+    return out
 
 
 def get_smallest_free_tier_spare(wallet_type: str) -> Optional[Dict]:
@@ -5355,30 +5998,65 @@ def record_splash_incoming(
 
     Returns True if recorded (new), False if duplicate fingerprint.
     """
-    conn = get_connection()
-    try:
-        # Skip if we already have this fingerprint (dedup)
-        existing = conn.execute(
-            "SELECT id FROM splash_incoming_offers WHERE fingerprint = ?",
-            (fingerprint,),
-        ).fetchone()
-        if existing:
-            return False
+    global _splash_db_error_log_ts
 
-        conn.execute(
-            """INSERT INTO splash_incoming_offers
-               (offer_bech32, fingerprint, received_at, status, pair_hint, source_ip)
-               VALUES (?, ?, ?, 'new', ?, ?)""",
-            (offer_bech32, fingerprint, _now(), pair_hint, source_ip),
-        )
-        conn.commit()
-        return True
-    except Exception as e:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        log_event("warning", "splash_db_error", f"Failed to record incoming offer: {e}")
+    # One writer at a time for this hot path. Concurrent Flask request
+    # threads otherwise all hit busy_timeout together and spam lock errors.
+    with _splash_incoming_write_lock:
+        last_err: Optional[Exception] = None
+        for attempt in range(4):
+            conn = get_connection()
+            try:
+                # Skip if we already have this fingerprint (dedup)
+                existing = conn.execute(
+                    "SELECT id FROM splash_incoming_offers WHERE fingerprint = ?",
+                    (fingerprint,),
+                ).fetchone()
+                if existing:
+                    return False
+
+                conn.execute(
+                    """INSERT INTO splash_incoming_offers
+                       (offer_bech32, fingerprint, received_at, status, pair_hint, source_ip)
+                       VALUES (?, ?, ?, 'new', ?, ?)""",
+                    (offer_bech32, fingerprint, _now(), pair_hint, source_ip),
+                )
+                conn.commit()
+                return True
+            except Exception as e:
+                last_err = e
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                if _missing_splash_table(e):
+                    break
+                if _is_db_locked(e) and attempt < 3:
+                    # Brief backoff; lock is held so other Splash writers wait
+                    # here instead of opening more competing transactions.
+                    time.sleep(0.02 * (attempt + 1))
+                    continue
+                break
+
+        # Throttle failure logs and avoid log_event() on lock storms — that
+        # helper also writes the events table and makes contention worse.
+        now = time.time()
+        if now - _splash_db_error_log_ts >= _SPLASH_DB_ERROR_LOG_INTERVAL_S:
+            _splash_db_error_log_ts = now
+            err_txt = str(last_err or "unknown error")
+            print(
+                f"[SPLASH] Failed to record incoming offer (throttled): {err_txt}",
+                flush=True,
+            )
+            if not _is_db_locked(last_err or Exception()):
+                try:
+                    log_event(
+                        "warning",
+                        "splash_db_error",
+                        f"Failed to record incoming offer: {err_txt}",
+                    )
+                except Exception:
+                    pass
         return False
 
 

@@ -235,17 +235,17 @@ def api_splash_incoming():
     if not getattr(cfg, "SPLASH_RECEIVE_ENABLED", False):
         return jsonify({"error": "Splash receive disabled"}), 403
 
+    # Rate-limit BEFORE reading the body — Splash can POST faster than we
+    # can parse offer strings, and each accepted request burns an FD/thread.
+    if server._splash_incoming_rate_limited():
+        return jsonify({"error": "rate_limited"}), 429
+
     origin = request.headers.get("Origin", "").strip()
     if origin and not server._is_loopback_origin(origin):
         return jsonify({"error": "loopback_origin_required"}), 403
 
     if not request.is_json:
         return jsonify({"error": "JSON body required"}), 415
-
-    # Dedicated rate limiter (defined in api_server) — 200/sec is generous
-    # for a real local Splash binary but stops abuse.
-    if server._splash_incoming_rate_limited():
-        return jsonify({"error": "rate_limited"}), 429
 
     data = request.get_json(silent=True)
     if not isinstance(data, dict):

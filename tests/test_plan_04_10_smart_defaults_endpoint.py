@@ -576,6 +576,32 @@ class TestSmartDefaultsBalanceSizingRegression(_FlaskBase):
         total += round(float(body.get("topup_pool_cat") or 0))
         return total
 
+    @staticmethod
+    def _xch_coin_prep_total(body):
+        """Mirror GUI buildCoinPrepPlan XCH bill (tiers + sniper + fee + topup)."""
+        headroom = 1 + (float(body.get("coin_prep_headroom_pct", 0)) / 100)
+        total = 0.0
+        for tier in ("inner", "mid", "outer", "extreme"):
+            size = float(body.get(f"buy_{tier}_size_xch") or 0)
+            count = int(body.get(f"buy_{tier}_tier_count") or 0)
+            spares = int(body.get(f"buy_{tier}_tier_spare_count") or 0)
+            if size > 0 and count + spares > 0:
+                total += (count + spares) * size * headroom
+
+        if body.get("sniper_enabled"):
+            sniper_size = float(body.get("sniper_size_xch") or 0)
+            sniper_count = int(body.get("sniper_prep_count") or 0)
+            if sniper_size > 0 and sniper_count > 0:
+                total += sniper_count * sniper_size * headroom
+
+        fee_size = float(body.get("fee_coin_size_xch") or 0)
+        fee_count = int(body.get("fee_prep_count") or 0)
+        if fee_size > 0 and fee_count > 0:
+            total += fee_count * fee_size
+
+        total += float(body.get("topup_pool_xch") or 0)
+        return total
+
     def test_large_xch_sniper_pool_does_not_overrun_cat_coin_prep_budget(self):
         from blueprints import smart_defaults
 
@@ -699,6 +725,464 @@ class TestSmartDefaultsBalanceSizingRegression(_FlaskBase):
                 )
 
         body = resp.get_json()
+        self.assertLessEqual(self._cat_coin_prep_total(body), available_cat)
+
+    def test_thin_cat_with_reshapeable_xch_peels_spares_to_fit(self):
+        """Second-pair style: tiny reshapeable XCH + modest CAT must still fit.
+
+        Full fill-rate spare templates can push the CAT bill over the wallet
+        once sizes floor at MIN_OFFER. F65 must peel spares (and keep
+        max_active_sell synced) so Smart Settings never returns a plan the
+        GUI rejects as "not enough tokens".
+        """
+        from blueprints import smart_defaults
+
+        available_cat = 500.0
+        asset_id = "b" * 64
+
+        def fake_balance(wallet_id):
+            if wallet_id == 1:
+                mojos = int(5.0 * 1_000_000_000_000)
+            else:
+                mojos = int(available_cat * 1_000)
+            return {
+                "success": True,
+                "wallet_balance": {
+                    "unconfirmed_wallet_balance": mojos,
+                    "confirmed_wallet_balance": mojos,
+                    "spendable_balance": mojos,
+                    "pending_coin_removal_count": 0,
+                },
+            }
+
+        raw_market = {
+            "dexie_ticker": {
+                "price": 0.00011,
+                "volume_30d": 50,
+                "high_30d": 0.00015,
+                "low_30d": 0.00009,
+            },
+            "dexie_trades": {
+                "total_count": 300,
+                "volume_trend": "flat",
+                "trades": [{"price": 0.00011, "xch_amount": 1.0}] * 5,
+            },
+            "tibet_pool": {"has_data": True, "price": 0.00011, "xch_reserve": 200},
+            "tibet_quote": {},
+            "spacescan": {"has_data": True, "price_xch": 0.00011},
+            "internal_db": {"price_count": 60, "fill_count": 0, "pool_trend": "stable"},
+        }
+        analysis = {
+            "volatility": {
+                "regime": "normal",
+                "range_30d_pct": 20,
+                "range_90d_pct": 40,
+                "max_single_move_pct": 5,
+                "confidence": "high",
+                "std_dev_pct": 3,
+                "quiet_phase": False,
+            },
+            "liquidity": {
+                "fills_per_day": 8.0,
+                "daily_volume_xch": 20,
+                "pool_depth_xch": 200,
+                "level": "moderate",
+                "volume_trend": "flat",
+            },
+            "token_health": {
+                "risk_level": "healthy",
+                "activity_level": "active",
+                "holder_count": 1000,
+            },
+            "bot_performance": {"has_history": False},
+            "data_quality": {"score": 90, "quality": "excellent"},
+        }
+        orderbook = {
+            "has_data": True,
+            "api_ok": True,
+            "num_buy_offers": 20,
+            "num_sell_offers": 20,
+            "competitor_spread_bps": 100,
+            "best_bid": 0.000109,
+            "best_ask": 0.000111,
+        }
+
+        with (
+            patch("wallet.get_wallet_balance", side_effect=fake_balance),
+            patch(
+                "market_data_collector.collect_all_market_data",
+                return_value=raw_market,
+            ),
+            patch("market_data_collector.analyze_market_data", return_value=analysis),
+            patch.object(
+                smart_defaults,
+                "_fetch_dexie_orderbook_standalone",
+                return_value=orderbook,
+            ),
+            patch.object(
+                smart_defaults,
+                "_smart_dbx_defaults",
+                return_value={
+                    "dbx_max_spread_bps": 500,
+                    "pair_incentivized": False,
+                    "dbx_buy_incentive": None,
+                    "dbx_sell_incentive": None,
+                },
+            ),
+            patch(
+                "tx_fees.get_suggested_transaction_fee",
+                return_value={"available": False},
+            ),
+            patch(
+                "database.sum_reshapeable_xch_mojos",
+                return_value=int(0.35 * 1_000_000_000_000),
+            ),
+            patch(
+                "shared_xch_ledger.ledger.sum_budgets_mojos",
+                return_value=int(4.0 * 1_000_000_000_000),
+            ),
+            patch(
+                "shared_xch_ledger.ledger.spendable_xch_mojos",
+                return_value=int(5.0 * 1_000_000_000_000),
+            ),
+            patch(
+                "shared_xch_ledger.ledger.allocatable_mojos",
+                return_value=int(5.0 * 1_000_000_000_000),
+            ),
+        ):
+            with api_server.app.test_request_context("/api/smart-defaults"):
+                resp = smart_defaults._calculate_smart_defaults(
+                    xch_reserve=0,
+                    cat_reserve=0,
+                    risk_profile="balanced",
+                    asset_id=asset_id,
+                    cat_wallet_id=2,
+                    cat_decimals=3,
+                    cat_ticker_id="MZ_XCH",
+                    cat_name="Monkeyzoo Token",
+                )
+
+        body = resp.get_json()
+        self.assertLessEqual(self._cat_coin_prep_total(body), available_cat)
+        self.assertGreater(body["max_active_sell"], 0)
+        self.assertGreater(float(body.get("sell_inner_size_xch") or 0), 0)
+
+    def test_second_pair_with_no_reshapeable_xch_does_not_crash(self):
+        """Pair A owns all free XCH → pair B Smart Settings must return a
+        graceful insufficient-capital response, not UnboundLocalError on
+        ``_n_final`` (CRT/XCH repro while MZ was still holding prep coins).
+        """
+        from blueprints import smart_defaults
+
+        spendable_xch = 12.0198
+        available_cat = 898_100.0
+        asset_id = "ea3ace5525d6aaf6d921b66052afc67da11c820b676de91d61ae1a766c8ce615"
+
+        def fake_balance(wallet_id):
+            if wallet_id == 1:
+                mojos = int(spendable_xch * 1_000_000_000_000)
+            else:
+                mojos = int(available_cat * 1_000)
+            return {
+                "success": True,
+                "wallet_balance": {
+                    "unconfirmed_wallet_balance": mojos,
+                    "confirmed_wallet_balance": mojos,
+                    "spendable_balance": mojos,
+                    "pending_coin_removal_count": 0,
+                },
+            }
+
+        raw_market = {
+            "dexie_ticker": {
+                "price": 0.00225907,
+                "volume_30d": 200,
+                "high_30d": 0.003,
+                "low_30d": 0.0015,
+            },
+            "dexie_trades": {
+                "total_count": 400,
+                "volume_trend": "flat",
+                "trades": [{"price": 0.00213890, "xch_amount": 2.0}] * 8,
+            },
+            "tibet_pool": {
+                "has_data": True,
+                "price": 0.00217132,
+                "xch_reserve": 1225,
+            },
+            "tibet_quote": {},
+            "spacescan": {"has_data": True, "price_xch": 0.00217132},
+            "internal_db": {"price_count": 60, "fill_count": 0, "pool_trend": "stable"},
+        }
+        analysis = {
+            "volatility": {
+                "regime": "volatile",
+                "range_30d_pct": 40,
+                "range_90d_pct": 60,
+                "max_single_move_pct": 12,
+                "confidence": "high",
+                "std_dev_pct": 6,
+                "quiet_phase": False,
+            },
+            "liquidity": {
+                "fills_per_day": 4.0,
+                "daily_volume_xch": 40,
+                "pool_depth_xch": 1225,
+                "level": "moderate",
+                "volume_trend": "flat",
+            },
+            "token_health": {
+                "risk_level": "healthy",
+                "activity_level": "active",
+                "holder_count": 2000,
+            },
+            "bot_performance": {"has_history": False},
+            "data_quality": {"score": 90, "quality": "excellent"},
+        }
+        orderbook = {
+            "has_data": False,
+            "api_ok": True,
+            "num_buy_offers": 0,
+            "num_sell_offers": 0,
+            "competitor_spread_bps": 0,
+            "best_bid": 0,
+            "best_ask": 0,
+        }
+
+        with (
+            patch("wallet.get_wallet_balance", side_effect=fake_balance),
+            patch(
+                "market_data_collector.collect_all_market_data",
+                return_value=raw_market,
+            ),
+            patch("market_data_collector.analyze_market_data", return_value=analysis),
+            patch.object(
+                smart_defaults,
+                "_fetch_dexie_orderbook_standalone",
+                return_value=orderbook,
+            ),
+            patch.object(
+                smart_defaults,
+                "_smart_dbx_defaults",
+                return_value={
+                    "dbx_max_spread_bps": 500,
+                    "pair_incentivized": False,
+                    "dbx_buy_incentive": None,
+                    "dbx_sell_incentive": None,
+                },
+            ),
+            patch(
+                "tx_fees.get_suggested_transaction_fee",
+                return_value={"available": False},
+            ),
+            patch(
+                "database.sum_reshapeable_xch_mojos",
+                return_value=0,
+            ),
+            patch(
+                "shared_xch_ledger.ledger.sum_budgets_mojos",
+                return_value=int(9.0 * 1_000_000_000_000),
+            ),
+            patch(
+                "shared_xch_ledger.ledger.spendable_xch_mojos",
+                return_value=int(spendable_xch * 1_000_000_000_000),
+            ),
+            patch(
+                "shared_xch_ledger.ledger.allocatable_mojos",
+                return_value=int(spendable_xch * 1_000_000_000_000),
+            ),
+            patch(
+                "shared_xch_ledger.ledger.remaining_allocatable_mojos",
+                return_value=0,
+            ),
+        ):
+            with api_server.app.test_request_context("/api/smart-defaults"):
+                resp = smart_defaults._calculate_smart_defaults(
+                    xch_reserve=0,
+                    cat_reserve=0,
+                    risk_profile="balanced",
+                    asset_id=asset_id,
+                    cat_wallet_id=2,
+                    cat_decimals=3,
+                    cat_ticker_id="CRT_XCH",
+                    cat_name="Circuit Token",
+                )
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.get_json()
+        self.assertNotIn("error", body)
+        plan = body.get("_capital_plan") or {}
+        self.assertTrue(plan.get("insufficient"))
+        self.assertEqual(float(body.get("proposed_xch_budget_xch") or 0), 0.0)
+        messages = " ".join((body.get("_data_sources") or {}).get("messages") or [])
+        self.assertIn("reshapeable", messages.lower())
+
+    def test_quiet_shallow_pair_xch_prep_fits_reshapeable_ceiling(self):
+        """User log repro: quiet + shallow pool disables extreme live tier but
+        used to keep extreme spare=1 on the large reverse-buy size, while
+        xch_balance returned full spendable. GUI then billed a plan coin prep
+        could not fund from reshapeable inventory.
+        """
+        from blueprints import smart_defaults
+
+        spendable_xch = 12.0199
+        reshapeable_xch = 9.1189
+        available_cat = 80_000.0
+        asset_id = "b8edcc6a7cf3738a3806fdbadb1bbcfc2540ec37f6732ab3a6a4bbcd2dbec105"
+
+        def fake_balance(wallet_id):
+            if wallet_id == 1:
+                mojos = int(spendable_xch * 1_000_000_000_000)
+            else:
+                mojos = int(available_cat * 1_000)
+            return {
+                "success": True,
+                "wallet_balance": {
+                    "unconfirmed_wallet_balance": mojos,
+                    "confirmed_wallet_balance": mojos,
+                    "spendable_balance": mojos,
+                    "pending_coin_removal_count": 0,
+                },
+            }
+
+        raw_market = {
+            "dexie_ticker": {
+                "price": 7.130592092304095e-05,
+                "volume_30d": 30,
+                "high_30d": 8.0e-05,
+                "low_30d": 6.0e-05,
+            },
+            "dexie_trades": {
+                "total_count": 200,
+                "volume_trend": "flat",
+                "trades": [{"price": 7.130592092304095e-05, "xch_amount": 1.0}] * 5,
+            },
+            # Shallow pool (<100 XCH) shrinks outer/extreme size mults until
+            # extreme live tier is disabled — the failure mode under test.
+            "tibet_pool": {
+                "has_data": True,
+                "price": 7.130592092304095e-05,
+                "xch_reserve": 40,
+            },
+            "tibet_quote": {},
+            "spacescan": {"has_data": True, "price_xch": 7.130592092304095e-05},
+            "internal_db": {"price_count": 60, "fill_count": 0, "pool_trend": "stable"},
+        }
+        analysis = {
+            "volatility": {
+                "regime": "quiet",
+                "range_30d_pct": 8,
+                "range_90d_pct": 15,
+                "max_single_move_pct": 2,
+                "confidence": "high",
+                "std_dev_pct": 1.5,
+                "quiet_phase": True,
+            },
+            "liquidity": {
+                "fills_per_day": 1.93,
+                "daily_volume_xch": 5,
+                "pool_depth_xch": 40,
+                "level": "thin",
+                "volume_trend": "flat",
+            },
+            "token_health": {
+                "risk_level": "healthy",
+                "activity_level": "quiet",
+                "holder_count": 500,
+            },
+            "bot_performance": {"has_history": False},
+            "data_quality": {"score": 90, "quality": "excellent"},
+        }
+        orderbook = {
+            "has_data": True,
+            "api_ok": True,
+            "num_buy_offers": 10,
+            "num_sell_offers": 10,
+            "competitor_spread_bps": 400,
+            "best_bid": 7.0e-05,
+            "best_ask": 7.3e-05,
+        }
+
+        with (
+            patch("wallet.get_wallet_balance", side_effect=fake_balance),
+            patch(
+                "market_data_collector.collect_all_market_data",
+                return_value=raw_market,
+            ),
+            patch("market_data_collector.analyze_market_data", return_value=analysis),
+            patch.object(
+                smart_defaults,
+                "_fetch_dexie_orderbook_standalone",
+                return_value=orderbook,
+            ),
+            patch.object(
+                smart_defaults,
+                "_smart_dbx_defaults",
+                return_value={
+                    "dbx_max_spread_bps": 500,
+                    "pair_incentivized": False,
+                    "dbx_buy_incentive": None,
+                    "dbx_sell_incentive": None,
+                },
+            ),
+            patch(
+                "tx_fees.get_suggested_transaction_fee",
+                return_value={"available": False},
+            ),
+            patch(
+                "database.sum_reshapeable_xch_mojos",
+                return_value=int(reshapeable_xch * 1_000_000_000_000),
+            ),
+            patch(
+                "shared_xch_ledger.ledger.sum_budgets_mojos",
+                return_value=0,
+            ),
+            patch(
+                "shared_xch_ledger.ledger.spendable_xch_mojos",
+                return_value=int(spendable_xch * 1_000_000_000_000),
+            ),
+            patch(
+                "shared_xch_ledger.ledger.allocatable_mojos",
+                return_value=int(spendable_xch * 1_000_000_000_000),
+            ),
+            patch(
+                "shared_xch_ledger.ledger.remaining_allocatable_mojos",
+                return_value=int(reshapeable_xch * 1_000_000_000_000),
+            ),
+        ):
+            with api_server.app.test_request_context("/api/smart-defaults"):
+                resp = smart_defaults._calculate_smart_defaults(
+                    xch_reserve=0,
+                    cat_reserve=0,
+                    risk_profile="balanced",
+                    asset_id=asset_id,
+                    cat_wallet_id=2,
+                    cat_decimals=3,
+                    cat_ticker_id="MZ_XCH",
+                    cat_name="Monkeyzoo Token",
+                )
+
+        body = resp.get_json()
+        sources = body.get("_data_sources") or {}
+
+        # Empty live tier must not keep fill-rate / shock spares.
+        buy_extreme_n = int(body.get("buy_extreme_tier_count") or 0)
+        buy_extreme_spares = int(body.get("buy_extreme_tier_spare_count") or 0)
+        if buy_extreme_n <= 0:
+            self.assertEqual(buy_extreme_spares, 0)
+            self.assertEqual(float(body.get("buy_extreme_size_xch") or 0), 0.0)
+
+        # GUI residual filler must use reshapeable ceiling, not raw spendable.
+        self.assertLessEqual(float(sources.get("xch_balance") or 0), reshapeable_xch + 1e-9)
+        self.assertAlmostEqual(
+            float(sources.get("xch_spendable") or 0), spendable_xch, places=3
+        )
+
+        # Full XCH coin-prep bill (as the GUI sums it) must fit the ceiling.
+        self.assertLessEqual(
+            self._xch_coin_prep_total(body),
+            float(sources.get("xch_balance") or 0) * 1.005 + 1e-9,
+        )
         self.assertLessEqual(self._cat_coin_prep_total(body), available_cat)
 
     def test_large_xch_balance_is_not_stranded_in_topup_when_cat_is_smaller(self):
