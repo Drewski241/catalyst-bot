@@ -12903,8 +12903,93 @@
         let TAURI_CLOSE_HANDLER_BOUND = false;
         let TAURI_CLOSE_HANDLER_RETRY_TIMER = null;
 
+        // PyWebView on Qt WebEngine injects window.pywebview early, but
+        // QWebChannel is assigned later in finish.js. Calling api.* before
+        // that throws: Cannot read properties of undefined (reading 'objects').
+        function _isPywebviewBridgeReady() {
+            const pw = window.pywebview;
+            if (!pw || !pw.api) return false;
+            if (pw.platform === 'qtwebengine') {
+                try {
+                    return !!(pw._QWebChannel && pw._QWebChannel.objects && pw._QWebChannel.objects.external);
+                } catch (_) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        function _hardenPywebviewQtBridge() {
+            const pw = window.pywebview;
+            if (!pw || pw.platform !== 'qtwebengine' || pw._catalystQtHardened) return;
+            if (typeof pw._jsApiCallback !== 'function') return;
+            pw._catalystQtHardened = true;
+            const orig = pw._jsApiCallback.bind(pw);
+            pw._jsApiCallback = function (funcName, params, id) {
+                if (pw._QWebChannel && pw._QWebChannel.objects && pw._QWebChannel.objects.external) {
+                    return orig(funcName, params, id);
+                }
+                // Upstream pywebview retries once after 100ms without re-checking
+                // _QWebChannel, which throws on .objects. Retry with a re-check
+                // and reject the bridge promise if the channel never appears.
+                let attempts = 0;
+                const maxAttempts = 50; // ~5s
+                const tick = function () {
+                    attempts += 1;
+                    if (pw._QWebChannel && pw._QWebChannel.objects && pw._QWebChannel.objects.external) {
+                        try {
+                            pw._QWebChannel.objects.external.call(
+                                funcName,
+                                (typeof pywebview !== 'undefined' && pywebview.stringify)
+                                    ? pywebview.stringify(params)
+                                    : JSON.stringify(params),
+                                id
+                            );
+                        } catch (err) {
+                            _rejectPywebviewBridgeCall(funcName, id, err);
+                        }
+                        return;
+                    }
+                    if (attempts < maxAttempts) {
+                        setTimeout(tick, 100);
+                        return;
+                    }
+                    _rejectPywebviewBridgeCall(
+                        funcName,
+                        id,
+                        new Error('QWebChannel not ready')
+                    );
+                };
+                setTimeout(tick, 50);
+            };
+        }
+
+        function _rejectPywebviewBridgeCall(funcName, id, err) {
+            try {
+                const cbs = window.pywebview && window.pywebview._returnValuesCallbacks;
+                const slot = cbs && cbs[funcName] && cbs[funcName][id];
+                if (typeof slot === 'function') {
+                    slot({
+                        value: JSON.stringify({
+                            message: String((err && err.message) || err || 'QWebChannel not ready'),
+                            name: 'Error',
+                            stack: String((err && err.stack) || ''),
+                        }),
+                        isError: true,
+                    });
+                }
+            } catch (_) {}
+        }
+
         function _activateDesktopMode(bridgeName) {
             if (IS_DESKTOP) return;  // Already activated
+            if (bridgeName === 'PyWebView') {
+                _hardenPywebviewQtBridge();
+                if (!_isPywebviewBridgeReady()) {
+                    // Keep browser/HTTP path until QWebChannel is actually up.
+                    return;
+                }
+            }
             IS_DESKTOP = true;
             document.body.classList.add('desktop-mode');
             debugLog('[V4] Desktop mode activated - ' + bridgeName + ' bridge ready');
@@ -12986,13 +13071,15 @@
             }
         }
 
-        // Method 1: pywebview fires this custom event when the bridge is injected
+        // Method 1: pywebview fires this after QWebChannel is assigned (finish.js)
         window.addEventListener('pywebviewready', function() {
+            _hardenPywebviewQtBridge();
             _activateDesktopMode('PyWebView');
         });
 
         // Method 2: If pywebview was already injected before our script ran
         if (typeof window.pywebview !== 'undefined') {
+            _hardenPywebviewQtBridge();
             _activateDesktopMode('PyWebView');
         }
 
@@ -13001,21 +13088,31 @@
             _activateTauriMode();
         }
 
-        // Method 4: Fallback poll — some backends are slow to inject
+        // Method 4: Fallback poll — Qt often exposes window.pywebview before
+        // QWebChannel; keep polling until the channel (or Tauri) is ready.
         (function _pollForPyWebView() {
             let attempts = 0;
-            const maxAttempts = 30;  // 3 seconds max
+            const maxAttempts = 80;  // 8 seconds — Qt channel can lag past 3s
             const interval = setInterval(function() {
                 attempts++;
                 if (typeof window.pywebview !== 'undefined') {
-                    clearInterval(interval);
-                    _activateDesktopMode('PyWebView');
-                } else if (!IS_TAURI && typeof window.__TAURI__ !== 'undefined') {
+                    _hardenPywebviewQtBridge();
+                    if (_isPywebviewBridgeReady()) {
+                        clearInterval(interval);
+                        _activateDesktopMode('PyWebView');
+                        return;
+                    }
+                }
+                if (!IS_TAURI && typeof window.__TAURI__ !== 'undefined') {
                     clearInterval(interval);
                     _activateTauriMode();
                 } else if (attempts >= maxAttempts) {
                     clearInterval(interval);
-                    debugLog('[V4] Browser mode — no desktop bridge detected after 3s');
+                    if (typeof window.pywebview !== 'undefined' && !IS_DESKTOP) {
+                        debugWarn('[V4] PyWebView present but Qt bridge not ready — using HTTP');
+                    } else if (!IS_DESKTOP) {
+                        debugLog('[V4] Browser mode — no desktop bridge detected after 8s');
+                    }
                 }
             }, 100);
         })();
@@ -13028,7 +13125,7 @@
                 TAURI_WINDOW.minimize();
                 return;
             }
-            if (IS_DESKTOP && window.pywebview && window.pywebview.api) {
+            if (IS_DESKTOP && _isPywebviewBridgeReady()) {
                 window.pywebview.api.minimize_window();
             }
         }
@@ -13037,7 +13134,7 @@
                 TAURI_WINDOW.toggleMaximize();
                 return;
             }
-            if (IS_DESKTOP && window.pywebview && window.pywebview.api) {
+            if (IS_DESKTOP && _isPywebviewBridgeReady()) {
                 window.pywebview.api.maximize_window();
             }
         }
@@ -13060,7 +13157,7 @@
 
             document.querySelectorAll('.resize-handle').forEach(function(el) {
                 el.addEventListener('mousedown', function(e) {
-                    if (!IS_DESKTOP || !window.pywebview || !window.pywebview.api) return;
+                    if (!IS_DESKTOP || !_isPywebviewBridgeReady()) return;
                     e.preventDefault();
                     e.stopPropagation();
                     _dir = el.dataset.resize;
@@ -15219,8 +15316,10 @@
         async function apiFetch(path, options) {
             options = options || {};
 
-            // Only intercept in desktop mode with a working bridge
-            if (IS_DESKTOP && window.pywebview && window.pywebview.api) {
+            // Only intercept in desktop mode with a working bridge.
+            // On Qt, window.pywebview.api exists before QWebChannel — calling
+            // it then throws Uncaught TypeError on `.objects` outside our try.
+            if (IS_DESKTOP && _isPywebviewBridgeReady()) {
                 const httpMethod = options.method || 'GET';
                 const bridgeMethod = _apiBridgeMethod(path, httpMethod);
 
@@ -17432,7 +17531,7 @@
         }
 
         function desktopSageCertBrowseAvailable() {
-            return !!(IS_DESKTOP && window.pywebview && window.pywebview.api &&
+            return !!(IS_DESKTOP && _isPywebviewBridgeReady() &&
                 typeof window.pywebview.api.browse_sage_cert === 'function');
         }
 
@@ -35628,7 +35727,7 @@ async function closeDesktopWindowAfterShutdown({ backendStopped = false, extraWa
     }
 
     try {
-        if (IS_DESKTOP && window.pywebview && window.pywebview.api) {
+        if (IS_DESKTOP && _isPywebviewBridgeReady()) {
             // Prefer confirm_close_window — it flips the Python-side
             // confirmed-close flag so the on_closing handler doesn't
             // re-open the shutdown modal in a loop.
@@ -37489,6 +37588,10 @@ document.addEventListener('DOMContentLoaded', () => {
         el.focus();
         // execCommand('paste') is blocked by WebView2 — read via Python bridge instead
         try {
+            if (!_isPywebviewBridgeReady() || typeof window.pywebview.api.read_clipboard !== 'function') {
+                document.execCommand('paste');
+                return;
+            }
             const res = await window.pywebview.api.read_clipboard();
             if (res && res.success && res.text) {
                 const start = el.selectionStart ?? el.value.length;

@@ -312,3 +312,16 @@ def test_dashboard_has_active_toxicity_guard_notice():
     assert 'data-toxicity-action="settings"' in html
     assert 'data-toxicity-action="smart-settings"' in html
     assert "Adverse Selection Guard active" in html
+
+
+def test_qt_pywebview_bridge_waits_for_qwebchannel():
+    """Linux Qt WebEngine exposes pywebview before QWebChannel; calling api.*
+    early throws Uncaught TypeError reading 'objects'."""
+    html = GUI.read_text(encoding="utf-8", errors="replace")
+
+    assert "function _isPywebviewBridgeReady()" in html
+    assert "function _hardenPywebviewQtBridge()" in html
+    assert "pw.platform === 'qtwebengine'" in html
+    assert "pw._QWebChannel.objects.external" in html
+    assert "IS_DESKTOP && _isPywebviewBridgeReady()" in html
+    assert "QWebChannel not ready" in html
