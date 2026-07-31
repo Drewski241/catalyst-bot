@@ -2602,12 +2602,12 @@ def _calculate_smart_defaults(
             _spare_outer = (
                 max(_spare_outer, _math_spare.ceil(_smart_n_outer * 0.5))
                 if _smart_n_outer > 0
-                else _spare_outer
+                else 0
             )
             _spare_extreme = (
                 max(_spare_extreme, _math_spare.ceil(_smart_n_extreme * 0.5))
                 if _smart_n_extreme > 0
-                else _spare_extreme
+                else 0
             )
             _post_shock = (_spare_inner, _spare_mid, _spare_outer, _spare_extreme)
             if _pre_shock != _post_shock:
@@ -2670,6 +2670,15 @@ def _calculate_smart_defaults(
                 f"{_shock_extreme} for price shock resilience",
             )
             _spare_extreme = _shock_extreme
+
+        # Empty tiers must not keep fill-rate spares. Under reverse-buy the
+        # extreme POSITION maps to the LARGEST XCH coin; a leftover spare
+        # there (with n_extreme=0 when max_tiers<4) was billed by the GUI
+        # but skipped by F66's max_tiers gate → "coin prep impossible".
+        if _smart_n_outer <= 0:
+            _spare_outer = 0
+        if _smart_n_extreme <= 0:
+            _spare_extreme = 0
 
         # ── POST-SHOCK XCH BUDGET RECONCILIATION ───────────────────────────
         # The price-shock spare floor above may have raised spare counts AFTER
@@ -3045,10 +3054,15 @@ def _calculate_smart_defaults(
     _buy_n_mid = _smart_n_mid
     _buy_n_outer = _smart_n_outer
     _buy_n_extreme = _smart_n_extreme
-    _buy_spare_inner = _spare_inner
-    _buy_spare_mid = _spare_mid
-    _buy_spare_outer = _spare_outer
-    _buy_spare_extreme = _spare_extreme
+    _buy_spare_inner = _spare_inner if _buy_n_inner > 0 else 0
+    _buy_spare_mid = _spare_mid if _buy_n_mid > 0 else 0
+    _buy_spare_outer = _spare_outer if _buy_n_outer > 0 else 0
+    _buy_spare_extreme = _spare_extreme if _buy_n_extreme > 0 else 0
+    # Keep shared spare fields aligned with the scrubbed per-side values.
+    _spare_inner = _buy_spare_inner
+    _spare_mid = _buy_spare_mid
+    _spare_outer = _buy_spare_outer
+    _spare_extreme = _buy_spare_extreme
 
     # ═══ HARD FEASIBILITY CHECK (mirror the launcher's pool formula) ═════
     # Compute the exact XCH pool the launcher will request, accounting for
@@ -3488,18 +3502,23 @@ def _calculate_smart_defaults(
     # the F62 sizes and scales them down if they exceed the available budget.
     if _smart_buy_inner > 0 and _avail_xch > 0:
         _f66_hm = 1.0 + (coin_prep_headroom_pct / 100.0)
-        # Build (count, size) pairs in SLOT-indexed order.
-        # Under reverse-buy the slot-indexed buy counts are position counts;
-        # the corresponding sizes are already position-semantic too
-        # (_smart_buy_inner = smallest size, used by position inner = many offers).
-        _f66_tiers = [
-            (_buy_n_inner + _buy_spare_inner, _smart_buy_inner),
-            (_buy_n_mid + _buy_spare_mid, _smart_buy_mid),
-        ]
-        if _max_tiers >= 3 and _smart_buy_outer > 0:
-            _f66_tiers.append((_buy_n_outer + _buy_spare_outer, _smart_buy_outer))
-        if _max_tiers == 4 and _smart_buy_extreme > 0:
-            _f66_tiers.append((_buy_n_extreme + _buy_spare_extreme, _smart_buy_extreme))
+
+        def _f66_collect_tiers():
+            # Match the GUI buildCoinPrepPlan total: any position with
+            # size>0 and (live+spare)>0 counts, even when max_tiers < 4
+            # left a stray spare on a disabled size bucket.
+            _tiers = []
+            for _cnt, _sx in (
+                (_buy_n_inner + _buy_spare_inner, _smart_buy_inner),
+                (_buy_n_mid + _buy_spare_mid, _smart_buy_mid),
+                (_buy_n_outer + _buy_spare_outer, _smart_buy_outer),
+                (_buy_n_extreme + _buy_spare_extreme, _smart_buy_extreme),
+            ):
+                if int(_cnt or 0) > 0 and float(_sx or 0) > 0:
+                    _tiers.append((int(_cnt), float(_sx)))
+            return _tiers
+
+        _f66_tiers = _f66_collect_tiers()
         _f66_tier_xch = sum(_cnt * _sx * _f66_hm for _cnt, _sx in _f66_tiers)
 
         # F83 (2026-05-17): after F62 computes independent BUY sizes,
@@ -3567,11 +3586,6 @@ def _calculate_smart_defaults(
                 if _smart_buy_extreme > 0
                 else 0.0
             )
-            # Keep shared sizes in sync (pre-F62 callers read these).
-            _smart_inner = _smart_buy_inner
-            _smart_mid = _smart_buy_mid
-            _smart_outer = _smart_buy_outer
-            _smart_extreme = _smart_buy_extreme
             _smart_trade_size = _smart_buy_mid  # mid is the reference "base"
             messages.append(
                 f"F66 buy-side XCH safety clamp: "
@@ -3584,14 +3598,215 @@ def _calculate_smart_defaults(
                 f"inner {_f66_old_inner:.4f} → {_smart_buy_inner:.4f}, "
                 f"tier_xch {_f66_tier_xch:.2f} → budget {_f66_budget:.2f}"
             )
+
+        # When sizes are already at the MIN_OFFER floor, scaling cannot
+        # shrink the XCH bill further. Peel buy spares then live slots
+        # (same pattern as F65 on the CAT side).
+        def _f66_tier_total_xch():
+            return sum(
+                _c * _s * _f66_hm for _c, _s in _f66_collect_tiers()
+            )
+
+        _f66_tier_xch = _f66_tier_total_xch()
+        if _f66_tier_xch > _f66_budget > 0:
+            _pre_spare = (
+                _buy_spare_inner,
+                _buy_spare_mid,
+                _buy_spare_outer,
+                _buy_spare_extreme,
+            )
+            _spare_vals = [
+                _buy_spare_inner,
+                _buy_spare_mid,
+                _buy_spare_outer,
+                _buy_spare_extreme,
+            ]
+            _size_vals = [
+                _smart_buy_inner,
+                _smart_buy_mid,
+                _smart_buy_outer,
+                _smart_buy_extreme,
+            ]
+            _live_vals = [
+                _buy_n_inner,
+                _buy_n_mid,
+                _buy_n_outer,
+                _buy_n_extreme,
+            ]
+            for _i in range(4):
+                if float(_size_vals[_i] or 0) <= 0 or int(_live_vals[_i] or 0) <= 0:
+                    _spare_vals[_i] = 0
+            (
+                _buy_spare_inner,
+                _buy_spare_mid,
+                _buy_spare_outer,
+                _buy_spare_extreme,
+            ) = _spare_vals
+            _f66_tier_xch = _f66_tier_total_xch()
+            while (
+                _f66_tier_xch > _f66_budget
+                and any(
+                    int(_spare_vals[i] or 0) > 0 and float(_size_vals[i] or 0) > 0
+                    for i in range(4)
+                )
+            ):
+                _best_i = max(
+                    range(4),
+                    key=lambda i: (
+                        int(_spare_vals[i] or 0) > 0 and float(_size_vals[i] or 0) > 0,
+                        float(_size_vals[i] or 0),
+                        int(_spare_vals[i] or 0),
+                    ),
+                )
+                if (
+                    int(_spare_vals[_best_i] or 0) <= 0
+                    or float(_size_vals[_best_i] or 0) <= 0
+                ):
+                    break
+                _spare_vals[_best_i] = int(_spare_vals[_best_i]) - 1
+                (
+                    _buy_spare_inner,
+                    _buy_spare_mid,
+                    _buy_spare_outer,
+                    _buy_spare_extreme,
+                ) = _spare_vals
+                _f66_tier_xch = _f66_tier_total_xch()
+            if _pre_spare != (
+                _buy_spare_inner,
+                _buy_spare_mid,
+                _buy_spare_outer,
+                _buy_spare_extreme,
+            ):
+                # Do not sync `_spare_*` / sell spares here — CAT side may
+                # still afford the higher spare template. Response emits
+                # buy_* and sell_* spare fields separately.
+                messages.append(
+                    "Buy spare coins reduced "
+                    f"{_pre_spare[0]}/{_pre_spare[1]}/"
+                    f"{_pre_spare[2]}/{_pre_spare[3]} → "
+                    f"{_buy_spare_inner}/{_buy_spare_mid}/"
+                    f"{_buy_spare_outer}/{_buy_spare_extreme} "
+                    "so coin prep fits reshapeable XCH."
+                )
+                print(
+                    f"[SMART_DEFAULTS] F66 XCH spare peel: "
+                    f"{_pre_spare} → "
+                    f"({_buy_spare_inner}, {_buy_spare_mid}, "
+                    f"{_buy_spare_outer}, {_buy_spare_extreme}), "
+                    f"tier now {_f66_tier_xch:.4f}/{_f66_budget:.4f}"
+                )
+
+        if _f66_tier_xch > _f66_budget > 0:
+            _pre_live = (
+                _buy_n_inner,
+                _buy_n_mid,
+                _buy_n_outer,
+                _buy_n_extreme,
+            )
+            _live_vals = [
+                _buy_n_inner,
+                _buy_n_mid,
+                _buy_n_outer,
+                _buy_n_extreme,
+            ]
+            _size_vals = [
+                _smart_buy_inner,
+                _smart_buy_mid,
+                _smart_buy_outer,
+                _smart_buy_extreme,
+            ]
+            for _i in range(4):
+                if float(_size_vals[_i] or 0) <= 0 and int(_live_vals[_i] or 0) > 0:
+                    _live_vals[_i] = 0
+            (
+                _buy_n_inner,
+                _buy_n_mid,
+                _buy_n_outer,
+                _buy_n_extreme,
+            ) = _live_vals
+            _smart_max_buy = max(
+                0,
+                int(_buy_n_inner)
+                + int(_buy_n_mid)
+                + int(_buy_n_outer)
+                + int(_buy_n_extreme),
+            )
+            _f66_tier_xch = _f66_tier_total_xch()
+            while (
+                _f66_tier_xch > _f66_budget
+                and any(
+                    int(_live_vals[i] or 0) > 0 and float(_size_vals[i] or 0) > 0
+                    for i in range(4)
+                )
+            ):
+                _best_i = max(
+                    range(4),
+                    key=lambda i: (
+                        int(_live_vals[i] or 0) > 0 and float(_size_vals[i] or 0) > 0,
+                        float(_size_vals[i] or 0),
+                        int(_live_vals[i] or 0),
+                    ),
+                )
+                if (
+                    int(_live_vals[_best_i] or 0) <= 0
+                    or float(_size_vals[_best_i] or 0) <= 0
+                ):
+                    break
+                _live_vals[_best_i] = int(_live_vals[_best_i]) - 1
+                (
+                    _buy_n_inner,
+                    _buy_n_mid,
+                    _buy_n_outer,
+                    _buy_n_extreme,
+                ) = _live_vals
+                _smart_max_buy = max(
+                    0,
+                    int(_buy_n_inner)
+                    + int(_buy_n_mid)
+                    + int(_buy_n_outer)
+                    + int(_buy_n_extreme),
+                )
+                _smart_n_inner = _buy_n_inner
+                _smart_n_mid = _buy_n_mid
+                _smart_n_outer = _buy_n_outer
+                _smart_n_extreme = _buy_n_extreme
+                _n_final = _smart_max_buy
+                _f66_tier_xch = _f66_tier_total_xch()
+            if _pre_live != (
+                _buy_n_inner,
+                _buy_n_mid,
+                _buy_n_outer,
+                _buy_n_extreme,
+            ):
+                messages.append(
+                    "Buy offer count reduced "
+                    f"{sum(_pre_live)} → {_smart_max_buy} "
+                    "so coin prep fits reshapeable XCH."
+                )
+                print(
+                    f"[SMART_DEFAULTS] F66 XCH live peel: "
+                    f"{_pre_live} → "
+                    f"({_buy_n_inner}, {_buy_n_mid}, "
+                    f"{_buy_n_outer}, {_buy_n_extreme}), "
+                    f"tier now {_f66_tier_xch:.4f}/{_f66_budget:.4f}"
+                )
+
+        # Drop sizes on positions that no longer have live or spare coins.
+        if int(_buy_n_outer or 0) + int(_buy_spare_outer or 0) <= 0:
+            _smart_buy_outer = 0.0
+        if int(_buy_n_extreme or 0) + int(_buy_spare_extreme or 0) <= 0:
+            _smart_buy_extreme = 0.0
+
         _f66_live_xch = (
             _buy_n_inner * _smart_buy_inner
             + _buy_n_mid * _smart_buy_mid
-            + ((_buy_n_outer * _smart_buy_outer) if _max_tiers >= 3 else 0.0)
-            + ((_buy_n_extreme * _smart_buy_extreme) if _max_tiers == 4 else 0.0)
+            + _buy_n_outer * _smart_buy_outer
+            + _buy_n_extreme * _smart_buy_extreme
         )
         _trading_xch = round(_f66_live_xch, 4)
-        _trading_pct = round(_trading_xch / _avail_xch * 100, 1)
+        _trading_pct = (
+            round(_trading_xch / _avail_xch * 100, 1) if _avail_xch > 0 else 0.0
+        )
         if "_capital_plan" in dir() and isinstance(_capital_plan, dict):
             _capital_plan["trading_xch"] = _trading_xch
             _capital_plan["trading_pct"] = _trading_pct
@@ -4294,6 +4509,21 @@ def _calculate_smart_defaults(
         )
         _smart_inner = _smart_mid = _smart_outer = _smart_extreme = 0.0
         _topup_buffer_cat = 0.0
+    else:
+        # Legacy shared size fields must stay sell-aligned. F66 scaling used
+        # to overwrite them with buy sizes, which poisoned GUI fallbacks when
+        # sell_extreme_size_xch was 0 (disabled tier).
+        _smart_inner = _smart_sell_inner
+        _smart_mid = _smart_sell_mid
+        _smart_outer = _smart_sell_outer
+        _smart_extreme = _smart_sell_extreme
+
+    # Prep-relevant XCH ceiling for the GUI residual-topup filler: the
+    # user reserve plus whatever Smart Settings actually sized against
+    # (wallet after reserve, then shared-budget / reshapeable clamps).
+    # Returning raw spendable made the preview plan against the full
+    # wallet while tiers were sized for reshapeable-only inventory.
+    _prep_xch_ceiling = max(0.0, float(_xch_reserve) + float(_avail_xch))
 
     # Diagnostic dump — printed on every smart-defaults call so any
     # future coin-prep overshoot can be traced from the server log.
@@ -4697,7 +4927,10 @@ def _calculate_smart_defaults(
             # systematic over-report — 110.6773 → 110.68 — that bled into
             # the GUI's F66 residual-filler and tripped its own preflight).
             # Truncate rather than round so we NEVER over-report the balance.
-            "xch_balance": int(float(xch_spendable) * 10000) / 10000,
+            # Multi-pair: use prep ceiling (reserve + allocatable/reshapeable),
+            # not raw spendable — coin prep cannot melt other pairs' coins.
+            "xch_balance": int(float(_prep_xch_ceiling) * 10000) / 10000,
+            "xch_spendable": int(float(xch_spendable) * 10000) / 10000,
             "data_quality_score": quality_score,
             "data_quality_label": quality_label,
             "volatility_regime": regime,

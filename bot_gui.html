@@ -21253,11 +21253,15 @@
             };
 
             if (tierEnabled) {
+                // Explicit 0 is valid (disabled tier after Smart Settings
+                // drops extreme/outer). `|| fallback` would revive a fake
+                // size and over-bill coin prep.
+                const _sizeOr = (v, fb) => (Number.isFinite(v) && v >= 0 ? v : fb);
                 plan.offerTierSizesXch = {
-                    inner: innerSize || tradeSize * 2,
-                    mid: midSize || tradeSize,
-                    outer: outerSize || tradeSize * 0.5,
-                    extreme: extremeSize || tradeSize * 0.2
+                    inner: _sizeOr(innerSize, tradeSize * 2),
+                    mid: _sizeOr(midSize, tradeSize),
+                    outer: _sizeOr(outerSize, tradeSize * 0.5),
+                    extreme: _sizeOr(extremeSize, tradeSize * 0.2)
                 };
                 // F62 (2026-04-09): per-side size resolution. When Smart
                 // Settings has stashed buy/sell dicts, use them for each
@@ -22014,7 +22018,10 @@
             const _buyMidInput     = parseFloat(document.getElementById('configBuyMidSizeXch')?.value);
             const _buyOuterInput   = parseFloat(document.getElementById('configBuyOuterSizeXch')?.value);
             const _buyExtremeInput = parseFloat(document.getElementById('configBuyExtremeSizeXch')?.value);
-            const _hasBuyInputs = (_buyInnerInput > 0 && _buyMidInput > 0 && _buyOuterInput > 0 && _buyExtremeInput > 0);
+            const _buySizeInputs = [_buyInnerInput, _buyMidInput, _buyOuterInput, _buyExtremeInput];
+            // Explicit 0 = disabled tier (valid). Require at least one live size.
+            const _hasBuyInputs = _buySizeInputs.every(v => Number.isFinite(v) && v >= 0)
+                && _buySizeInputs.some(v => v > 0);
             const _buySizesForPrep = _hasBuyInputs ? {
                 inner:   _buyInnerInput,
                 mid:     _buyMidInput,
@@ -22030,7 +22037,9 @@
             const _sellMidInput     = parseFloat(document.getElementById('configMidSizeXch')?.value);
             const _sellOuterInput   = parseFloat(document.getElementById('configOuterSizeXch')?.value);
             const _sellExtremeInput = parseFloat(document.getElementById('configExtremeSizeXch')?.value);
-            const _hasSellInputs = (_sellInnerInput > 0 && _sellMidInput > 0 && _sellOuterInput > 0 && _sellExtremeInput > 0);
+            const _sellSizeInputs = [_sellInnerInput, _sellMidInput, _sellOuterInput, _sellExtremeInput];
+            const _hasSellInputs = _sellSizeInputs.every(v => Number.isFinite(v) && v >= 0)
+                && _sellSizeInputs.some(v => v > 0);
             const _sellSizesForPrep = _hasSellInputs ? {
                 inner:   _sellInnerInput,
                 mid:     _sellMidInput,
@@ -22038,6 +22047,10 @@
                 extreme: _sellExtremeInput,
             } : (window._smartSellSizes && window._smartSellSizes.inner > 0
                 ? { ...window._smartSellSizes } : null);
+            const _tierSizeInput = (id, fb) => {
+                const v = parseFloat(document.getElementById(id)?.value);
+                return Number.isFinite(v) && v >= 0 ? v : fb;
+            };
             const plan = buildCoinPrepPlan({
                 liquidityMode: getLiquidityMode(),
                 tradeSize,
@@ -22047,10 +22060,10 @@
                 tierEnabled,
                 midPrice,
                 headroomPct: prepHeadroomPct,
-                innerSize: parseFloat(document.getElementById('configInnerSizeXch')?.value) || tradeSize * 2,
-                midSize: parseFloat(document.getElementById('configMidSizeXch')?.value) || tradeSize,
-                outerSize: parseFloat(document.getElementById('configOuterSizeXch')?.value) || tradeSize * 0.5,
-                extremeSize: parseFloat(document.getElementById('configExtremeSizeXch')?.value) || tradeSize * 0.2,
+                innerSize: _tierSizeInput('configInnerSizeXch', tradeSize * 2),
+                midSize: _tierSizeInput('configMidSizeXch', tradeSize),
+                outerSize: _tierSizeInput('configOuterSizeXch', tradeSize * 0.5),
+                extremeSize: _tierSizeInput('configExtremeSizeXch', tradeSize * 0.2),
                 buyTierSizes: _buySizesForPrep,
                 sellTierSizes: _sellSizesForPrep,
                 tierCountInner: parseInt(document.getElementById('configInnerTierCount')?.value) || 0,
@@ -33934,6 +33947,16 @@ function closeCtgErrorModal() {
             const configuredTierCountsXch = getConfiguredTierCountsFromConfigXch(config);
             const configuredTierSpares = getConfiguredTierSpareCountsFromConfig(config);
             const configuredTierSparesXch = getConfiguredTierSpareCountsFromConfigXch(config);
+            const _cfgSize = (key, fb) => {
+                const v = parseFloat(config[key]);
+                return Number.isFinite(v) && v >= 0 ? v : fb;
+            };
+            const _cfgSideSize = (key, stashVal) => {
+                const v = parseFloat(config[key]);
+                if (Number.isFinite(v) && v >= 0) return v;
+                const s = parseFloat(stashVal);
+                return Number.isFinite(s) && s >= 0 ? s : 0;
+            };
             const plan = buildCoinPrepPlan({
                 liquidityMode: config.liquidity_mode || getLiquidityMode(),
                 tradeSize,
@@ -33943,24 +33966,25 @@ function closeCtgErrorModal() {
                 tierEnabled,
                 midPrice,
                 headroomPct: prepHeadroomPct,
-                innerSize: parseFloat(config.inner_size_xch) || tradeSize * 2,
-                midSize: parseFloat(config.mid_size_xch) || tradeSize,
-                outerSize: parseFloat(config.outer_size_xch) || tradeSize * 0.5,
-                extremeSize: parseFloat(config.extreme_size_xch) || tradeSize * 0.2,
+                innerSize: _cfgSize('inner_size_xch', tradeSize * 2),
+                midSize: _cfgSize('mid_size_xch', tradeSize),
+                outerSize: _cfgSize('outer_size_xch', tradeSize * 0.5),
+                extremeSize: _cfgSize('extreme_size_xch', tradeSize * 0.2),
                 // F62 (2026-04-09): per-side sizes come from the saved config
                 // (or from Smart Settings via the stash). When unset, the
                 // plan builder falls back to the single shared row.
+                // Explicit 0 = disabled tier — do not revive via `||`.
                 buyTierSizes: {
-                    inner:   parseFloat(config.buy_inner_size_xch)   || (window._smartBuySizes?.inner   ?? 0),
-                    mid:     parseFloat(config.buy_mid_size_xch)     || (window._smartBuySizes?.mid     ?? 0),
-                    outer:   parseFloat(config.buy_outer_size_xch)   || (window._smartBuySizes?.outer   ?? 0),
-                    extreme: parseFloat(config.buy_extreme_size_xch) || (window._smartBuySizes?.extreme ?? 0),
+                    inner:   _cfgSideSize('buy_inner_size_xch', window._smartBuySizes?.inner),
+                    mid:     _cfgSideSize('buy_mid_size_xch', window._smartBuySizes?.mid),
+                    outer:   _cfgSideSize('buy_outer_size_xch', window._smartBuySizes?.outer),
+                    extreme: _cfgSideSize('buy_extreme_size_xch', window._smartBuySizes?.extreme),
                 },
                 sellTierSizes: {
-                    inner:   parseFloat(config.sell_inner_size_xch)   || (window._smartSellSizes?.inner   ?? 0),
-                    mid:     parseFloat(config.sell_mid_size_xch)     || (window._smartSellSizes?.mid     ?? 0),
-                    outer:   parseFloat(config.sell_outer_size_xch)   || (window._smartSellSizes?.outer   ?? 0),
-                    extreme: parseFloat(config.sell_extreme_size_xch) || (window._smartSellSizes?.extreme ?? 0),
+                    inner:   _cfgSideSize('sell_inner_size_xch', window._smartSellSizes?.inner),
+                    mid:     _cfgSideSize('sell_mid_size_xch', window._smartSellSizes?.mid),
+                    outer:   _cfgSideSize('sell_outer_size_xch', window._smartSellSizes?.outer),
+                    extreme: _cfgSideSize('sell_extreme_size_xch', window._smartSellSizes?.extreme),
                 },
                 tierCountInner: configuredTierCounts.inner,
                 tierCountMid: configuredTierCounts.mid,
